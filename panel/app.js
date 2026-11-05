@@ -1654,6 +1654,28 @@ function resetHistory() {
   loadingMorePromise = null
 }
 let loadingMorePromise = null
+let searchBox = null
+/** Text with every case-insensitive occurrence of `q` wrapped in <mark>, as DOM nodes. */
+// The same rule as the worker's search: under 3 characters, whole words only.
+const searchRe = (q) => {
+  const esc = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return q.length < 3 ? new RegExp(`(?<![\\p{L}\\p{N}_])${esc}(?![\\p{L}\\p{N}_])`, 'giu') : new RegExp(esc, 'giu')
+}
+const hasHit = (text, q) => !!q && searchRe(q).test(String(text ?? ''))
+function marked(text, q) {
+  text = String(text ?? '')
+  if (!q) return text
+  const out = []
+  let i = 0
+  for (const m of text.matchAll(searchRe(q))) {
+    if (m.index > i) out.push(text.slice(i, m.index))
+    out.push(h('mark', { class: 'hit' }, m[0]))
+    i = m.index + m[0].length
+  }
+  if (i < text.length) out.push(text.slice(i))
+  return out
+}
+
 async function loadHistory(more = false) {
   const H = state.history
   // One "load more" at a time: the scroll sentinel, the button and goToHead share it.
@@ -1771,39 +1793,38 @@ async function viewHistory() {
   if (!state.refs) state.refs = await call('refs').catch(() => null)
   if (state.refs) state.localNames = new Set(state.refs.local.map((b) => b.name))
   const root = h('div', { class: 'view', style: { paddingTop: '8px' } })
-  const modeSel = h(
-    'select',
-    {
-      class: 'mode-select',
-      title: 'Search in',
-      onChange: (e) => {
-        H.mode = e.target.value
-        if (H.search) {
-          resetHistory()
-          renderView()
-        }
-      }
-    },
-    [
-      ['message', 'Message'],
-      ['author', 'Author'],
-      ['file', 'File path'],
-      ['content', 'Code change'],
-      ['hash', 'Commit hash']
-    ].map(([v, l]) => h('option', { value: v, selected: (H.mode || 'message') === v }, l))
-  )
-  const search = h('input', {
+  H.mode = 'all'
+  let typing = null
+  const runSearch = (v) => {
+    clearTimeout(typing)
+    if (v === H.search) return
+    H.search = v
+    resetHistory()
+    renderView()
+  }
+  // One search box for the life of the panel: results redraw the view around it, never the box
+  // itself, so nothing typed meanwhile is lost and the caret stays put.
+  const search = (searchBox ||= h('input', {
     type: 'text',
-    placeholder: 'Search… (Enter)',
+    class: 'graph-search',
+    placeholder: 'Search message, author, file, hash, branch or tag…',
     value: H.search,
-    onKeydown: async (e) => {
-      if (e.key !== 'Enter') return
-      H.search = e.target.value.trim()
-      resetHistory()
-      renderView()
+    onInput: (e) => {
+      clearTimeout(typing)
+      const v = e.target.value.trim()
+      typing = setTimeout(() => runSearch(v), v ? 300 : 0)
+    },
+    onKeydown: (e) => {
+      if (e.key === 'Enter') runSearch(e.target.value.trim())
+      else if (e.key === 'Escape' && e.target.value) {
+        e.preventDefault()
+        e.stopPropagation()
+        e.target.value = ''
+        runSearch('')
+      }
     }
-  })
-  search.value = H.search
+  }))
+  if (document.activeElement !== search) search.value = H.search
   const seg = h(
     'div',
     { class: 'segmented' },
@@ -1817,10 +1838,10 @@ async function viewHistory() {
     renderView()
   }
   const headBtn = h('button', { class: 'btn sm', title: 'Scroll to the checked-out commit', onClick: () => goToHead() }, icon('current', 12), 'HEAD')
-  root.append(h('div', { class: 'history-bar' }, modeSel, search, seg, headBtn))
+  root.append(h('div', { class: 'history-bar' }, search, seg, headBtn))
 
   if (!H.commits.length) {
-    root.append(h('div', { class: 'empty' }, icon('history', 28), h('div', null, H.search ? 'No matching commits' : 'No commits yet')))
+    root.append(h('div', { class: 'empty' }, icon('history', 28), h('div', null, H.search ? `Nothing matches “${H.search}”` : 'No commits yet'), H.search && h('div', { class: 'dim' }, 'Searched messages, authors, changed files, hashes, branches and tags' + (H.all ? '.' : ' on this branch. Try All for every branch.'))))
     return root
   }
   // The graph is only meaningful for an unfiltered log.
@@ -1833,7 +1854,7 @@ async function viewHistory() {
   H.commits.forEach((c, i) => {
     // Rows are rebuilt only when what they show changed (lines, labels, selection): switching tabs,
     // refreshing or loading more reuses the rest instead of rebuilding hundreds of SVG rows.
-    const sig = rowSignature(c, rows && rows[i], width, H.open === c.hash, names)
+    const sig = rowSignature(c, rows && rows[i], width, H.open === c.hash, names) + '|' + (H.search || '')
     const cached = rowCache.get(c.hash)
     let row = cached && cached.sig === sig ? cached.el : null
     if (!row) {
@@ -1846,6 +1867,23 @@ async function viewHistory() {
   })
   if (rowCache.size > 4000) rowCache.clear()
   list.append(frag)
+  // a hit only in its files, hash or a branch name: say where, since nothing in the row is marked
+  function matchNote(c) {
+    if (!H.search || !c.match?.length) return null
+    if (hasHit(c.subject, H.search) || hasHit(c.author, H.search)) return null // already marked in the row
+    const why = c.match.includes('body')
+      ? 'in description'
+      : c.match.includes('file')
+        ? `file: ${c.matchFile}`
+        : c.match.includes('ref')
+          ? `${/^tag: |^v?\d/.test(c.matchRef || '') ? 'tag' : 'branch'}: ${c.matchRef}`
+          : c.match.includes('hash')
+            ? 'commit hash'
+            : c.match.includes('author')
+              ? 'author email'
+              : ''
+    return why ? h('span', { class: 'match-note', title: why }, why) : null
+  }
   function buildRow(c, i) {
     const row = h(
         'div',
@@ -1853,16 +1891,16 @@ async function viewHistory() {
         rows ? graphSvg(rows[i], width, c.parents.length > 1, c.refs.some((r) => r === 'HEAD' || r.startsWith('HEAD -> '))) : h('span', { style: { width: '8px' } }),
         IN_TAB
           ? [
-              h('div', { class: 'commit-text' }, h('div', { class: 'commit-subject' }, refPills(c.refs, rows && rows[i] ? rows[i].color : null), h('span', { class: 's', title: c.subject }, c.subject))),
-              h('div', { class: 'col-author ellipsis', title: c.email }, c.author),
+              h('div', { class: 'commit-text' }, h('div', { class: 'commit-subject' }, refPills(c.refs, rows && rows[i] ? rows[i].color : null), h('span', { class: 's', title: c.subject }, marked(c.subject, H.search)), matchNote(c))),
+              h('div', { class: 'col-author ellipsis', title: c.email }, marked(c.author, H.search)),
               h('div', { class: 'col-date', title: fullDate(c.time) }, new Date(c.time * 1000).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })),
-              h('div', { class: 'col-hash mono' }, c.hash.slice(0, 7))
+              h('div', { class: 'col-hash mono' }, H.search && c.hash.toLowerCase().startsWith(H.search.toLowerCase()) ? marked(c.hash.slice(0, Math.max(7, H.search.length)), H.search) : c.hash.slice(0, 7))
             ]
           : h(
               'div',
               { class: 'commit-text' },
-              h('div', { class: 'commit-subject' }, refPills(c.refs, rows && rows[i] ? rows[i].color : null), h('span', { class: 's', title: c.subject }, c.subject)),
-              h('div', { class: 'commit-meta', title: fullDate(c.time) }, `${c.author} · ${ago(c.time)} · `, h('span', { class: 'mono' }, c.hash.slice(0, 7)))
+              h('div', { class: 'commit-subject' }, refPills(c.refs, rows && rows[i] ? rows[i].color : null), h('span', { class: 's', title: c.subject }, marked(c.subject, H.search)), matchNote(c)),
+              h('div', { class: 'commit-meta', title: fullDate(c.time) }, marked(c.author, H.search), ` · ${ago(c.time)} · `, h('span', { class: 'mono' }, c.hash.slice(0, 7)))
             )
       )
     return row

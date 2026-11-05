@@ -367,7 +367,7 @@ async function log(repo, opts = {}) {
   return applyHead(repo, commits)
 }
 
-async function logUncached(repo, { all = false, limit = 200, skip = 0, search = '', mode = 'message', ref, file } = {}) {
+async function logUncached(repo, { all = false, limit = 200, skip = 0, search = '', mode = 'all', ref, file } = {}) {
   const args = [
     'log',
     '--date-order', // newest first across branches: a compact graph, as Git Extensions shows
@@ -376,6 +376,7 @@ async function logUncached(repo, { all = false, limit = 200, skip = 0, search = 
     `--format=%H${SEP}%P${SEP}%an${SEP}%ae${SEP}%at${SEP}%D${SEP}%s${REC}`
   ]
   const q = String(search || '')
+  if (q && (mode === 'all' || !mode)) return searchAll(repo, { all, limit, skip, search: q })
   if (q && mode === 'author') args.push(`--author=${q}`, '-i', '--fixed-strings')
   else if (q && mode === 'content') args.push(`-S${q}`)
   else if (q && mode === 'hash') args.push('--no-walk', req(q, 'hash'))
@@ -409,6 +410,88 @@ async function logUncached(repo, { all = false, limit = 200, skip = 0, search = 
         refs: refs ? refs.split(', ') : [],
         subject
       }
+    })
+}
+
+/**
+ * Search everything at once: message (title and description), author (name or email), changed file
+ * paths, commit hash and branch/tag names. Each kind runs in parallel; the union is listed newest
+ * first. Every commit says what matched (`match`) and, for files and refs, which one (`matchFile`,
+ * `matchRef`), so the panel can show why a row is there. Short searches (under 3 characters) match
+ * whole words only and skip file and branch names, where they would match almost everything.
+ */
+async function searchAll(repo, { all = false, limit = 200, skip = 0, search = '' } = {}) {
+  const q = String(search || '').trim()
+  if (!q) return []
+  const short = q.length < 3
+  const esc = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const re = new RegExp(short ? `(^|[^\\p{L}\\p{N}_])${esc}($|[^\\p{L}\\p{N}_])` : esc, 'iu')
+  const want = Math.min(+limit || 200, 1000) + (+skip || 0)
+  const scope = all ? ['--exclude=refs/stash', '--all'] : []
+  const RS = '\x1e'
+  const US = '\x1f'
+  const scan = (extra, format, tail = []) =>
+    git(repo, ['log', '--date-order', `--max-count=${short ? want * 4 : want}`, `--format=${format}`, ...extra, ...scope, '--', ...tail]).catch(() => '')
+  const glob = q.replace(/[*?[\]\\]/g, '\\$&') // the search text, literal, inside a pathspec pattern
+  const [msgRaw, authRaw, fileRaw, hash, refs] = await Promise.all([
+    scan(['--grep', q, '-i', '--fixed-strings'], `%H${US}%at${US}%s${US}%b${RS}`),
+    scan(['--author', q, '-i', '--fixed-strings'], `%H${US}%at${US}%an${US}%ae${RS}`),
+    short ? '' : scan(['--name-only'], `${RS}%H${US}%at`, [`:(icase)*${glob}*`]),
+    /^[0-9a-f]{4,40}$/i.test(q)
+      ? git(repo, ['rev-parse', '--verify', '-q', `${q}^{commit}`], { okCodes: [0, 1] })
+          .then((h) => (h.trim() ? git(repo, ['log', '-1', `--format=%H${US}%at`, h.trim()]).then((o) => [o.trim().split(US)]) : []))
+          .catch(() => [])
+      : [],
+    git(repo, ['for-each-ref', '--format=%(objectname) %(refname:short)', 'refs/heads', 'refs/remotes', 'refs/tags'])
+      .then((out) => out.split('\n').filter(Boolean).map((l) => l.split(' ')).filter(([, n]) => (short ? n.split(/[/_.-]/).some((p) => p.toLowerCase() === q.toLowerCase()) : n.toLowerCase().includes(q.toLowerCase()))))
+      .catch(() => [])
+  ])
+  const hits = new Map() // hash -> { at, match:Set, file, ref }
+  const add = (h, at, kind, extra = {}) => {
+    if (!/^[0-9a-f]{40}$/.test(h || '')) return
+    const e = hits.get(h) || { at: +at || 0, match: new Set() }
+    e.match.add(kind)
+    if (at) e.at = +at
+    Object.assign(e, Object.fromEntries(Object.entries(extra).filter(([k]) => !e[k])))
+    hits.set(h, e)
+  }
+  for (const rec of msgRaw.split(RS)) {
+    const [h, at, subject = '', body = ''] = rec.replace(/^\n/, '').split(US)
+    if (re.test(subject)) add(h, at, 'message')
+    else if (re.test(body)) add(h, at, 'body')
+  }
+  for (const rec of authRaw.split(RS)) {
+    const [h, at, name = '', mail = ''] = rec.replace(/^\n/, '').split(US)
+    if (re.test(name) || re.test(mail)) add(h, at, 'author')
+  }
+  for (const rec of fileRaw.split(RS)) {
+    const lines = rec.split('\n').filter(Boolean)
+    if (!lines.length) continue
+    const [h, at] = lines[0].split(US)
+    const file = lines.slice(1).find((f) => f.toLowerCase().includes(q.toLowerCase())) || lines[1]
+    add(h, at, 'file', { file })
+  }
+  for (const [h, at] of hash) add(h, at, 'hash')
+  if (refs.length) {
+    const byTip = new Map()
+    for (const [h, n] of refs) if (!byTip.has(h)) byTip.set(h, n)
+    const times = await git(repo, ['log', '--no-walk=unsorted', '--stdin', `--format=%H${US}%at`], { input: [...byTip.keys()].join('\n') + '\n' }).catch(() => '')
+    for (const l of times.split('\n').filter(Boolean)) {
+      const [h, at] = l.split(US)
+      add(h, at, 'ref', { ref: byTip.get(h) })
+    }
+  }
+  const ordered = [...hits.entries()].sort((a, b) => b[1].at - a[1].at).slice(+skip || 0, want)
+  if (!ordered.length) return []
+  const raw = await git(repo, ['log', '--no-walk=unsorted', '--stdin', `--format=%H${SEP}%P${SEP}%an${SEP}%ae${SEP}%at${SEP}%D${SEP}%s${REC}`], { input: ordered.map(([h]) => h).join('\n') + '\n' })
+  return raw
+    .split(REC)
+    .map((r) => r.replace(/^\n/, ''))
+    .filter(Boolean)
+    .map((r) => {
+      const [hash2, parents, author, email, time, refs2, subject] = r.split(SEP)
+      const e = hits.get(hash2) || { match: new Set() }
+      return { hash: hash2, parents: parents ? parents.split(' ') : [], author, email, time: +time, refs: refs2 ? refs2.split(', ') : [], subject, match: [...e.match], matchFile: e.file, matchRef: e.ref }
     })
 }
 

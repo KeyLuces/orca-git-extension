@@ -215,6 +215,39 @@ await step('opens commit details inline and closes them', async () => {
   await until(() => page.$('.commit-inline').then((x) => !x), 'inline details close')
 })
 
+await step('search finds everything as you type (message, file, author, hash) and highlights it', async () => {
+  const typeSearch = async (text) => {
+    const box = await page.$('.history-bar input') // redrawn with each result
+    await box.click()
+    await page.keyboard.down('Control'); await page.keyboard.press('KeyA'); await page.keyboard.up('Control')
+    await page.keyboard.press('Backspace')
+    await page.keyboard.type(text) // no Enter
+  }
+  const rows = () => page.$$eval('.commit-row', (r) => r.map((x) => x.textContent))
+  // message, highlighted
+  await typeSearch('sandbox')
+  await until(() => page.$$eval('.commit-row mark.hit', (m) => m.some((x) => x.textContent.toLowerCase() === 'sandbox')), 'message match highlighted')
+  // a changed file only: the row says where it matched
+  await typeSearch('b.txt')
+  await until(async () => (await rows()).some((t) => t.includes('Add b')) && (await page.$$eval('.commit-row .match-note', (n) => n.some((x) => x.textContent === 'file: b.txt'))), '"Add b" found by its file, and the row says which file')
+  // short searches match whole words only: "b" finds "Add b" but not "sandbox" or "Feature work"
+  await typeSearch('b')
+  await until(async () => { const r = await rows(); return r.some((t) => t.includes('Add b')) && !r.some((t) => /sandbox work|Feature work/i.test(t)) }, 'whole-word match for a 1-letter search')
+  // author
+  await typeSearch('Tester')
+  await until(() => page.$$eval('.commit-row .col-author mark.hit', (m) => m.length > 0), 'author highlighted')
+  // hash prefix
+  const h7 = g('rev-parse', '--short=7', 'HEAD')
+  await typeSearch(h7)
+  await until(() => page.$$eval('.commit-row .col-hash mark.hit', (m) => m.length > 0), 'hash highlighted')
+  if (await page.$('.mode-select')) throw new Error('the search-in dropdown is still there')
+  await shot('02c-search')
+  // Escape clears and brings the graph back
+  await page.focus('.history-bar input')
+  await page.keyboard.press('Escape')
+  await until(async () => (await page.$eval('.history-bar input', (i) => i.value)) === '' && (await rows()).length >= 5, 'cleared')
+})
+
 await step('stages and commits a new file from the Commit tab', async () => {
   write('new.txt', 'hello\n')
   await refresh()
