@@ -1949,6 +1949,7 @@ function commitMenu(anchor, c) {
         { label: 'Hard: discard all changes…', icon: 'alert', danger: true, onClick: () => resetTo(c.hash, 'hard') }
       ]
     },
+    mrItem(local, remote, cur),
     branchItems.length && '-',
     branchItems.length === 1 ? branchItems[0] : branchItems.length && { label: 'Branches and tags here', icon: 'branch', items: branchItems },
     '-',
@@ -3485,6 +3486,14 @@ async function aiCommitModal({ staged, total, onUse, onCommit }) {
 /* =========================================================================
    Merge requests: one button pushes the branch and opens the MR/PR
    ========================================================================= */
+/** Top-level "Merge request" for a commit: current branch → each branch at that commit. */
+function mrItem(local, remote, cur) {
+  if (!cur) return null
+  const targets = [...new Set([...local, ...remote.filter((r) => !r.endsWith('/HEAD')).map((r) => r.replace(/^[^/]+\//, ''))])].filter((b) => b !== cur)
+  if (!targets.length) return null
+  if (targets.length === 1) return { label: `Merge request: ${cur} → ${targets[0]}…`, icon: 'merge', onClick: () => mergeRequestDialog(targets[0]) }
+  return { label: `Merge request from ${cur}`, icon: 'merge', items: targets.map((b) => ({ label: `→ ${b}…`, icon: 'branch', onClick: () => mergeRequestDialog(b) })) }
+}
 async function mergeRequestDialog(target) {
   closeOverlays()
   let info
