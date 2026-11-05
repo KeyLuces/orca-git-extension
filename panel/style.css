@@ -432,3 +432,37 @@ html.light .overlay { background: rgba(20, 24, 32, .25); }
 
 /* off-screen rows are not laid out or painted (the list can hold thousands) */
 .commit-row { content-visibility: auto; contain-intrinsic-size: auto 28px; }
+
+/* in-sync label: "main │ ☁ origin" (local branch and its remote on the same commit) */
+.ref .ref-remote {
+  display: inline-flex; align-items: center; gap: 3px; flex: none; padding: 0 6px 0 5px;
+  border-left: 1px solid color-mix(in srgb, var(--lane) 55%, transparent);
+  color: color-mix(in srgb, var(--fg) 70%, var(--bg)); font-weight: 500;
+}
+.ref .ref-remote svg { width: 11px; height: 11px; color: var(--lane); }
+.ref.synced { max-width: 240px; }
+
+/* merge request dialog */
+.mr-dialog { max-width: 520px; }
+.mr-form { display: flex; flex-direction: column; gap: 12px; }
+.mr-route { display: flex; align-items: center; gap: 8px; color: var(--t3); }
+.mr-route .ref { max-width: 210px; }
+.mr-note { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.mr-status { display: flex; align-items: flex-start; gap: 9px; padding: 10px 12px; border-radius: var(--radius); background: var(--raised); border: 1px solid var(--line); font-size: 12px; color: var(--t1); }
+.mr-status > span:first-child svg { color: var(--add); margin-top: 1px; }
+.mr-status .dim { margin-top: 2px; }
+.mr-steps { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.mr-done { display: flex; align-items: center; gap: 12px; padding: 6px 2px 4px; }
+.mr-done > span:first-child { width: 40px; height: 40px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--add) 18%, transparent); color: var(--add); }
+.mr-done-title { font-size: 14px; font-weight: 650; }
+
+/* the checked-out branch: the only fully solid label, so it is found at a glance */
+.ref.current, .ref.laned.current {
+  background: var(--lane); color: var(--ink); border-color: var(--lane); border-width: 1px; font-weight: 700;
+}
+.ref.current .ref-t { color: var(--ink) !important; }
+.ref.current > span:first-child { background: color-mix(in srgb, var(--lane) 78%, #000); color: var(--ink); --ref-head-ink: var(--lane); }
+.ref.current .ref-remote { color: color-mix(in srgb, var(--ink) 80%, var(--lane)); border-left-color: color-mix(in srgb, var(--ink) 30%, transparent); }
+.ref.current .ref-remote svg { color: var(--ink); }
+html.light .ref.current, html.light .ref.laned.current { --ink: #fff; }
+html.light .ref.current > span:first-child { background: color-mix(in srgb, var(--lane) 80%, #000); }

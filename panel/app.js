@@ -71,6 +71,7 @@ const ICONS = {
   download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/>',
   current: '<circle cx="12" cy="12" r="10" fill="currentColor" stroke="none"/><path d="m8 12.5 2.6 2.6L16.5 9" stroke="var(--ref-head-ink, #14161b)" stroke-width="2.6"/>',
   link: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
+  cloud: '<path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>',
   sparkle: '<path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/><path d="M20 3v4"/><path d="M22 5h-4"/>',
   expand: '<path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/>',
   edit: '<path d="M12 20h9"/><path d="M16.376 3.622a1 1 0 0 1 3.002 3.002L7.368 18.635a2 2 0 0 1-.855.506l-2.872.838a.5.5 0 0 1-.62-.62l.838-2.872a2 2 0 0 1 .506-.854z"/>'
@@ -720,7 +721,8 @@ async function pollStatus(force) {
     const st = await call('status')
     if (repo !== state.repo) return
     if (JSON.stringify(st) !== JSON.stringify(state.status)) {
-      const headMoved = st.oid !== state.status?.oid
+      // HEAD moving, or any branch/tag/remote moving (an agent committing, a fetch), redraws the graph
+      const headMoved = st.oid !== state.status?.oid || st.refsSig !== state.status?.refsSig
       state.status = st
       if (headMoved) {
         state.history.stale = true
@@ -1258,30 +1260,55 @@ function refPills(refs, lane) {
     return el
   }
   const pill = (cls, iconName, text, title) => lanePill(h('span', { class: `ref ${cls}`, title }, icon(iconName, 10), h('span', { class: 'ref-t' }, text)))
+  const isRemote = (r) => r.includes('/') && !r.startsWith('tag: ') && !state.localNames?.has(r)
+  const remoteName = (r) => r.slice(0, r.indexOf('/'))
+  const branchOf = (r) => r.slice(r.indexOf('/') + 1)
 
   // What is checked out at this commit: a branch ("HEAD -> x") or the commit itself (detached "HEAD").
   const headBranch = refs.find((r) => r.startsWith('HEAD -> '))?.slice(8) || null
   const detached = refs.includes('HEAD')
-  const upstream = headBranch ? state.status?.upstream || null : null
   const names = refs.filter((r) => r !== 'HEAD' && !r.startsWith('HEAD -> '))
-  if (headBranch) out.push(pill('head current', 'current', headBranch, `${headBranch} — checked out`))
+  const locals = [headBranch, ...names.filter((r) => !r.startsWith('tag: ') && !isRemote(r) && r !== 'stash' && !r.startsWith('refs/stash'))].filter(Boolean)
+
+  // A local branch and the same branch on a remote, at the same commit, are one label (they are in
+  // sync): "main │ ☁ origin". Out of sync they stay two labels on two commits. Worked out first,
+  // because git may list the remote before the local branch.
+  const syncedOf = new Map()
+  const merged = new Set()
+  for (const l of locals) {
+    const rs = names.filter((r) => isRemote(r) && branchOf(r) === l)
+    if (rs.length) {
+      syncedOf.set(l, rs)
+      rs.forEach((r) => merged.add(r))
+    }
+  }
+  const withRemotes = (el, local) => {
+    const rs = syncedOf.get(local)
+    if (!rs) return el
+    el.classList.add('synced')
+    el.title += `\nIn sync with ${rs.join(', ')}`
+    el.append(h('span', { class: 'ref-remote' }, icon('cloud', 10), h('span', null, rs.map(remoteName).join(', '))))
+    return el
+  }
+
+  if (headBranch) out.push(withRemotes(pill('head current', 'current', headBranch, `${headBranch} (checked out)`), headBranch))
   let marked = false
   for (const r of names) {
+    if (merged.has(r)) continue
     if (r.startsWith('tag: ')) out.push(pill('tag', 'tag', r.slice(5), `Tag ${r.slice(5)}`))
     else if (r.startsWith('refs/stash') || r === 'stash') out.push(pill('', 'stash', 'stash', 'Stash'))
-    else if (r.includes('/') && !state.localNames?.has(r)) {
+    else if (isRemote(r)) {
       if (detached && !marked) {
         // detached on a remote branch: that label is what is checked out
         marked = true
-        out.push(pill('remote head current', 'current', r, `${r} — checked out (detached HEAD)`))
-      } else if (r === upstream) out.push(pill('remote tracking', 'link', r, `${r} — the remote branch ${headBranch} tracks, at the same commit`))
-      else out.push(pill('remote', 'globe', r, `Remote branch ${r}`))
+        out.push(pill('remote head current', 'current', r, `${r} (checked out, detached HEAD)`))
+      } else out.push(pill('remote', 'globe', r, `Remote branch ${r}, not on this computer`))
     } else if (detached && !marked) {
       marked = true
-      out.push(pill('head current', 'current', r, `${r} — checked out (detached HEAD)`))
-    } else out.push(pill('', 'branch', r, `Branch ${r}`))
+      out.push(withRemotes(pill('head current', 'current', r, `${r} (checked out, detached HEAD)`), r))
+    } else out.push(withRemotes(pill('', 'branch', r, `Branch ${r}`), r))
   }
-  if (detached && !marked) out.push(pill('head current', 'current', 'HEAD', 'Detached HEAD — checked out'))
+  if (detached && !marked) out.push(pill('head current', 'current', 'HEAD', 'Detached HEAD (checked out)'))
   return out
 }
 
@@ -1302,24 +1329,32 @@ const rowSignature = (c, row, width, open) =>
 
 /** Reload the first page in the background; redraw only when something changed. */
 let reloadingHistory = false
+let reloadAgain = false
 async function reloadHistoryQuietly() {
   const H = state.history
-  if (reloadingHistory) return
+  // A reload already running may have read the repository before the latest change: run once more after it.
+  if (reloadingHistory) return void (reloadAgain = true)
   reloadingHistory = true
   const repo = state.repo
   try {
-    const commits = await call('log', { all: H.all, limit: 150, skip: 0, search: H.search, mode: H.mode || 'message' })
+    // as many commits as are on screen (at least a page), so a reload never shortens the list
+    const limit = Math.min(1000, Math.max(300, H.commits.length))
+    const commits = await call('log', { all: H.all, limit, skip: 0, search: H.search, mode: H.mode || 'message' })
     if (repo !== state.repo) return
     const sig = (list) => list.map((c) => c.hash + c.refs.join()).join()
-    if (sig(commits) !== sig(H.commits.slice(0, commits.length)) || commits.length !== Math.min(H.commits.length, 150)) {
+    if (sig(commits) !== sig(H.commits.slice(0, commits.length)) || commits.length !== Math.min(H.commits.length, limit)) {
       H.commits = commits
-      H.done = commits.length < 150
+      H.done = commits.length < limit
       if (state.tab === 'history') renderView()
     }
     snap.save()
   } catch {
   } finally {
     reloadingHistory = false
+    if (reloadAgain) {
+      reloadAgain = false
+      reloadHistoryQuietly()
+    }
   }
 }
 
@@ -1648,6 +1683,7 @@ function commitMenu(anchor, c) {
         { label: 'Push', icon: 'push', onClick: () => run('push', b === cur ? {} : { branch: b }, { success: `Pushed ${b}` }) },
         { label: 'Rename…', icon: 'edit', onClick: () => renameBranch(b) },
         { label: 'Show only this branch', icon: 'history', onClick: () => showBranchLog(b) },
+        b !== cur && cur && { label: `Merge request: ${cur} → ${b}…`, icon: 'merge', onClick: () => mergeRequestDialog(b) },
         b !== cur && { label: 'Delete…', icon: 'trash', danger: true, onClick: () => deleteBranch(b) }
       ]
     })),
@@ -2004,7 +2040,7 @@ function trackInfo(b) {
 }
 
 function localBranchRow(b) {
-  const cur = state.status?.branch
+  const b0 = b
   return h(
     'div',
     { class: `item ${b.current ? 'current' : ''}`, title: `${b.name}${b.upstream ? ` → ${b.upstream}` : ''}\n${b.subject}`, onDblclick: () => !b.current && checkout(b.name) },
@@ -2015,8 +2051,14 @@ function localBranchRow(b) {
       'div',
       { class: 'hover-actions', onClick: (e) => e.stopPropagation() },
       !b.current && iconBtn('right', 'Checkout', () => checkout(b.name)),
-      iconBtn('more', 'More', (e) =>
-        menu(e.currentTarget, [
+      iconBtn('more', 'More', (e) => branchMenu(e.currentTarget))
+    )
+  )
+  // Built when it opens: the checked-out branch may have changed since this row was drawn.
+  function branchMenu(anchor) {
+    const cur = state.status?.branch
+    const b = { ...b0, current: b0.name === cur }
+    return menu(anchor, [
           !b.current && { label: 'Checkout', icon: 'right', onClick: () => checkout(b.name) },
           !b.current && cur && { label: `Merge into ${cur}`, icon: 'merge', onClick: () => mergeRef(b.name) },
           !b.current && cur && { label: `Rebase ${cur} onto this`, icon: 'merge', onClick: () => rebaseOnto(b.name) },
@@ -2024,6 +2066,7 @@ function localBranchRow(b) {
           { label: 'New worktree…', icon: 'worktree', onClick: () => addWorktree({ branch: b.name }) },
           { label: 'Show history', icon: 'history', onClick: () => showBranchLog(b.name) },
           !b.current && { label: `Compare with ${cur || 'HEAD'}`, icon: 'compare', onClick: () => compareSheet(cur || 'HEAD', b.name) },
+          !b.current && cur && { label: `Merge request: ${cur} → ${b.name}…`, icon: 'merge', onClick: () => mergeRequestDialog(b.name) },
           '-',
           b.current && { label: 'Push', icon: 'push', onClick: () => run('push', {}, { success: 'Pushed' }) },
           !b.current && { label: 'Push', icon: 'push', onClick: () => run('push', { branch: b.name }, { success: `Pushed ${b.name}` }) },
@@ -2033,15 +2076,13 @@ function localBranchRow(b) {
           !b.current && '-',
           !b.current && { label: 'Delete…', icon: 'trash', danger: true, onClick: () => deleteBranch(b.name) }
         ])
-      )
-    )
-  )
+  }
 }
 function remoteBranchRow(b, local) {
   const short = b.name.replace(/^[^/]+\//, '')
   const remote = b.name.split('/')[0]
   const hasLocal = local.some((l) => l.name === short)
-  const cur = state.status?.branch
+  const curNow = () => state.status?.branch // read when the menu opens, not when the row was drawn
   return h(
     'div',
     { class: 'item', title: `${b.name}\n${b.subject}` },
@@ -2051,8 +2092,9 @@ function remoteBranchRow(b, local) {
     h(
       'div',
       { class: 'hover-actions', onClick: (e) => e.stopPropagation() },
-      iconBtn('more', 'More', (e) =>
-        menu(e.currentTarget, [
+      iconBtn('more', 'More', (e) => {
+        const cur = curNow()
+        return menu(e.currentTarget, [
           // Always go through the remote: when a local branch exists, checkout() asks how to bring it up to date.
           { label: hasLocal ? `Checkout ${b.name}…` : `Checkout as ${short}`, icon: 'right', onClick: () => checkout(b.name, { track: true }) },
           cur && { label: `Merge into ${cur}`, icon: 'merge', onClick: () => mergeRef(b.name) },
@@ -2061,6 +2103,7 @@ function remoteBranchRow(b, local) {
           { label: 'New worktree…', icon: 'worktree', onClick: () => addWorktree({ newBranch: short, base: b.name }) },
           { label: 'Show history', icon: 'history', onClick: () => showBranchLog(b.name) },
           { label: `Compare with ${cur || 'HEAD'}`, icon: 'compare', onClick: () => compareSheet(cur || 'HEAD', b.name) },
+          cur && b.name.replace(/^[^/]+\//, '') !== cur && { label: `Merge request: ${cur} → ${b.name.replace(/^[^/]+\//, '')}…`, icon: 'merge', onClick: () => mergeRequestDialog(b.name) },
           '-',
           {
             label: `Delete from ${remote}…`,
@@ -2071,7 +2114,7 @@ function remoteBranchRow(b, local) {
               run('remoteBranchDelete', { remote, name: short }, { success: `Deleted ${b.name}` })
           }
         ])
-      )
+      })
     )
   )
 }
@@ -3199,6 +3242,134 @@ async function aiCommitModal({ staged, total, onUse, onCommit }) {
   document.body.append(overlay)
   document.addEventListener('keydown', onKey)
   generate() // start right away, like Orca's one-click generate
+}
+
+
+/* =========================================================================
+   Merge requests: one button pushes the branch and opens the MR/PR
+   ========================================================================= */
+async function mergeRequestDialog(target) {
+  closeOverlays()
+  let info
+  setBusy(1)
+  try {
+    info = await request('mr.info', { repo: state.repo, target }, 30000)
+  } catch (e) {
+    return toast(e.message, 'error')
+  } finally {
+    setBusy(-1)
+  }
+  if (info.source === info.target) return toast(`You are on ${info.target}. Check out the branch you want to merge, then try again.`, 'error')
+  const isGh = info.kind === 'github'
+  const noun = isGh ? 'pull request' : 'merge request'
+  const service = isGh ? 'GitHub' : info.host
+  const repo = state.repo
+  const humanize = (b) => b.replace(/^[\w-]+\//, '').replace(/[-_]+/g, ' ').replace(/^./, (c) => c.toUpperCase())
+
+  const title = h('input', { type: 'text', value: info.commits.length === 1 ? info.commits[0] : humanize(info.source) })
+  title.value = info.commits.length === 1 ? info.commits[0] : humanize(info.source)
+  const body = h('textarea', { rows: 5, placeholder: 'What changed and why' })
+  body.value = info.commits.length ? info.commits.map((c) => `- ${c}`).join('\n') : ''
+  const draft = h('input', { type: 'checkbox' })
+  const statusBox = h('div', { class: 'mr-status' })
+  const createBtn = h('button', { type: 'button', class: 'btn primary' })
+  const content = h('div', { class: 'mr-form' })
+
+  const drawStatus = () => {
+    const t = info.tools
+    clear(statusBox)
+    if (t.signedIn) {
+      statusBox.append(icon('check', 13), h('span', null, `Created directly on ${service} with ${t.cli}.`))
+      clear(createBtn).append(icon('merge', 13), `Create ${noun}`)
+      return
+    }
+    const steps = h('div', { class: 'mr-steps' })
+    if (!t.installed && t.canInstall)
+      steps.append(h('button', { type: 'button', class: 'btn sm', onClick: () => setup(isGh ? 'gh-install' : 'glab-install') }, icon('download', 12), `Install ${t.cli}`))
+    if (t.installed) steps.append(h('button', { type: 'button', class: 'btn sm', onClick: () => setup(isGh ? 'gh-login' : 'glab-login') }, icon('user', 12), `Sign in to ${service}`))
+    steps.append(h('button', { type: 'button', class: 'btn sm', title: 'Check again after installing or signing in', onClick: recheck }, icon('refresh', 12), 'Check again'))
+    statusBox.append(
+      icon('open', 13),
+      h(
+        'div',
+        { class: 'grow' },
+        h('div', null, `Opens ${service} with everything filled in; press Create there.`),
+        h('div', { class: 'dim' }, t.installed ? `Sign in once to create it from here in one click.` : `Install ${t.cli} once to create it from here in one click.`),
+        steps
+      )
+    )
+    clear(createBtn).append(icon('open', 13), `Push & open ${service}`)
+  }
+  async function setup(step) {
+    try {
+      const r = await request('mr.setup', { repo, step }, 30000)
+      toast(r.ran ? `Running in a new terminal: ${r.command}\nFollow it there, then press "Check again".` : `Run this in a terminal, then press "Check again":\n${r.command}`, 'ok', 10000)
+    } catch (e) {
+      toast(e.message, 'error')
+    }
+  }
+  async function recheck() {
+    try {
+      info = await request('mr.info', { repo, target }, 30000)
+      drawStatus()
+    } catch (e) {
+      toast(e.message, 'error')
+    }
+  }
+
+  const close = () => {
+    overlay.remove()
+    document.removeEventListener('keydown', onKey)
+  }
+  const onKey = (e) => e.key === 'Escape' && close()
+  const done = (headline, url, note) => {
+    clear(content).append(
+      h('div', { class: 'mr-done' }, icon('check', 22), h('div', null, h('div', { class: 'mr-done-title' }, headline), note && h('div', { class: 'dim' }, note))),
+      h(
+        'div',
+        { class: 'buttons' },
+        h('button', { type: 'button', class: 'btn', onClick: () => copy(url) }, icon('copy', 13), 'Copy link'),
+        h('span', { class: 'grow' }),
+        h('button', { type: 'button', class: 'btn', onClick: close }, 'Close'),
+        h('button', { type: 'button', class: 'btn primary', onClick: () => (window.orca?.shell?.openExternal ? window.orca.shell.openExternal(url) : window.open(url)) }, icon('open', 13), url.includes('/new?') || url.includes('/compare/') ? `Open ${service}` : `Open ${noun}`)
+      )
+    )
+  }
+  createBtn.addEventListener('click', async () => {
+    if (!title.value.trim()) return title.focus()
+    createBtn.disabled = true
+    clear(createBtn).append(h('span', { class: 'spinner' }), info.needsPush ? 'Pushing…' : 'Creating…')
+    try {
+      const r = await request('mr.create', { repo, target: info.target, title: title.value.trim(), body: body.value, draft: draft.checked }, 120000)
+      const pushed = r.pushed ? `${info.source} was pushed to ${info.remote}. ` : ''
+      if (r.created) done(`${noun[0].toUpperCase() + noun.slice(1)} created`, r.url, `${pushed}${info.source} → ${info.target}`)
+      else if (r.exists) done(`A ${noun} for ${info.source} already exists`, r.url, pushed)
+      else done(`Ready to finish on ${service}`, r.webUrl, `${pushed}Press Open, check the details, then press Create there.`)
+      state.history.stale = true
+      refreshAll()
+    } catch (e) {
+      toast(e.message, 'error')
+      createBtn.disabled = false
+      drawStatus()
+    }
+  })
+
+  append(content, [
+    h('div', { class: 'mr-route' }, h('span', { class: 'ref' }, icon('branch', 10), h('span', { class: 'ref-t' }, info.source)), icon('right', 14), h('span', { class: 'ref' }, icon('branch', 10), h('span', { class: 'ref-t' }, info.target))),
+    info.needsPush && h('div', { class: 'dim mr-note' }, icon('push', 12), info.upstream ? `${info.source} has commits that are not on ${info.remote} yet; they are pushed first.` : `${info.source} is not on ${info.remote} yet; it is pushed first.`),
+    h('div', { class: 'field' }, h('label', null, 'Title'), title),
+    h('div', { class: 'field' }, h('label', null, 'Description'), body),
+    h('label', { class: 'check' }, draft, 'Draft'),
+    statusBox,
+    h('div', { class: 'buttons' }, h('button', { type: 'button', class: 'btn', onClick: close }, 'Cancel'), h('span', { class: 'grow' }), createBtn)
+  ])
+  drawStatus()
+  const box = h('div', { class: 'dialog mr-dialog', role: 'dialog' }, h('h3', null, `New ${noun}`), content)
+  const overlay = h('div', { class: 'overlay', onMousedown: (e) => e.target === overlay && close() }, box)
+  document.body.append(overlay)
+  document.addEventListener('keydown', onKey)
+  title.focus()
+  title.select()
 }
 
 /* =========================================================================

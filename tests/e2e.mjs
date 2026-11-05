@@ -343,6 +343,40 @@ await step('tags a commit from its right-click menu', async () => {
   await until(() => g('tag', '--list') .includes('v-e2e'), 'tag exists')
 })
 
+await step('a branch in sync with its remote is one label (main │ origin)', async () => {
+  g('switch', '-q', 'main'); g('reset', '-q', '--hard', 'origin/main')
+  await refresh()
+  await tab('Graph')
+  const text = await until(() => page.evaluate(() => [...document.querySelectorAll('.ref.synced')].map((e) => e.textContent).join('|')), 'synced label')
+  if (!/main\s*origin/.test(text)) throw new Error('synced label reads: ' + text)
+  const separateOriginMain = await page.$$eval('.ref.remote .ref-t', (t) => t.some((x) => x.textContent === 'origin/main'))
+  if (separateOriginMain) throw new Error('origin/main is still a separate label while in sync')
+})
+
+await step('merge request: one button pushes the branch and hands over to GitLab', async () => {
+  g('switch', '-q', '-c', 'mr-branch'); write('mr.txt', 'mr\n'); g('add', '.'); g('commit', '-qm', 'Add MR change')
+  // looks like a GitLab project, while pushes still go to the local test remote
+  g('remote', 'set-url', 'origin', 'https://gitlab.example.test/team/app.git')
+  g('remote', 'set-url', '--push', 'origin', origin.replace(/\\/g, '/'))
+  await refresh()
+  // wait like a person until the switch to mr-branch shows (header and sidebar)
+  await until(() => page.$eval('.branch-chip', (c) => c.textContent.includes('mr-branch')), 'header shows mr-branch')
+  await until(() => page.$$eval('#side .item.current', (r) => r.some((x) => x.textContent.includes('mr-branch'))), 'sidebar shows mr-branch')
+  await clickInRow('#side .item', 'main', 'More')
+  await clickText('.menu button', 'Merge request: mr-branch → main')
+  await until(() => exists('.mr-dialog'), 'MR dialog')
+  const d = await page.$eval('.mr-dialog', (x) => x.textContent)
+  if (!d.includes('mr-branch') || !d.includes('gitlab.example.test')) throw new Error('dialog: ' + d.slice(0, 200))
+  const t = await page.$eval('.mr-dialog input[type=text]', (i) => i.value)
+  if (t !== 'Add MR change') throw new Error('title prefilled as ' + t)
+  await shot('07-mr-dialog')
+  await clickText('.mr-dialog .btn.primary', 'Push & open')
+  await until(() => page.evaluate(() => document.querySelector('.mr-dialog')?.textContent.includes('Ready to finish')), 'finish step', 20000)
+  if (!execFileSync('git', ['ls-remote', origin, 'mr-branch'], { encoding: 'utf8' }).trim()) throw new Error('branch was not pushed')
+  await shot('08-mr-done')
+  await clickText('.mr-dialog .btn', 'Close')
+})
+
 await step('AI commit dialog opens with agent, instructions and message', async () => {
   write('ai.txt', 'export const answer = 42\n')
   await refresh()
