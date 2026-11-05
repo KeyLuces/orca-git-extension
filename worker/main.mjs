@@ -1021,6 +1021,62 @@ async function reviewAct({ provider, host, url, projectId, number, action, body 
   return { ok: true }
 }
 
+/** A pull/merge request's title, description and diff, from its service. */
+async function reviewMaterial({ provider, host, url, projectId, number }) {
+  if (provider === 'github') {
+    if (!/^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+$/.test(String(url))) throw new GitError('not a GitHub pull request link')
+    const [view, diff] = await Promise.all([
+      runProc('gh', ['pr', 'view', url, '--json', 'title,body,baseRefName,headRefName'], { timeout: 60_000 }),
+      runProc('gh', ['pr', 'diff', url], { timeout: 90_000 })
+    ])
+    if (diff.code !== 0) throw new GitError(diff.stderr.trim() || 'gh could not read the diff')
+    const v = jsonOf(view) || {}
+    return { title: v.title || '', body: v.body || '', source: v.headRefName, target: v.baseRefName, diff: diff.stdout }
+  }
+  if (!/^[\w.-]+$/.test(String(host)) || !Number.isInteger(+projectId) || !Number.isInteger(+number)) throw new GitError('bad merge request')
+  const r = await runProc('glab', ['api', '--hostname', host, `projects/${+projectId}/merge_requests/${+number}/changes`], { timeout: 90_000 })
+  const m = jsonOf(r)
+  if (!m) throw new GitError(r.stderr.trim() || 'glab could not read the merge request')
+  const diff = (m.changes || [])
+    .map((c) => `diff --git a/${c.old_path} b/${c.new_path}\n--- a/${c.old_path}\n+++ b/${c.new_path}\n${c.diff}`)
+    .join('\n')
+  return { title: m.title || '', body: m.description || '', source: m.source_branch, target: m.target_branch, diff }
+}
+
+/** Review a pull/merge request with the AI agent: summary, issues with file and line, a verdict. */
+async function aiReview(input, agent) {
+  const a = AI[agent] || AI.claude
+  const mat = await reviewMaterial(input)
+  if (!mat.diff.trim()) throw new GitError('This request has no changes to review')
+  const diff = mat.diff.length > 90_000 ? mat.diff.slice(0, 90_000) + '\n… (diff truncated)' : mat.diff
+  const prompt = [
+    'You are a careful senior engineer reviewing a pull request. Review the diff below.',
+    'Write the review as Markdown with exactly these parts:',
+    '1. A first line "Verdict: APPROVE", "Verdict: REQUEST CHANGES" or "Verdict: COMMENT".',
+    '2. "## Summary": two or three sentences on what the change does and whether it is sound.',
+    '3. "## Issues": real problems only (bugs, security, data loss, broken edge cases), each as',
+    '   "- `path:line` problem, then the suggested fix". Write "None found." when there are none.',
+    '4. "## Suggestions": optional smaller improvements, at most five. Omit the section when there are none.',
+    'Be specific and brief. Do not praise. Do not restate the diff. Output only the review.',
+    String(input.instructions || '').trim() ? `Extra instructions from the reviewer: ${String(input.instructions).trim()}` : '',
+    `\nTitle: ${mat.title}`,
+    mat.source ? `Branches: ${mat.source} -> ${mat.target}` : '',
+    mat.body.trim() ? `\nDescription:\n${mat.body.trim().slice(0, 4000)}` : '',
+    `\nDiff:\n${diff}`
+  ].join('\n')
+  const r = await runProc(a.bin, a.args, { cwd: os.tmpdir(), input: prompt, timeout: 110_000, shell: a.shell })
+  if (r.code !== 0) {
+    const why = r.code === -1 ? `${a.name} CLI (${a.bin}) was not found on PATH` : r.stderr.trim().split('\n').slice(-3).join('\n')
+    throw new GitError(why || `${a.name} failed`)
+  }
+  const text = r.stdout.trim().replace(/^```(?:markdown)?\n?|```$/g, '').trim()
+  const v = text.match(/^\s*\**verdict:?\**\s*(approve|request changes|comment)/im)?.[1]?.toLowerCase()
+  const verdict = v === 'approve' ? 'approve' : v === 'request changes' ? 'changes' : 'comment'
+  // the verdict line is for the person; the posted review starts at the summary
+  const review = text.replace(/^\s*\**verdict:?\**.*\n+/i, '').trim()
+  return { review, verdict, title: mat.title }
+}
+
 // ---------- operations exposed to the panel ----------
 
 const ops = {
@@ -1630,6 +1686,7 @@ Click to open Git Graph`
   })
   orca.panels.handle('mr.setup', async ({ repo, step } = {}) => mrSetup(orca, req(repo, 'repo'), { step }))
   orca.panels.handle('reviews.list', () => reviewsList(orca))
+  orca.panels.handle('ai.review', async (input = {}) => aiReview(input, AI[input.agent] ? input.agent : await agentSetting()))
   orca.panels.handle('reviews.act', (input = {}) => reviewAct(input))
   orca.panels.handle('reviews.setup', async ({ host, step } = {}) => {
     // same terminal setup as the merge request dialog, for a host instead of a repository

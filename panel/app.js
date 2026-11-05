@@ -3489,6 +3489,7 @@ function reviewRow(it) {
       'div',
       { class: 'review-actions' },
       h('button', { class: 'btn sm', title: `Open the ${noun} in the browser`, onClick: open }, icon('open', 12), 'Open'),
+      h('button', { class: 'btn sm', title: 'Review it with AI, then post', onClick: () => aiReviewModal(it) }, icon('sparkle', 12), 'AI review'),
       h('button', { class: 'btn sm', onClick: () => reviewDialog(it) }, icon('edit', 12), 'Review…'),
       h(
         'button',
@@ -3527,6 +3528,112 @@ async function actOnReview(it, action, body, btn) {
     }
     return false
   }
+}
+
+
+/** AI review of a pull/merge request: generate, edit, then post as comment, request changes or approve. */
+async function aiReviewModal(it) {
+  closeOverlays()
+  const noun = it.provider === 'github' ? 'pull request' : 'merge request'
+  const prefs = store.get('aiReviewPrefs', { instructions: '' })
+  let agents = [
+    { id: 'claude', name: 'Claude Code', available: true },
+    { id: 'codex', name: 'Codex', available: true }
+  ]
+  let agent = 'claude'
+  let gen = 0
+  let busy = false
+  let verdict = 'comment'
+
+  const agentSel = h('select', { onChange: () => request('ai.settings', { agent: agentSel.value }).catch(() => {}) })
+  const fillAgents = () => {
+    clear(agentSel)
+    for (const a of agents) agentSel.append(h('option', { value: a.id, selected: a.id === agent, disabled: !a.available }, a.available ? a.name : `${a.name} (not installed)`))
+  }
+  fillAgents()
+  request('ai.settings', {}, 20000)
+    .then((r) => ((agents = r.agents), (agent = r.agent), fillAgents()))
+    .catch(() => {})
+  const instructions = h('textarea', { rows: 2, placeholder: 'Optional, e.g. "Write in Thai", "Focus on security", "We use React Query"' })
+  instructions.value = prefs.instructions || ''
+  const result = h('textarea', { class: 'ai-result', rows: 12, placeholder: 'The review appears here. Edit it before posting.' })
+  const status = h('div', { class: 'ai-status' })
+  const verdictEl = h('span', { class: 'pill' })
+  const genBtn = h('button', { type: 'button', class: 'btn', onClick: () => generate() })
+  const postBtns = {
+    comment: h('button', { type: 'button', class: 'btn', onClick: () => post('comment') }, icon('edit', 13), 'Comment'),
+    changes: h('button', { type: 'button', class: 'btn danger', onClick: () => post('changes') }, icon('x', 13), 'Request changes'),
+    approve: h('button', { type: 'button', class: 'btn', onClick: () => post('approve') }, icon('check', 13), 'Approve')
+  }
+  const sync = (on, text) => {
+    busy = on
+    result.classList.toggle('generating', on)
+    result.readOnly = on
+    append(clear(status), [on ? [h('span', { class: 'spinner' }), text] : text || ''])
+    append(clear(genBtn), [on ? [icon('x', 13), 'Stop'] : [icon('sparkle', 13), result.value.trim() ? 'Regenerate' : 'Generate']])
+    const has = !on && !!result.value.trim()
+    for (const [k, b] of Object.entries(postBtns)) {
+      b.disabled = !has
+      b.classList.toggle('primary', has && k === verdict)
+    }
+    verdictEl.className = `pill verdict-${verdict}`
+    verdictEl.textContent = has ? `AI suggests: ${{ approve: 'Approve', changes: 'Request changes', comment: 'Comment' }[verdict]}` : ''
+  }
+  result.addEventListener('input', () => sync(false, status.textContent))
+
+  async function generate() {
+    if (busy) {
+      gen++
+      return sync(false, 'Stopped.')
+    }
+    const my = ++gen
+    store.set('aiReviewPrefs', { instructions: instructions.value })
+    const name = agents.find((a) => a.id === agentSel.value)?.name || 'AI'
+    sync(true, `${name} is reading the ${noun}…`)
+    const started = Date.now()
+    try {
+      const r = await request('ai.review', { provider: it.provider, host: it.host, url: it.url, projectId: it.projectId, number: it.number, agent: agentSel.value, instructions: instructions.value }, 118000)
+      if (my !== gen) return
+      result.value = r.review
+      verdict = r.verdict
+      sync(false, `Reviewed by ${name} in ${((Date.now() - started) / 1000).toFixed(1)}s. Check it before posting: it is posted under your name.`)
+    } catch (e) {
+      if (my !== gen) return
+      sync(false, '')
+      clear(status).append(h('span', { class: 'ai-error' }, icon('alert', 12), e.message))
+    }
+  }
+  async function post(action) {
+    const text = result.value.trim()
+    if (!text) return
+    const label = { approve: 'Approve', changes: 'Request changes', comment: 'Comment' }[action]
+    if (!(await confirmBox(`${label} with this review?`, `${it.repo} ${it.provider === 'github' ? '#' : '!'}${it.number}\nThe review is posted on ${it.host} under your name.`, label, action === 'changes'))) return
+    const b = postBtns[action]
+    b.disabled = true
+    if (await actOnReview(it, action, text)) close()
+    else b.disabled = false
+  }
+  const close = () => {
+    gen++
+    overlay.remove()
+    document.removeEventListener('keydown', onKey)
+  }
+  const onKey = (e) => e.key === 'Escape' && !document.querySelectorAll('.overlay')[1] && close()
+
+  const box = h(
+    'div',
+    { class: 'dialog ai-dialog ai-review-dialog', role: 'dialog' },
+    h('div', { class: 'ai-title' }, h('span', { class: 'ai-badge' }, icon('sparkle', 14)), h('div', null, h('h3', null, 'AI review'), h('p', null, `${it.repo} ${it.provider === 'github' ? '#' : '!'}${it.number} · ${it.title}`))),
+    h('div', { class: 'ai-row' }, h('div', { class: 'field grow' }, h('label', null, 'Agent'), agentSel)),
+    h('div', { class: 'field' }, h('label', null, 'Instructions'), instructions),
+    h('div', { class: 'field' }, h('label', { class: 'row' }, 'Review', h('span', { class: 'grow' }), verdictEl), result),
+    status,
+    h('div', { class: 'buttons' }, h('button', { type: 'button', class: 'btn', onClick: close }, 'Cancel'), h('span', { class: 'grow' }), genBtn, postBtns.comment, postBtns.changes, postBtns.approve)
+  )
+  const overlay = h('div', { class: 'overlay', onMousedown: (e) => e.target === overlay && !busy && close() }, box)
+  document.body.append(overlay)
+  document.addEventListener('keydown', onKey)
+  generate()
 }
 
 async function reviewDialog(it) {

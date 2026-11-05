@@ -478,3 +478,11 @@ html.light .ref.current > span:first-child { background: color-mix(in srgb, var(
 .pill.role-review { background: color-mix(in srgb, var(--mod) 18%, transparent); color: var(--mod); }
 .pill.role-assigned { background: color-mix(in srgb, var(--ren) 18%, transparent); color: var(--ren); }
 .setup-card { border-style: dashed; }
+
+/* AI review dialog */
+.ai-review-dialog { max-width: 680px; }
+.ai-review-dialog .ai-result { min-height: 260px; }
+.pill.verdict-approve { background: color-mix(in srgb, var(--add) 18%, transparent); color: var(--add); }
+.pill.verdict-changes { background: color-mix(in srgb, var(--del) 18%, transparent); color: var(--del); }
+.pill.verdict-comment { background: color-mix(in srgb, var(--ren) 18%, transparent); color: var(--ren); }
+.pill:empty { display: none; }
