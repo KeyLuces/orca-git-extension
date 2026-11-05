@@ -364,7 +364,7 @@ await step('merge request: one button pushes the branch and hands over to GitLab
   await until(() => page.$eval('.branch-chip', (c) => c.textContent.includes('mr-branch')), 'header shows mr-branch')
   await until(() => page.$$eval('#side .item.current', (r) => r.some((x) => x.textContent.includes('mr-branch'))), 'sidebar shows mr-branch')
   await clickInRow('#side .item', 'main', 'More')
-  await clickText('.menu button', 'Merge request: mr-branch → main')
+  await clickText('.menu button', 'Merge request → main')
   await until(() => exists('.mr-dialog'), 'MR dialog')
   const d = await page.$eval('.mr-dialog', (x) => x.textContent)
   if (!d.includes('mr-branch') || !d.includes('gitlab.example.test')) throw new Error('dialog: ' + d.slice(0, 200))

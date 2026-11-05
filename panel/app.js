@@ -282,7 +282,7 @@ function menu(anchor, items, parent = null) {
           }
         },
         it.icon ? icon(it.icon) : h('span', { style: { width: '14px' } }),
-        h('span', { class: 'grow ellipsis' }, it.label),
+        h('span', { class: 'grow ellipsis', title: it.label }, it.label),
         it.hint && h('span', { class: 'dim', style: { fontSize: '11px' } }, it.hint),
         it.items && h('span', { class: 'dim sub-arrow', 'aria-hidden': 'true' }, '›')
       )
@@ -1906,7 +1906,7 @@ function commitMenu(anchor, c) {
         { label: 'Push', icon: 'push', onClick: () => run('push', b === cur ? {} : { branch: b }, { success: `Pushed ${b}` }) },
         { label: 'Rename…', icon: 'edit', onClick: () => renameBranch(b) },
         { label: 'Show only this branch', icon: 'history', onClick: () => showBranchLog(b) },
-        b !== cur && cur && { label: `Merge request: ${cur} → ${b}…`, icon: 'merge', onClick: () => mergeRequestDialog(b) },
+        b !== cur && cur && { label: `Merge request → ${b}…`, icon: 'merge', onClick: () => mergeRequestDialog(b) },
         b !== cur && { label: 'Delete…', icon: 'trash', danger: true, onClick: () => deleteBranch(b) }
       ]
     })),
@@ -1926,7 +1926,7 @@ function commitMenu(anchor, c) {
       icon: 'right',
       items: [
         ...local.filter((b) => b !== cur).map((b) => ({ label: `Branch ${b}`, icon: 'branch', onClick: () => checkout(b) })),
-        ...remote.map((b) => ({ label: state.localNames?.has(b.replace(/^[^/]+\//, '')) ? `Remote ${b}…` : `Remote ${b} (new local branch)`, icon: 'globe', onClick: () => checkout(b, { track: true }) })),
+        ...remote.map((b) => ({ label: state.localNames?.has(b.replace(/^[^/]+\//, '')) ? `Remote ${b}…` : `Remote ${b}`, icon: 'globe', onClick: () => checkout(b, { track: true }) })),
         { label: 'This commit (detached HEAD)', icon: 'commit', onClick: () => checkoutCommit(c.hash) }
       ]
     },
@@ -1935,6 +1935,7 @@ function commitMenu(anchor, c) {
     { label: 'New worktree here…', icon: 'worktree', onClick: () => addWorktree({ base: c.hash }) },
     '-',
     !isHead && { label: `Merge into ${cur}…`, icon: 'merge', onClick: () => mergeRef(local[0] || c.hash) },
+    mrItem(local, remote, cur),
     !isHead && { label: `Rebase ${cur} onto this…`, icon: 'merge', onClick: () => rebaseOnto(local[0] || c.hash) },
     !isHead && { label: 'Cherry-pick', icon: 'commit', onClick: () => run('cherryPick', { hash: c.hash, mainline: isMerge }, { success: 'Cherry-picked' }) },
     { label: 'Revert…', icon: 'undo', onClick: async () => (await confirmBox(`Revert ${short}?`, 'A new commit that undoes it will be created.', 'Revert')) && run('revert', { hash: c.hash, mainline: isMerge }, { success: 'Reverted' }) },
@@ -1949,7 +1950,6 @@ function commitMenu(anchor, c) {
         { label: 'Hard: discard all changes…', icon: 'alert', danger: true, onClick: () => resetTo(c.hash, 'hard') }
       ]
     },
-    mrItem(local, remote, cur),
     branchItems.length && '-',
     branchItems.length === 1 ? branchItems[0] : branchItems.length && { label: 'Branches and tags here', icon: 'branch', items: branchItems },
     '-',
@@ -2285,12 +2285,12 @@ function localBranchRow(b) {
     return menu(anchor, [
           !b.current && { label: 'Checkout', icon: 'right', onClick: () => checkout(b.name) },
           !b.current && cur && { label: `Merge into ${cur}`, icon: 'merge', onClick: () => mergeRef(b.name) },
+          !b.current && cur && { label: `Merge request → ${b.name}…`, icon: 'merge', onClick: () => mergeRequestDialog(b.name) },
           !b.current && cur && { label: `Rebase ${cur} onto this`, icon: 'merge', onClick: () => rebaseOnto(b.name) },
           { label: 'New branch from here…', icon: 'plus', onClick: () => newBranch(b.name) },
           { label: 'New worktree…', icon: 'worktree', onClick: () => addWorktree({ branch: b.name }) },
           { label: 'Show history', icon: 'history', onClick: () => showBranchLog(b.name) },
           !b.current && { label: `Compare with ${cur || 'HEAD'}`, icon: 'compare', onClick: () => compareSheet(cur || 'HEAD', b.name) },
-          !b.current && cur && { label: `Merge request: ${cur} → ${b.name}…`, icon: 'merge', onClick: () => mergeRequestDialog(b.name) },
           '-',
           b.current && { label: 'Push', icon: 'push', onClick: () => run('push', {}, { success: 'Pushed' }) },
           !b.current && { label: 'Push', icon: 'push', onClick: () => run('push', { branch: b.name }, { success: `Pushed ${b.name}` }) },
@@ -2322,12 +2322,12 @@ function remoteBranchRow(b, local) {
           // Always go through the remote: when a local branch exists, checkout() asks how to bring it up to date.
           { label: hasLocal ? `Checkout ${b.name}…` : `Checkout as ${short}`, icon: 'right', onClick: () => checkout(b.name, { track: true }) },
           cur && { label: `Merge into ${cur}`, icon: 'merge', onClick: () => mergeRef(b.name) },
+          cur && b.name.replace(/^[^/]+\//, '') !== cur && { label: `Merge request → ${b.name.replace(/^[^/]+\//, '')}…`, icon: 'merge', onClick: () => mergeRequestDialog(b.name) },
           cur && { label: `Rebase ${cur} onto this`, icon: 'merge', onClick: () => rebaseOnto(b.name) },
           { label: 'New branch from here…', icon: 'plus', onClick: () => newBranch(b.name) },
           { label: 'New worktree…', icon: 'worktree', onClick: () => addWorktree({ newBranch: short, base: b.name }) },
           { label: 'Show history', icon: 'history', onClick: () => showBranchLog(b.name) },
           { label: `Compare with ${cur || 'HEAD'}`, icon: 'compare', onClick: () => compareSheet(cur || 'HEAD', b.name) },
-          cur && b.name.replace(/^[^/]+\//, '') !== cur && { label: `Merge request: ${cur} → ${b.name.replace(/^[^/]+\//, '')}…`, icon: 'merge', onClick: () => mergeRequestDialog(b.name) },
           '-',
           {
             label: `Delete from ${remote}…`,
@@ -3491,8 +3491,8 @@ function mrItem(local, remote, cur) {
   if (!cur) return null
   const targets = [...new Set([...local, ...remote.filter((r) => !r.endsWith('/HEAD')).map((r) => r.replace(/^[^/]+\//, ''))])].filter((b) => b !== cur)
   if (!targets.length) return null
-  if (targets.length === 1) return { label: `Merge request: ${cur} → ${targets[0]}…`, icon: 'merge', onClick: () => mergeRequestDialog(targets[0]) }
-  return { label: `Merge request from ${cur}`, icon: 'merge', items: targets.map((b) => ({ label: `→ ${b}…`, icon: 'branch', onClick: () => mergeRequestDialog(b) })) }
+  if (targets.length === 1) return { label: `Merge request → ${targets[0]}…`, icon: 'merge', onClick: () => mergeRequestDialog(targets[0]) }
+  return { label: 'Merge request', icon: 'merge', items: targets.map((b) => ({ label: `→ ${b}…`, icon: 'branch', onClick: () => mergeRequestDialog(b) })) }
 }
 async function mergeRequestDialog(target) {
   closeOverlays()
@@ -3513,10 +3513,11 @@ async function mergeRequestDialog(target) {
   const humanize = (b) => b.replace(/^[\w-]+\//, '').replace(/[-_]+/g, ' ').replace(/^./, (c) => c.toUpperCase())
 
   const title = h('input', { type: 'text' })
-  title.value = info.commits.length === 1 ? info.commits[0] : humanize(info.source)
-  const body = h('textarea', { rows: 5, placeholder: 'What changed and why' })
-  body.value = info.commits.map((c) => `- ${c}`).join('\n')
+  title.value = info.defaults?.title ?? (info.commits.length === 1 ? info.commits[0] : humanize(info.source))
+  const body = h('textarea', { rows: 8, placeholder: 'What changed and why' })
+  body.value = info.defaults?.body ?? info.commits.map((c) => `- ${c}`).join('\n')
   const draft = h('input', { type: 'checkbox' })
+  draft.checked = !!info.defaults?.draft
   const note = h('div', { class: 'mr-status' })
   const linkBtn = h('button', { type: 'button', class: 'btn' })
   const createBtn = h('button', { type: 'button', class: 'btn primary' })

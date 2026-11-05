@@ -770,6 +770,39 @@ function parseRemote(url) {
 
 const toolOk = (bin, args) => runProc(bin, args, { timeout: 15_000 }).then((r) => r.code === 0, () => false)
 
+/**
+ * Title and description filled in the way GitLab does: one commit gives its subject and body;
+ * several give the branch name made readable, with the commits listed. Draft for draft/ or wip/
+ * branches, "Closes #12" for a branch named after an issue, and the repo's default merge
+ * request / pull request template added when it has one.
+ */
+async function mrDefaults(repo, branch, commits, kind) {
+  const draft = /^(draft|wip)[/_-]/i.test(branch)
+  const issue = branch.replace(/^[^/]+\//, '').match(/^(\d+)[-_]/)?.[1]
+  const readable = branch.replace(/^(draft|wip)[/_-]/i, '').replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim().replace(/^./, (c) => c.toUpperCase())
+  const title = commits.length === 1 ? commits[0].subject : readable
+  const parts = []
+  if (commits.length === 1) commits[0].body && parts.push(commits[0].body)
+  else if (commits.length) parts.push(commits.map((c) => `- ${c.subject}`).join('\n'))
+  if (issue) parts.push(`Closes #${issue}`)
+  const top = (await git(repo, ['rev-parse', '--show-toplevel']).catch(() => '')).trim()
+  const candidates =
+    kind === 'github'
+      ? ['.github/pull_request_template.md', '.github/PULL_REQUEST_TEMPLATE.md', 'pull_request_template.md', 'docs/pull_request_template.md']
+      : ['.gitlab/merge_request_templates/Default.md', '.gitlab/merge_request_templates/default.md']
+  for (const c of candidates) {
+    const f = path.join(top, c)
+    if (top && existsSync(f)) {
+      const t = readFileSync(f, 'utf8').trim()
+      if (t) {
+        parts.push(t)
+        break
+      }
+    }
+  }
+  return { title, body: parts.join('\n\n'), draft }
+}
+
 async function mrInfo(repo, target) {
   const { oid, branch } = await headInfo(repo)
   if (!branch) throw new GitError('Check out the branch you want to merge first (HEAD is detached)')
@@ -783,9 +816,16 @@ async function mrInfo(repo, target) {
   const targetRef = (await git(repo, ['rev-parse', '--verify', '-q', `refs/remotes/${remote}/${targetName}`], { okCodes: [0, 1] })).trim()
     ? `${remote}/${targetName}`
     : targetName
-  const commits = (await git(repo, ['log', '--format=%s', '-50', `${targetRef}..HEAD`], { okCodes: [0, 128] }).catch(() => ''))
-    .split('\n')
+  const full = (await git(repo, ['log', '--format=%s%x1f%b%x1e', '-50', `${targetRef}..HEAD`], { okCodes: [0, 128] }).catch(() => ''))
+    .split('\x1e')
+    .map((r) => r.trim())
     .filter(Boolean)
+    .map((r) => {
+      const [subject, body = ''] = r.split('\x1f')
+      return { subject: subject.trim(), body: body.trim() }
+    })
+  const commits = full.map((c) => c.subject)
+  const defaults = await mrDefaults(repo, branch, full, where.kind)
   const ahead = upstream ? +(await git(repo, ['rev-list', '--count', `${upstream}..HEAD`]).catch(() => '0')).trim() : null
   const tools = {}
   if (where.kind === 'github') {
@@ -798,7 +838,7 @@ async function mrInfo(repo, target) {
     tools.signedIn = tools.installed && (await toolOk('glab', ['auth', 'status', '--hostname', where.host]))
   }
   tools.canInstall = process.platform === 'win32' && (await toolOk('winget', ['--version']))
-  return { source: branch, oid, target: targetName, remote, upstream: upstream || null, needsPush: !upstream || ahead > 0, ...where, commits, tools }
+  return { source: branch, oid, target: targetName, remote, upstream: upstream || null, needsPush: !upstream || ahead > 0, ...where, commits, defaults, tools }
 }
 
 /** The service's own "new merge request" page, prefilled: works with nothing installed. */

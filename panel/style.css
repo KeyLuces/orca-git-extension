@@ -234,7 +234,7 @@ nav.tabs::-webkit-scrollbar { display: none; }
 .banner .row { flex-wrap: wrap; }
 
 /* ---------- history ---------- */
-.history-bar { display: flex; align-items: center; gap: 8px; max-width: 760px; padding: 0 16px 10px; }
+.history-bar { display: flex; align-items: center; gap: 8px; padding: 0 16px 10px; }
 .history-bar input { min-height: 28px; }
 .mode-select { width: auto !important; flex: none; min-height: 28px !important; font-size: 12px; }
 .commit-row { display: flex; align-items: stretch; gap: 12px; height: 28px; padding: 0 16px 0 4px; cursor: pointer; transition: background-color .08s; }
@@ -343,11 +343,11 @@ html.light .ref.current { background: color-mix(in srgb, var(--lane) 16%, #fff);
 .bl .c { padding-right: 12px; }
 
 /* ---------- cards (worktrees), forms (settings) ---------- */
-.card { display: flex; flex-direction: column; gap: 8px; max-width: 760px; max-height: 400px; margin: 8px 16px; padding: 12px 14px; border-radius: var(--radius); border: 1px solid var(--line); background: var(--card); transition: opacity .18s var(--ease), transform .18s var(--ease), max-height .2s var(--ease), margin .2s var(--ease), padding .2s var(--ease), border-color .12s; }
+.card { display: flex; flex-direction: column; gap: 8px; max-height: 400px; margin: 8px 16px; padding: 12px 14px; border-radius: var(--radius); border: 1px solid var(--line); background: var(--card); transition: opacity .18s var(--ease), transform .18s var(--ease), max-height .2s var(--ease), margin .2s var(--ease), padding .2s var(--ease), border-color .12s; }
 .card:hover { border-color: var(--line-hi); }
 .card.leaving { opacity: 0; transform: scale(.98); max-height: 0; margin-block: 0; padding-block: 0; overflow: hidden; pointer-events: none; }
 .wt-path { font: 10.5px var(--mono); color: var(--t3); word-break: break-all; }
-.form { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px 18px; max-width: 980px; padding: 6px 16px 14px; }
+.form { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px 18px; padding: 6px 16px 14px; }
 .form > .cfg-group, .form > .row, .form > .actions-wrap { grid-column: 1 / -1; }
 .field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .field label { font-size: 11.5px; font-weight: 550; color: var(--t2); }
@@ -355,13 +355,13 @@ html.light .ref.current { background: color-mix(in srgb, var(--lane) 16%, #fff);
 .field .hint { font-size: 11px; color: var(--t3); }
 .cfg-group { margin-top: 8px; padding-top: 12px; border-top: 1px solid var(--line); font-size: 10.5px; font-weight: 650; letter-spacing: .05em; text-transform: uppercase; color: var(--t3); }
 .form > .cfg-group:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
-.cfg-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; max-width: 980px; padding: 6px 16px; }
+.cfg-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 6px 16px; }
 .cfg-row:hover { background: var(--hover); }
 .cfg-key { font: 11px var(--mono); color: var(--t3); }
 .cfg-val { font: 11.5px var(--mono); color: var(--t1); word-break: break-all; }
 
 /* ---------- menus ---------- */
-.menu { position: fixed; z-index: 50; min-width: 200px; max-width: calc(100vw - 16px); padding: 5px; border-radius: var(--radius); background: var(--card); border: 1px solid var(--line-hi); box-shadow: var(--shadow); animation: pop .12s var(--ease); }
+.menu { position: fixed; z-index: 50; min-width: 200px; max-width: min(460px, calc(100vw - 16px)); padding: 5px; border-radius: var(--radius); background: var(--card); border: 1px solid var(--line-hi); box-shadow: var(--shadow); animation: pop .12s var(--ease); }
 @keyframes pop { from { opacity: 0; transform: translateY(-3px) scale(.99); } }
 .menu button { display: flex; align-items: center; gap: 9px; width: 100%; padding: 6px 9px; border: 0; border-radius: var(--r-xs); background: none; color: var(--t1); cursor: pointer; text-align: left; white-space: nowrap; font-size: 12.5px; }
 .menu button svg { color: var(--t2); }
