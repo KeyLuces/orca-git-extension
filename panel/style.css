@@ -819,3 +819,12 @@ span.ci { cursor: default; height: 17px; padding: 0 7px; font-size: 10.5px; }
 .pill.idp-use { display: inline-flex; gap: 3px; align-items: center; background: color-mix(in srgb, var(--add) 18%, transparent); color: var(--add); }
 .idp-empty { padding: 4px 16px 12px; font-size: 12px; }
 @media (max-width: 620px) { .idp { flex-wrap: wrap; } .idp-actions { width: 100%; justify-content: flex-start; } }
+/* MR people: both columns line up (labels same height, boxes same height) */
+.mr-people { align-items: start; }
+.mr-people .field > label { min-height: 18px; display: flex; align-items: center; }
+.mr-people .pp-box { min-height: 36px; }
+.mr-people .pp-chip { height: 24px; }
+.mr-route .icon-btn:disabled { opacity: .35; cursor: not-allowed; }
+.mr-people .field > label { height: 20px; min-height: 0; line-height: 20px; }
+.mr-people .link-btn { line-height: 20px; }
+.pp-me.hidden { display: inline !important; visibility: hidden; }

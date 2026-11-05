@@ -3860,7 +3860,7 @@ function mrItem(local, remote, cur) {
  * Pick people (assignees, reviewers): chips plus a search box with a list of the project's members.
  * `value()` gives [{ id, username }].
  */
-function peoplePicker(placeholder, { me } = {}) {
+function peoplePicker(placeholder, { me, meLabel = 'Assign to me' } = {}) {
   let people = []
   let chosen = []
   let open = false
@@ -3868,7 +3868,7 @@ function peoplePicker(placeholder, { me } = {}) {
   const chips = h('div', { class: 'pp-chips' })
   const input = h('input', { type: 'text', class: 'pp-input', placeholder, autocomplete: 'off', spellcheck: 'false' })
   const list = h('div', { class: 'pp-list hidden', role: 'listbox' })
-  const meBtn = h('button', { type: 'button', class: 'link-btn pp-me hidden', onClick: () => me && add(me) }, 'Assign to me')
+  const meBtn = h('button', { type: 'button', class: 'link-btn pp-me hidden', onClick: () => me && add(me) }, meLabel)
   const el = h('div', { class: 'pp' }, h('div', { class: 'pp-box', onMousedown: (e) => e.target !== input && (e.preventDefault(), input.focus()) }, chips, input), list)
   const matches = () => {
     const q = input.value.trim().toLowerCase()
@@ -3970,7 +3970,7 @@ async function mergeRequestDialog(target, source, swapped) {
   const peopleKey = `mrPeople:${info.host}/${info.path || ''}`
   const remembered = store.get(peopleKey, null)
   const assignees = peoplePicker('Search…')
-  const reviewers = peoplePicker('Search…')
+  const reviewers = peoplePicker('Search…', { meLabel: 'Add me' })
   if (remembered?.reviewers) reviewers.set(remembered.reviewers)
   const removeSource = h('input', { type: 'checkbox' })
   removeSource.checked = true // GitLab's default for a new merge request
@@ -4122,7 +4122,7 @@ async function mergeRequestDialog(target, source, swapped) {
   const form = h(
     'div',
     { class: 'mr-form' },
-    h('div', { class: 'mr-route' }, h('span', { class: 'ref' }, icon('branch', 10), h('span', { class: 'ref-t' }, info.source)), icon('right', 14), h('span', { class: 'ref' }, icon('branch', 10), h('span', { class: 'ref-t' }, info.target)), h('button', { type: 'button', class: 'icon-btn', title: `Swap: ${info.target} → ${info.source}`, onClick: () => (close(), mergeRequestDialog(info.source, info.target, true)) }, '⇄')),
+    h('div', { class: 'mr-route' }, h('span', { class: 'ref' }, icon('branch', 10), h('span', { class: 'ref-t' }, info.source)), icon('right', 14), h('span', { class: 'ref' }, icon('branch', 10), h('span', { class: 'ref-t' }, info.target)), h('button', { type: 'button', class: 'icon-btn', disabled: !(info.reverse > 0), title: info.reverse > 0 ? `Swap: ${info.target} → ${info.source} (${info.reverse} commit${info.reverse > 1 ? 's' : ''})` : `Can't swap: ${info.target} has nothing that ${info.source} lacks`, onClick: () => info.reverse > 0 && (close(), mergeRequestDialog(info.source, info.target, true)) }, '⇄')),
     info.needsPush && h('div', { class: 'dim mr-note' }, icon('push', 12), `${info.source} ${info.upstream ? 'has commits not on' : 'is not on'} ${info.remote} yet; it is pushed first.`),
     h(
       'div',

@@ -544,6 +544,10 @@ await step('merge request: from main onto a feature branch flips to feature → 
   if (route !== 'mr-gh → main') throw new Error('route ' + route)
   const t = await page.$eval('.mr-dialog input[type=text]', (i) => i.value)
   if (!t) throw new Error('title is empty after the flip')
+  // main has nothing mr-gh lacks: swapping back is offered as disabled, and the dialog stays
+  if (!(await page.$eval('.mr-route .icon-btn', (b) => b.disabled))) throw new Error('swap should be disabled with nothing to merge the other way')
+  await page.$eval('.mr-route .icon-btn', (b) => b.click())
+  if (!(await exists('.mr-dialog'))) throw new Error('dialog closed after pressing a disabled swap')
   await page.keyboard.press('Escape')
 })
 
