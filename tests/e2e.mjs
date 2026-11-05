@@ -20,6 +20,7 @@ const GLOBAL_CFG = path.join(root, 'global.gitconfig')
 writeFileSync(GLOBAL_CFG, '[user]\n\tname = Global Tester\n\temail = global@e2e.test\n')
 process.env.GIT_CONFIG_GLOBAL = GLOBAL_CFG
 process.env.GIT_CONFIG_NOSYSTEM = '1'
+process.env.GITX_NO_BROWSER = '1' // the merge request step must not open a real browser
 const origin = path.join(root, 'origin.git')
 const repo = path.join(root, 'app')
 const g = (...a) => execFileSync('git', a, { cwd: repo, encoding: 'utf8', env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } }).trim()
@@ -371,10 +372,11 @@ await step('merge request: one button pushes the branch and hands over to GitLab
   if (t !== 'Add MR change') throw new Error('title prefilled as ' + t)
   await shot('07-mr-dialog')
   await clickText('.mr-dialog .btn.primary', 'Push & open')
-  await until(() => page.evaluate(() => document.querySelector('.mr-dialog')?.textContent.includes('Ready to finish')), 'finish step', 20000)
+  await until(() => page.evaluate(() => document.querySelector('.mr-dialog')?.textContent.includes('Ready on')), 'finish step', 20000)
   if (!execFileSync('git', ['ls-remote', origin, 'mr-branch'], { encoding: 'utf8' }).trim()) throw new Error('branch was not pushed')
   await shot('08-mr-done')
-  await clickText('.mr-dialog .btn', 'Close')
+  await page.keyboard.press('Escape')
+  await until(() => page.$('.mr-dialog').then((x) => !x), 'MR dialog closes')
 })
 
 await step('AI commit dialog opens with agent, instructions and message', async () => {

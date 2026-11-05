@@ -768,8 +768,6 @@ function parseRemote(url) {
   return { host, path: m[2], kind, web: `https://${host}/${m[2]}` }
 }
 
-const toolOk = (bin, args) => runProc(bin, args, { timeout: 15_000 }).then((r) => r.code === 0, () => false)
-
 async function mrInfo(repo, target) {
   const { oid, branch } = await headInfo(repo)
   if (!branch) throw new GitError('Check out the branch you want to merge first (HEAD is detached)')
@@ -787,25 +785,15 @@ async function mrInfo(repo, target) {
     .split('\n')
     .filter(Boolean)
   const ahead = upstream ? +(await git(repo, ['rev-list', '--count', `${upstream}..HEAD`]).catch(() => '0')).trim() : null
-  const tools = {}
-  if (where.kind === 'github') {
-    tools.cli = 'gh'
-    tools.installed = await toolOk('gh', ['--version'])
-    tools.signedIn = tools.installed && (await toolOk('gh', ['auth', 'status', '--hostname', where.host]))
-  } else {
-    tools.cli = 'glab'
-    tools.installed = await toolOk('glab', ['--version'])
-    tools.signedIn = tools.installed && (await toolOk('glab', ['auth', 'status', '--hostname', where.host]))
-  }
-  tools.canInstall = process.platform === 'win32' && (await toolOk('winget', ['--version']))
-  return { source: branch, oid, target: targetName, remote, upstream: upstream || null, needsPush: !upstream || ahead > 0, ...where, commits, tools }
+  return { source: branch, oid, target: targetName, remote, upstream: upstream || null, needsPush: !upstream || ahead > 0, ...where, commits }
 }
 
 /** The service's own "new merge request" page, prefilled: works with nothing installed. */
 function mrWebUrl(info, { title, body }) {
+  const seg = (b) => encodeURIComponent(b).replace(/%2F/g, '/') // branch names keep their slashes in a path
   const q = (o) => Object.entries(o).filter(([, v]) => v).map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&')
   if (info.kind === 'github')
-    return `${info.web}/compare/${encodeURIComponent(info.target)}...${encodeURIComponent(info.source)}?${q({ expand: '1', title, body })}`
+    return `${info.web}/compare/${seg(info.target)}...${seg(info.source)}?${q({ expand: '1', title, body })}`
   return `${info.web}/-/merge_requests/new?${q({
     'merge_request[source_branch]': info.source,
     'merge_request[target_branch]': info.target,
@@ -814,44 +802,26 @@ function mrWebUrl(info, { title, body }) {
   })}`
 }
 
-async function mrCreate(repo, { target, title, body, draft, web }) {
-  const info = await mrInfo(repo, req(target, 'target branch'))
-  if (info.source === info.target) throw new GitError('Pick a different branch to merge into')
-  if (!String(title || '').trim()) throw new GitError('A title is required')
-  // 1. the branch has to be on the server first
-  if (info.needsPush) await git(repo, ['push', '-u', info.remote, info.source], net)
-  // 2. one click: the CLI creates it; otherwise the prefilled page in the browser finishes it
-  if (!web && info.tools.signedIn) {
-    const r =
-      info.kind === 'github'
-        ? await runProc('gh', ['pr', 'create', '--base', info.target, '--head', info.source, '--title', title, '--body', body || '', ...(draft ? ['--draft'] : [])], { cwd: repo, timeout: 90_000 })
-        : await runProc('glab', ['mr', 'create', '--source-branch', info.source, '--target-branch', info.target, '--title', title, '--description', body || '', '--yes', ...(draft ? ['--draft'] : [])], { cwd: repo, timeout: 90_000 })
-    const url = (r.stdout + '\n' + r.stderr).match(/https?:\/\/\S+\/(?:pull|merge_requests)\/\d+/)?.[0]
-    if (r.code === 0 && url) return { created: true, url, pushed: info.needsPush }
-    const existing = (r.stdout + r.stderr).match(/https?:\/\/\S+\/(?:pull|merge_requests)\/\d+/)?.[0]
-    if (existing && /already exists/i.test(r.stdout + r.stderr)) return { created: false, exists: true, url: existing, pushed: info.needsPush }
-    throw new GitError((r.stderr || r.stdout).trim().split('\n').slice(-4).join('\n') || `${info.tools.cli} could not create it`)
-  }
-  return { created: false, webUrl: mrWebUrl(info, { title, body }), pushed: info.needsPush }
+/** Open a web page in the person's default browser (the worker is not limited to a click like frames are). */
+function openInBrowser(url) {
+  if (!/^https:\/\//.test(url) || process.env.GITX_NO_BROWSER) return Promise.resolve(false) // tests keep the browser closed
+  const [bin, args] =
+    process.platform === 'win32'
+      ? ['rundll32', ['url.dll,FileProtocolHandler', url]] // no shell, so "&" in the URL is safe
+      : process.platform === 'darwin'
+        ? ['open', [url]]
+        : ['xdg-open', [url]]
+  return runProc(bin, args, { timeout: 10_000 }).then((r) => r.code === 0 || r.code === null, () => false)
 }
 
-/** Set up one-click merge requests in an Orca terminal, where any prompt (a browser sign-in, a token) is visible. */
-async function mrSetup(orca, repo, { step }) {
-  const info = await mrInfo(repo, 'HEAD').catch(() => null)
-  const host = info?.host || 'gitlab.com'
-  const commands = {
-    'glab-install': 'winget install --id GLab.GLab -e --accept-package-agreements --accept-source-agreements',
-    'glab-login': `glab auth login --hostname ${host}`,
-    'gh-install': 'winget install --id GitHub.cli -e --accept-package-agreements --accept-source-agreements',
-    'gh-login': `gh auth login --hostname ${host} --web --git-protocol https`
-  }
-  const command = commands[step]
-  if (!command) throw new GitError('unknown setup step')
-  if (!/^[\w.:-]+$/.test(host)) throw new GitError('unexpected host name')
-  const ws = (await listWorkspaces(orca)).find((w) => norm(w.path) === norm(repo))
-  if (!ws || !orca.host.has('terminal.create')) return { ran: false, command }
-  await orca.host.call('terminal.create', { workspaceId: ws.id, title: 'Merge request setup', command })
-  return { ran: true, command }
+/** Push the branch if needed, then open the service's prefilled "new merge request" page. */
+async function mrCreate(repo, { target, title, body }) {
+  const info = await mrInfo(repo, req(target, 'target branch'))
+  if (info.source === info.target) throw new GitError('Pick a different branch to merge into')
+  if (info.needsPush) await git(repo, ['push', '-u', info.remote, info.source], net)
+  const url = mrWebUrl(info, { title: String(title || '').trim(), body: String(body || '') })
+  const opened = await openInBrowser(url)
+  return { url, opened, pushed: info.needsPush }
 }
 
 // ---------- operations exposed to the panel ----------
@@ -1461,7 +1431,6 @@ Click to open Git Graph`
     shortMemo.clear()
     return mrCreate(req(input.repo, 'repo'), input)
   })
-  orca.panels.handle('mr.setup', async ({ repo, step } = {}) => mrSetup(orca, req(repo, 'repo'), { step }))
   orca.panels.handle('tab.open', async ({ repo } = {}) => openGraphTab(req(repo, 'repo')))
 
   orca.panels.handle('repo.check', async ({ path: p } = {}) => {
