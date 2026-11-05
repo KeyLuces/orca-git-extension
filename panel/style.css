@@ -252,26 +252,38 @@ nav.tabs::-webkit-scrollbar { display: none; }
 @media (max-width: 900px) { .col-author, .col-date { display: none; } }
 .load-more { display: flex; margin: 6px auto 14px; }
 
-/* ref labels: coloured head with an icon, tinted body, the line's exact colour */
+/* ref labels
+   head  = solid, exactly the graph line's colour, with a dark icon
+   body  = neutral surface and bright text, so the name reads first
+   frame = a thin line in the same colour ties head and body together */
 .ref {
   --lane: var(--ren);
-  display: inline-flex; align-items: stretch; flex: none; max-width: 180px; overflow: hidden;
-  border-radius: var(--r-xs); font-size: 10.5px; font-weight: 550; line-height: 17px; color: var(--t1);
-  background: color-mix(in srgb, var(--lane) 14%, var(--bg));
-  box-shadow: inset 0 0 0 1px var(--lane);
+  --ink: #0d1014;
+  display: inline-flex; align-items: stretch; flex: none; max-width: 190px; height: 18px; overflow: hidden;
+  border-radius: var(--r-xs); font-size: 11px; font-weight: 600; line-height: 16px; letter-spacing: .01em;
+  color: var(--t1); background: var(--card);
+  border: 1px solid var(--lane);
 }
-.ref > span:first-child { display: inline-flex; align-items: center; justify-content: center; flex: none; padding: 0 4px; background: var(--lane); color: #14161b; }
-.ref > span:first-child svg { stroke-width: 2.6; }
-.ref-t { min-width: 0; padding: 0 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ref > span:first-child {
+  display: inline-flex; align-items: center; justify-content: center; flex: none;
+  min-width: 18px; padding: 0 3px; background: var(--lane); color: var(--ink);
+}
+.ref > span:first-child svg { width: 11px; height: 11px; stroke-width: 2.6; }
+.ref-t { min-width: 0; padding: 0 7px 0 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ref.tag { --lane: var(--mod); }
 .ref.remote:not(.laned) { --lane: #b48be8; }
-.ref.current { font-weight: 700; color: var(--fg); background: color-mix(in srgb, var(--lane) 30%, var(--bg)); box-shadow: inset 0 0 0 1.5px var(--lane), 0 0 0 3px color-mix(in srgb, var(--lane) 22%, transparent); }
+/* remote branches: same head, body text a step quieter so local names lead */
+.ref.remote .ref-t { color: color-mix(in srgb, var(--fg) 78%, var(--bg)); }
+/* the checked-out branch: tinted body, bold, a heavier frame, the filled check */
+.ref.current { color: var(--fg); background: color-mix(in srgb, var(--lane) 24%, var(--card)); border-width: 1.5px; font-weight: 700; }
+.ref.current .ref-t { color: var(--fg); }
 .ref.current > span:first-child { --ref-head-ink: var(--lane); }
 .ref.current > span:first-child svg { width: 12px; height: 12px; }
-.ref.tracking { background: transparent; box-shadow: none; outline: 1px dashed var(--lane); outline-offset: -1px; }
-.ref.tracking > span:first-child { background: color-mix(in srgb, var(--lane) 45%, var(--bg)); color: var(--t1); }
-html.light .ref { background: color-mix(in srgb, var(--lane) 10%, #fff); }
-html.light .ref > span:first-child { color: #fff; }
+/* the remote the current branch tracks, at the same commit: dashed frame, still a solid head */
+.ref.tracking { border-style: dashed; background: transparent; }
+.ref.tracking .ref-t { color: color-mix(in srgb, var(--fg) 78%, var(--bg)); }
+html.light .ref { --ink: #fff; background: #fff; }
+html.light .ref.current { background: color-mix(in srgb, var(--lane) 16%, #fff); }
 
 /* ---------- inline commit details ---------- */
 .commit-inline { margin: 2px 16px 10px 18px; overflow: hidden; cursor: default; border-radius: var(--radius); border: 1px solid var(--line); background: var(--card); box-shadow: var(--shadow); animation: inlineIn .16s var(--ease); }
