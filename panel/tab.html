@@ -1,0 +1,31 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Git Graph</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body class="wide">
+    <header>
+      <div class="repo-line">
+        <button class="repo-btn grow" id="repoBtn" title="Switch repository">
+          <span id="repoIcon"></span><span class="ellipsis" id="repoName">No repository</span
+          ><span id="repoCaret" class="dim"></span>
+        </button>
+        <div class="toolbar" id="toolbar"></div>
+      </div>
+      <div class="row" id="branchLine"></div>
+    </header>
+    <div id="banner"></div>
+    <div class="wide-body">
+      <aside id="side"></aside>
+      <div class="wide-main">
+        <nav class="tabs" id="tabs"></nav>
+        <main id="main"></main>
+      </div>
+    </div>
+    <div id="toasts"></div>
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

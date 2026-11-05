@@ -1,0 +1,98 @@
+{
+  "$schema": "https://raw.githubusercontent.com/stablyai/orca/main/docs/schemas/plugins/orca-plugin.v2.schema.json",
+  "manifestVersion": 2,
+  "execution": "trusted-worker",
+  "id": "git-extension",
+  "name": "Git Extension",
+  "version": "0.4.2",
+  "description": "A lightweight Git client inside Orca: a full-tab history graph with changes, branches, merge/rebase, stash, worktrees, git config, right-click menus, and AI commit messages and conflict resolution.",
+  "license": "MIT",
+  "engines": {
+    "orca": ">=1.4.248"
+  },
+  "pluginApi": 1,
+  "main": "worker/main.mjs",
+  "contributes": {
+    "customEditors": [
+      {
+        "id": "graph",
+        "title": "Git Graph",
+        "extensions": [
+          ".gitgraph"
+        ],
+        "entry": "panel/tab.html"
+      }
+    ],
+    "settings": [
+      {
+        "key": "aiAgent",
+        "title": "AI agent",
+        "description": "CLI used for AI commit messages and AI conflict resolution. It must be installed and signed in.",
+        "type": "string",
+        "default": "claude",
+        "enum": [
+          "claude",
+          "codex"
+        ],
+        "enumLabels": [
+          "Claude Code",
+          "Codex"
+        ]
+      },
+      {
+        "key": "keepGraphOpen",
+        "title": "Keep Git Graph open in every project",
+        "description": "When you switch projects while looking at Git Graph, open that project's Git Graph too. Off: Git Graph opens only from the status bar.",
+        "type": "boolean",
+        "default": false
+      }
+    ],
+    "commands": [
+      {
+        "id": "openGraph",
+        "title": "Git: Open Git Graph"
+      }
+    ],
+    "statusBarItems": [
+      {
+        "id": "branch",
+        "text": "Git",
+        "icon": "branch",
+        "tooltip": "Open Git Graph",
+        "command": "openGraph"
+      }
+    ],
+    "events": [
+      {
+        "on": "workspace.changed"
+      }
+    ],
+    "newFiles": [
+      {
+        "id": "graph",
+        "title": "Git Graph",
+        "extension": ".gitgraph"
+      }
+    ]
+  },
+  "capabilities": [
+    {
+      "kind": "workspace:read"
+    },
+    {
+      "kind": "workspace:write"
+    },
+    {
+      "kind": "notifications:show"
+    },
+    {
+      "kind": "storage:own"
+    },
+    {
+      "kind": "settings:own"
+    },
+    {
+      "kind": "terminal:send"
+    }
+  ]
+}
