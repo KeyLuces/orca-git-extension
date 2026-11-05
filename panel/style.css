@@ -740,3 +740,34 @@ span.ci { cursor: default; height: 17px; padding: 0 7px; font-size: 10.5px; }
 .pp-me { height: 22px; }
 .link-btn { border: 0; background: none; padding: 0; color: var(--ren); font: inherit; font-size: 11.5px; font-weight: 500; text-transform: none; letter-spacing: 0; cursor: pointer; }
 .link-btn:hover { text-decoration: underline; }
+
+/* Pipelines */
+.pipes { display: flex; flex-direction: column; min-height: 100%; }
+.pipes .history-bar { position: sticky; top: 0; z-index: 2; background: var(--bg); flex-wrap: wrap; gap: 8px; }
+.ci-pending { background: var(--card-hi); color: var(--t2); }
+.ci-pending svg { animation: spin 2.4s linear infinite; }
+.ci-manual { background: var(--card-hi); color: var(--t2); }
+.pipe-state { cursor: default; flex: none; }
+.pipe-list { display: flex; flex-direction: column; padding: 4px 8px 12px; }
+.pipe-row { display: flex; align-items: center; gap: 12px; width: 100%; padding: 10px 10px; border: 0; border-bottom: 1px solid var(--line); background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; border-radius: 6px; }
+.pipe-row:hover { background: var(--sel); }
+.pipe-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.pipe-title { display: flex; gap: 8px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pipe-title .dim { overflow: hidden; text-overflow: ellipsis; }
+.pipe-meta { font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pipe-stages { display: flex; gap: 12px; padding: 12px; overflow-x: auto; align-items: flex-start; }
+.pipe-stage { flex: 0 0 220px; display: flex; flex-direction: column; gap: 4px; }
+.pipe-stage .section-head { padding: 0 2px 4px; }
+.pipe-job { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 6px; background: var(--card); border: 1px solid var(--line); cursor: pointer; }
+.pipe-job:hover, .pipe-job:focus-visible { border-color: var(--line-hi); background: var(--card-hi); }
+.pipe-job.s-failed { border-color: color-mix(in srgb, var(--del) 45%, var(--line)); }
+.pipe-job-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pipe-dot { width: 20px; height: 20px; padding: 0; justify-content: center; cursor: default; flex: none; }
+.pipe-log { flex: 1; overflow: auto; font: 12px/1.55 var(--mono); padding: 6px 0 16px; background: var(--bg); }
+.pl { display: flex; min-width: max-content; }
+.pl-n { position: sticky; left: 0; width: 52px; flex: none; padding-right: 10px; text-align: right; color: var(--t3); user-select: none; background: var(--bg); }
+.pl-t { white-space: pre; padding-right: 16px; }
+.pl.bad { background: color-mix(in srgb, var(--del) 12%, transparent); }
+.pl.bad .pl-n { background: color-mix(in srgb, var(--del) 18%, var(--bg)); color: var(--del); }
+.pipe-note { padding: 6px 12px; font-size: 12px; }
+@media (max-width: 820px) { .pipe-stages { flex-direction: column; } .pipe-stage { flex: none; width: 100%; } }

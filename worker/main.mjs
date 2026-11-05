@@ -1125,6 +1125,145 @@ function cleanPeople(list) {
     .map((p) => ({ id: +p.id, username: String(p.username) }))
 }
 
+// ---------- pipelines (GitHub Actions runs / GitLab pipelines) ----------
+
+const PIPE_STATE = (s, c) => {
+  const v = String(c || s || '').toLowerCase()
+  if (/^(success|passed|completed_success)$/.test(v)) return 'passed'
+  if (/^(failure|failed|timed_out|startup_failure|action_required)$/.test(v)) return 'failed'
+  if (/^(cancelled|canceled|skipped|manual|neutral|stale)$/.test(v)) return v === 'manual' ? 'manual' : 'canceled'
+  if (/^(queued|pending|waiting|requested|created|preparing|scheduled|waiting_for_resource)$/.test(v)) return 'pending'
+  if (/^(in_progress|running)$/.test(v)) return 'running'
+  return v || 'unknown'
+}
+const secs = (a, b) => (a && b ? Math.max(0, Math.round((Date.parse(b) - Date.parse(a)) / 1000)) : null)
+
+async function pipeTarget(repo) {
+  const remote = await defaultRemote(repo)
+  if (!remote) throw new GitError('This repository has no remote')
+  const w = await remoteWhere(repo, remote)
+  if (!w) throw new GitError('Could not tell where the remote is hosted')
+  const via = await viaFor(w, repo)
+  if (!via) throw new GitError(`Sign in to ${w.host} first: ${cliFor(w.kind)}, or a saved Git login with API access`)
+  return { w, via }
+}
+const pipeId = (v) => {
+  if (!/^\d{1,20}$/.test(String(v))) throw new GitError('bad pipeline or job id')
+  return String(v)
+}
+
+/** Pipelines for a branch (default: the checked-out one), newest first. */
+async function pipelines(repo, { branch, sha } = {}) {
+  const { w, via } = await pipeTarget(repo)
+  const b = branch ? req(branch, 'branch') : (await headInfo(repo)).branch
+  if (w.kind === 'github') {
+    const q = sha ? `head_sha=${encodeURIComponent(sha)}` : b ? `branch=${encodeURIComponent(b)}` : ''
+    const r = await forgeCall(w, via, 'GET', `/repos/${w.path}/actions/runs?per_page=20${q ? '&' + q : ''}`, null, repo)
+    return {
+      kind: 'github',
+      host: w.host,
+      branch: b,
+      web: `${w.web}/actions`,
+      items: (r?.workflow_runs || []).map((x) => ({
+        id: x.id,
+        name: x.name || x.display_title || 'workflow',
+        title: x.display_title || x.head_commit?.message?.split('\n')[0] || '',
+        state: PIPE_STATE(x.status, x.status === 'completed' ? x.conclusion : x.status),
+        branch: x.head_branch,
+        sha: x.head_sha,
+        event: x.event,
+        by: x.actor?.login || '',
+        at: Date.parse(x.run_started_at || x.created_at) / 1000,
+        duration: x.status === 'completed' ? secs(x.run_started_at || x.created_at, x.updated_at) : null,
+        url: x.html_url
+      }))
+    }
+  }
+  const p = projectPath(w.path)
+  const q = sha ? `sha=${encodeURIComponent(sha)}` : b ? `ref=${encodeURIComponent(b)}` : ''
+  const list = await forgeCall(w, via, 'GET', `/projects/${p}/pipelines?per_page=20${q ? '&' + q : ''}`, null, repo)
+  return {
+    kind: 'gitlab',
+    host: w.host,
+    branch: b,
+    web: `${w.web}/-/pipelines`,
+    items: (Array.isArray(list) ? list : []).map((x) => ({
+      id: x.id,
+      name: `#${x.id}`,
+      title: x.name || '',
+      state: PIPE_STATE(x.status),
+      branch: x.ref,
+      sha: x.sha,
+      event: x.source,
+      by: x.user?.username || '',
+      at: Date.parse(x.created_at) / 1000,
+      duration: ['success', 'failed', 'canceled'].includes(x.status) ? secs(x.created_at, x.updated_at) : null,
+      url: x.web_url
+    }))
+  }
+}
+
+/** Jobs of one pipeline, in stage order. */
+async function pipelineJobs(repo, { id }) {
+  const { w, via } = await pipeTarget(repo)
+  id = pipeId(id)
+  if (w.kind === 'github') {
+    const r = await forgeCall(w, via, 'GET', `/repos/${w.path}/actions/runs/${id}/jobs?per_page=100`, null, repo)
+    return (r?.jobs || []).map((j) => ({
+      id: j.id,
+      name: j.name,
+      stage: j.workflow_name || 'jobs',
+      state: PIPE_STATE(j.status, j.status === 'completed' ? j.conclusion : j.status),
+      duration: secs(j.started_at, j.completed_at),
+      url: j.html_url,
+      steps: (j.steps || []).map((s) => ({ name: s.name, state: PIPE_STATE(s.status, s.status === 'completed' ? s.conclusion : s.status) }))
+    }))
+  }
+  const list = await forgeCall(w, via, 'GET', `/projects/${projectPath(w.path)}/pipelines/${id}/jobs?per_page=100&include_retried=false`, null, repo)
+  return (Array.isArray(list) ? list : [])
+    .map((j) => ({ id: j.id, name: j.name, stage: j.stage, state: PIPE_STATE(j.status), duration: j.duration ? Math.round(j.duration) : null, url: j.web_url, allowFailure: !!j.allow_failure }))
+    .sort((a, b) => a.id - b.id)
+}
+
+/** The log of one job (last 400 KB), with ANSI colour codes removed. */
+async function jobLog(repo, { id }) {
+  const { w, via } = await pipeTarget(repo)
+  id = pipeId(id)
+  const apiPath = w.kind === 'github' ? `/repos/${w.path}/actions/jobs/${id}/logs` : `/projects/${projectPath(w.path)}/jobs/${id}/trace`
+  let text
+  if (via === 'cli') {
+    const r = await runProc(w.kind === 'github' ? 'gh' : 'glab', ['api', '--hostname', w.host, apiPath.slice(1)], { cwd: repo, timeout: 60_000 })
+    if (r.code !== 0) throw new GitError((r.stderr || r.stdout).trim().split('\n').slice(-3).join('\n') || 'could not read the job log')
+    text = r.stdout
+  } else text = await forgeApi(w, 'GET', apiPath, { raw: true, accept: 'text/plain', cwd: repo })
+  text = String(text || '')
+    // eslint-disable-next-line no-control-regex
+    .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
+    .replace(/\r(?!\n)/g, '\n')
+    .replace(/section_(start|end):\d+:[\w.-]+\n?/g, '') // GitLab collapsible section markers
+  const max = 400_000
+  return { log: text.length > max ? text.slice(-max) : text, truncated: text.length > max }
+}
+
+/** Retry / re-run failed / cancel a pipeline, or retry one job. */
+async function pipelineAct(repo, { id, action, job }) {
+  const { w, via } = await pipeTarget(repo)
+  const gh = w.kind === 'github'
+  const pid = id != null ? pipeId(id) : null
+  const jid = job != null ? pipeId(job) : null
+  const P = gh ? `/repos/${w.path}/actions` : `/projects/${projectPath(w.path)}`
+  const route = {
+    retry: gh ? `${P}/runs/${pid}/rerun` : `${P}/pipelines/${pid}/retry`,
+    retryFailed: gh ? `${P}/runs/${pid}/rerun-failed-jobs` : `${P}/pipelines/${pid}/retry`,
+    cancel: gh ? `${P}/runs/${pid}/cancel` : `${P}/pipelines/${pid}/cancel`,
+    retryJob: gh ? `${P}/jobs/${jid}/rerun` : `${P}/jobs/${jid}/retry`
+  }[action]
+  if (!route || (action === 'retryJob' ? !jid : !pid)) throw new GitError('unknown pipeline action')
+  await forgeCall(w, via, 'POST', route, gh ? {} : null, repo)
+  shortMemo.clear()
+  return { ok: true }
+}
+
 /** GitHub: add assignees and request reviewers on a new PR. Returns a warning text, or ''. */
 async function githubAddPeople(w, via, number, assignees, reviewers, cwd) {
   const bad = []
@@ -1961,6 +2100,10 @@ const ops = {
   configUnset: (r, a) => configUnset(r, a),
 
   ciStatus: (r, a) => ciStatus(r, a),
+  pipelines: (r, a) => pipelines(r, a),
+  pipelineJobs: (r, a) => pipelineJobs(r, a),
+  jobLog: (r, a) => jobLog(r, a),
+  pipelineAct: (r, a) => pipelineAct(r, a),
   readWorkFile: async (r, a) => {
     const p = await workPath(r, a.file)
     const buf = readFileSync(p)
@@ -2215,7 +2358,7 @@ const ops = {
 const READ_ONLY_OPS = new Set([
   'status', 'diff', 'log', 'commitShow', 'commitFileDiff', 'refs', 'worktrees', 'stashList', 'stashShow', 'remotes',
   'configList', 'blame', 'showFile', 'treeFiles', 'compare', 'compareFileDiff', 'reflog', 'cleanPreview', 'submodules',
-  'aheadBehind', 'rebaseTodo', 'lastMessage', 'formatPatch', 'ciStatus', 'readWorkFile', 'branchCleanup', 'undoInfo'
+  'aheadBehind', 'rebaseTodo', 'lastMessage', 'formatPatch', 'ciStatus', 'pipelines', 'pipelineJobs', 'jobLog', 'readWorkFile', 'branchCleanup', 'undoInfo'
 ])
 const NO_REPO_OK = new Set(['configList', 'configSet', 'configUnset', 'init', 'clone'])
 
