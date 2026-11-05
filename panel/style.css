@@ -699,3 +699,7 @@ span.ci { cursor: default; height: 17px; padding: 0 7px; font-size: 10.5px; }
 .form.stash-form > .btn { width: 100%; }
 .card { max-width: none; }
 .history-bar { max-width: none; }
+
+/* long menus (many repositories) scroll inside the screen */
+.menu { max-height: calc(100vh - 16px); overflow-y: auto; }
+.menu .label { position: sticky; top: -5px; background: var(--card); z-index: 1; }

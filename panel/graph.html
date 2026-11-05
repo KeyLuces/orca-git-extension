@@ -708,6 +708,10 @@ span.ci { cursor: default; height: 17px; padding: 0 7px; font-size: 10.5px; }
 .card { max-width: none; }
 .history-bar { max-width: none; }
 
+/* long menus (many repositories) scroll inside the screen */
+.menu { max-height: calc(100vh - 16px); overflow-y: auto; }
+.menu .label { position: sticky; top: -5px; background: var(--card); z-index: 1; }
+
 </style>
   </head>
   <body class="wide">
@@ -1181,6 +1185,18 @@ const snap = {
   }
 }
 
+const sameRepoPath = (a, b) => a.replace(/\\/g, '/').toLowerCase() === b.replace(/\\/g, '/').toLowerCase()
+/** Workspaces grouped by repository name, repositories A–Z, the main folder first in each. */
+function repoGroups(ws) {
+  const groups = new Map()
+  for (const w of ws) {
+    const name = w.repoName || basename(w.path)
+    if (!groups.has(name)) groups.set(name, [])
+    groups.get(name).push(w)
+  }
+  for (const list of groups.values()) list.sort((a, b) => (b.main ? 1 : 0) - (a.main ? 1 : 0) || String(a.branch).localeCompare(String(b.branch)))
+  return [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0]))
+}
 async function repoMenu(anchor) {
   if (!state.workspaces.length) state.workspaces = (await request('repo.resolve', {}).catch(() => null))?.workspaces || []
   const ws = state.workspaces.filter((w) => w.kind === 'worktree' || w.kind === 'folder')
@@ -1197,12 +1213,16 @@ async function repoMenu(anchor) {
       }
     },
     '-',
-    ...ws.slice(0, 40).map((w) => ({
-      label: w.name,
-      hint: w.branch || '',
-      icon: state.pinned === w.path ? 'check' : w.kind === 'worktree' ? 'branch' : 'folder',
-      onClick: () => pinRepo(w.path)
-    })),
+    // grouped by repository (its worktrees under it), so many "dev" or "main" can be told apart
+    ...repoGroups(ws).flatMap(([repoName, list]) => [
+      { header: repoName },
+      ...list.map((w) => ({
+        label: w.branch || w.name,
+        hint: list.length > 1 && w.main ? 'main folder' : '',
+        icon: state.repo && sameRepoPath(state.repo, w.path) ? 'check' : w.kind === 'worktree' ? 'branch' : 'folder',
+        onClick: () => pinRepo(w.path)
+      }))
+    ]),
     ws.length ? '-' : null,
     { label: 'Clone repository…', icon: 'download', onClick: cloneRepo },
     {

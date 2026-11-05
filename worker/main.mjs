@@ -147,7 +147,20 @@ async function listWorkspacesUncached(orca) {
   try {
     const { workspaces } = await orca.host.call('workspace.list', {})
     // local only: git runs on this machine
-    return workspaces.filter((w) => !w.hostId || w.hostId === 'local')
+    const local = workspaces.filter((w) => !w.hostId || w.hostId === 'local')
+    // Orca names a workspace after its branch; the repository's name comes from its shared git folder
+    // (".../ecustom-web/.git" → "ecustom-web"), the same for every worktree of that repository.
+    await Promise.all(
+      local.map(async (w) => {
+        const out = await gitOnce(w.path, ['rev-parse', '--path-format=absolute', '--git-common-dir', '--show-toplevel'], { timeout: 8000 }).catch(() => '')
+        const [common, top] = out.trim().split(/\r?\n/)
+        if (!common) return
+        const c = common.replace(/[\\/]+$/, '')
+        w.repoName = path.basename(/[\\/]\.git$/i.test(c) ? path.dirname(c) : c).replace(/\.git$/i, '')
+        w.main = !!top && path.resolve(path.dirname(c)).toLowerCase() === path.resolve(top).toLowerCase()
+      })
+    )
+    return local
   } catch {
     return []
   }
