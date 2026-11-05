@@ -14,7 +14,6 @@ function h(tag, props, ...children) {
       if (k === 'class') el.className = v
       else if (k === 'style' && typeof v === 'object') Object.assign(el.style, v)
       else if (k.startsWith('on')) el.addEventListener(k.slice(2).toLowerCase(), v)
-      else if (k === 'html') el.innerHTML = v
       else if (k in el && typeof v !== 'string') el[k] = v
       else el.setAttribute(k, v === true ? '' : v)
     }
@@ -86,7 +85,6 @@ function icon(name, size = 14) {
 const iconBtn = (name, title, onClick, extra = {}) =>
   h('button', { class: 'icon-btn', title, 'aria-label': title, onClick, ...extra }, icon(name))
 
-const esc = (s) => String(s)
 const basename = (p) => p.replace(/[\\/]+$/, '').split(/[\\/]/).pop()
 const dirname = (p) => {
   const i = p.lastIndexOf('/')
@@ -171,17 +169,43 @@ function toast(msg, kind = 'ok', ms) {
   setTimeout(() => el.remove(), ms ?? (kind === 'error' ? 9000 : 2600))
 }
 
-function closeOverlays() {
-  document.querySelectorAll('.menu, .overlay').forEach((e) => e.remove())
+/**
+ * Every overlay and menu carries `dispose`: its own close (removes its key listeners, resolves its
+ * promise). closeOverlays runs each one, so nothing is left waiting on a removed element.
+ */
+function closeOverlays(sel = '.menu, .overlay') {
+  document.querySelectorAll(sel).forEach((e) => {
+    const d = e.dispose
+    e.dispose = null
+    if (d) d()
+    e.remove()
+  })
+}
+/** Key handlers act only for the topmost overlay, and not while a menu is open over it. */
+const isTopOverlay = (o) => {
+  if (document.querySelector('.menu')) return false
+  const all = document.querySelectorAll('.overlay')
+  return all[all.length - 1] === o
+}
+/** Mount an overlay: stacked over an open one, or replacing whatever is open. */
+function mountOverlay(overlay, dispose, stack = false) {
+  overlay.dispose = dispose
+  if (stack) overlay.classList.add('stacked')
+  document.body.append(overlay)
+  return overlay
 }
 
 /** fields: [{ key, label, value, placeholder, type: 'text'|'textarea'|'select'|'check', options: [[value,label]], hint }] */
-function dialog({ title, message, fields = [], ok = 'OK', danger = false, cancel = 'Cancel' }) {
-  closeOverlays()
+function dialog({ title, message, fields = [], ok = 'OK', danger = false, cancel = 'Cancel', stack = false }) {
+  if (stack) closeOverlays('.menu')
+  else closeOverlays()
   return new Promise((resolve) => {
     const inputs = {}
     const form = h('form', { class: 'dialog', onSubmit: (e) => (e.preventDefault(), done(true)) })
+    let closed = false
     const done = (okd) => {
+      if (closed) return
+      closed = true
       overlay.remove()
       document.removeEventListener('keydown', onKey)
       if (!okd) return resolve(null)
@@ -189,7 +213,7 @@ function dialog({ title, message, fields = [], ok = 'OK', danger = false, cancel
       for (const [k, el] of Object.entries(inputs)) out[k] = el.type === 'checkbox' ? el.checked : el.value
       resolve(out)
     }
-    const onKey = (e) => e.key === 'Escape' && done(false)
+    const onKey = (e) => e.key === 'Escape' && isTopOverlay(overlay) && (e.preventDefault(), done(false))
     append(form, [h('h3', null, title), message && h('p', null, message)])
     for (const f of fields) {
       let el
@@ -214,15 +238,16 @@ function dialog({ title, message, fields = [], ok = 'OK', danger = false, cancel
       )
     )
     const overlay = h('div', { class: 'overlay', onMousedown: (e) => e.target === overlay && done(false) }, form)
-    document.body.append(overlay)
+    mountOverlay(overlay, () => done(false), stack)
     document.addEventListener('keydown', onKey)
     const first = form.querySelector('input:not([type=checkbox]), textarea, select') || form.querySelector('button[type=submit]')
     first?.focus()
     first?.select?.()
   })
 }
+/** Asked from inside an open modal, the confirm stacks over it: Cancel returns to the modal intact. */
 const confirmBox = (title, message, ok = 'Confirm', danger = false) =>
-  dialog({ title, message, ok, danger }).then((r) => r !== null)
+  dialog({ title, message, ok, danger, stack: !!document.querySelector('.overlay') }).then((r) => r !== null)
 
 /** A right-click opens the row's menu at the pointer; `menu` reads it once. */
 let menuPoint = null
@@ -232,14 +257,16 @@ let menuPoint = null
  * beside it (Enter or → from the keyboard), and choosing anything closes every level.
  */
 function menu(anchor, items, parent = null) {
-  if (!parent) closeOverlays()
+  if (!parent) closeOverlays('.menu') // a menu may open from inside a dialog: leave dialogs alone
   const el = h('div', { class: 'menu', role: 'menu' })
   el.closeAll = () => {
     let root = el
     while (root.parentMenu) root = root.parentMenu
     root.closeChild?.()
     root.remove()
+    root.cleanup?.()
   }
+  if (!parent) el.dispose = () => el.closeAll()
   el.parentMenu = parent
   el.closeChild = () => {
     el.child?.closeChild?.()
@@ -312,16 +339,39 @@ function menu(anchor, items, parent = null) {
   }
   el.style.left = left + 'px'
   el.style.top = top + 'px'
-  if (!parent)
-    setTimeout(() => {
-      const off = (e) => {
-        if (![...document.querySelectorAll('.menu')].some((m) => m.contains(e.target))) {
-          el.closeAll()
-          document.removeEventListener('mousedown', off, true)
-        }
+  if (!parent) {
+    // One outside-click and one key listener for the whole cascade, removed when it closes.
+    const off = (e) => {
+      if (![...document.querySelectorAll('.menu')].some((m) => m.contains(e.target))) el.closeAll()
+    }
+    const onKey = (e) => {
+      const menus = [...document.querySelectorAll('.menu')]
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        e.stopImmediatePropagation()
+        const focusBack = el.anchorEl
+        el.closeAll()
+        focusBack?.focus?.()
+      } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        const cur = menus.find((m) => m.contains(document.activeElement)) || menus[menus.length - 1]
+        const btns = [...cur.querySelectorAll(':scope > button:not(:disabled)')]
+        if (!btns.length) return
+        e.preventDefault()
+        const i = btns.indexOf(document.activeElement)
+        const next = e.key === 'ArrowDown' ? (i + 1) % btns.length : i <= 0 ? btns.length - 1 : i - 1
+        btns[next].focus()
       }
-      document.addEventListener('mousedown', off, true)
-    })
+    }
+    const timer = setTimeout(() => document.addEventListener('mousedown', off, true))
+    document.addEventListener('keydown', onKey, true)
+    el.anchorEl = anchor instanceof Element ? anchor : null
+    el.cleanup = () => {
+      clearTimeout(timer)
+      document.removeEventListener('mousedown', off, true)
+      document.removeEventListener('keydown', onKey, true)
+      el.cleanup = null
+    }
+  }
   return el
 }
 
@@ -410,8 +460,7 @@ function setRepo(p) {
   state.repo = p
   state.status = null
   state.refs = null
-  state.history.commits = []
-  state.history.done = false
+  resetHistory()
   state.history.open = null
   state.sheets = []
   if (p) store.set('lastRepo', p)
@@ -705,12 +754,17 @@ function setTab(id) {
    ========================================================================= */
 let refreshing = null
 let pendingRefresh = null
+let pendingFull = false
 async function refreshAll(full = false) {
   if (refreshing) {
-    // something changed since that refresh started (an operation finished, the repo switched): run once more
+    // something changed since that refresh started (an operation finished, the repo switched): run once
+    // more, as a full refresh if any of the callers queued behind it asked for one
+    pendingFull ||= full
     pendingRefresh ||= refreshing.catch(() => {}).then(() => {
+      const f = pendingFull
       pendingRefresh = null
-      return refreshAll(full)
+      pendingFull = false
+      return refreshAll(f)
     })
     return pendingRefresh
   }
@@ -723,7 +777,7 @@ async function refreshAll(full = false) {
     const repo = state.repo
     if (repo) {
       try {
-        const [st, refs] = await Promise.all([call('status'), call('refs').catch(() => state.refs)])
+        const [st, refs] = await Promise.all([call('status', full ? { fresh: true } : {}), call('refs').catch(() => state.refs)])
         if (repo !== state.repo) return // switched meanwhile: the queued refresh handles the new repo
         state.status = st
         state.refs = refs
@@ -765,10 +819,13 @@ async function pollStatus(force) {
     if (JSON.stringify(st) !== JSON.stringify(state.status)) {
       // HEAD moving, or any branch/tag/remote moving (an agent committing, a fetch), redraws the graph
       const headMoved = st.oid !== state.status?.oid || st.refsSig !== state.status?.refsSig
+      let refs = state.refs
+      if (headMoved) refs = await call('refs').catch(() => state.refs)
+      if (repo !== state.repo) return // switched while the refs loaded
       state.status = st
       if (headMoved) {
         state.history.stale = true
-        state.refs = await call('refs').catch(() => state.refs)
+        state.refs = refs
       }
       if (IN_TAB && headMoved) renderSide()
       renderHeader()
@@ -1008,6 +1065,9 @@ function renderDiff(text, hunkActions, { onLine } = {}) {
     el.addEventListener('click', () => onLine({ path: f.path, side, line: side === 'old' ? ln.o : ln.n, text: ln.t }))
     return el
   }
+  // A huge file (a lockfile, generated code) shows its first lines; the rest on request.
+  const MAX_LINES = 3000
+  const expanded = new Set()
   function draw() {
     drawBar()
     root.classList.toggle('dv-wrapped', wrapOn)
@@ -1029,7 +1089,10 @@ function renderDiff(text, hunkActions, { onLine } = {}) {
         )
       )
       if (f.binary) frag.append(h('div', { class: 'dv-note' }, 'Binary file: no text to compare'))
+      const lineCount = f.hunks.reduce((t, hk) => t + hk.lines.length, 0)
+      let budget = expanded.has(f) ? Infinity : MAX_LINES
       for (const hk of f.hunks) {
+        if (budget <= 0) break
         const patch = patches[hk.patch]
         const last = hk.newStart + Math.max(0, hk.newCount - 1)
         frag.append(
@@ -1042,7 +1105,9 @@ function renderDiff(text, hunkActions, { onLine } = {}) {
             patch && hunkActions.map((a) => h('button', { class: `hunk-btn ${a.danger ? 'danger' : ''}`, title: `${a.label} this hunk`, onClick: () => a.run(patch) }, icon(a.icon, 11), a.label))
           )
         )
-        const pairs = pairLines(hk.lines)
+        const lines = hk.lines.length > budget ? hk.lines.slice(0, budget) : hk.lines
+        budget -= lines.length
+        const pairs = pairLines(lines)
         for (const pr of pairs) {
           if (pr.changed && pr.left && pr.right) {
             pr.left.mark = markChange(pr.left.t, pr.right.t)
@@ -1063,7 +1128,7 @@ function renderDiff(text, hunkActions, { onLine } = {}) {
             )
           }
         } else {
-          for (const ln of hk.lines) {
+          for (const ln of lines) {
             const side = ln.k === 'del' ? 'old' : 'new'
             frag.append(
               clickable(
@@ -1076,6 +1141,15 @@ function renderDiff(text, hunkActions, { onLine } = {}) {
           }
         }
       }
+      if (!expanded.has(f) && lineCount > MAX_LINES)
+        frag.append(
+          h(
+            'div',
+            { class: 'dv-note dv-more' },
+            `Showing the first ${MAX_LINES} of ${lineCount} lines. `,
+            h('button', { class: 'btn sm', onClick: () => (expanded.add(f), draw()) }, `Show all ${lineCount} lines`)
+          )
+        )
     }
     clear(body).append(frag)
   }
@@ -1217,11 +1291,12 @@ async function viewChanges() {
       if (!(await confirmBox('Nothing staged', 'Stage all changes and commit them?', 'Stage all & commit'))) return
       await call('stageAll').catch((e) => toast(e.message, 'error'))
     }
-    const out = await run('commit', args, { success: extra.push ? 'Committed and pushed' : state.amend ? 'Amended' : 'Committed' })
+    const out = await run('commit', args, { success: extra.push ? undefined : state.amend ? 'Amended' : 'Committed' })
+    if (extra.push && out !== undefined) out?.pushError ? toast(`Committed, but the push failed: ${out.pushError}`, 'error') : toast('Committed and pushed')
     if (out !== undefined) {
       state.commitDraft = ''
       state.amend = false
-      state.history.commits = []
+      resetHistory()
       refreshAll()
     }
   }
@@ -1563,20 +1638,48 @@ function refPills(refs, lane) {
   return out
 }
 
+/**
+ * Every reset of the list (repo, Branch/All, search, mode, an operation that rewrote history) bumps
+ * the generation, so a page or quiet reload that was in flight for the old list is dropped.
+ */
+let historyGen = 0
+function resetHistory() {
+  historyGen++
+  state.history.commits = []
+  state.history.done = false
+  loadingMorePromise = null
+}
+let loadingMorePromise = null
 async function loadHistory(more = false) {
   const H = state.history
+  // One "load more" at a time: the scroll sentinel, the button and goToHead share it.
+  if (more && loadingMorePromise) return loadingMorePromise
   const repo = state.repo
+  const gen = historyGen
   const page = 300
-  const commits = await call('log', { all: H.all, limit: page, skip: more ? H.commits.length : 0, search: H.search, mode: H.mode || 'message' })
-  if (repo !== state.repo) return
-  H.commits = more ? H.commits.concat(commits) : commits
-  H.done = commits.length < page
+  const p = (async () => {
+    const commits = await call('log', { all: H.all, limit: page, skip: more ? H.commits.length : 0, search: H.search, mode: H.mode || 'message' })
+    if (repo !== state.repo || gen !== historyGen) return
+    if (more) {
+      const seen = new Set(H.commits.map((c) => c.hash)) // safety net against an overlapping page
+      H.commits = H.commits.concat(commits.filter((c) => !seen.has(c.hash)))
+    } else H.commits = commits
+    H.done = commits.length < page
+  })()
+  if (!more) return p
+  loadingMorePromise = p
+  try {
+    return await p
+  } finally {
+    if (loadingMorePromise === p) loadingMorePromise = null
+  }
 }
 
 /** Built graph rows by commit, reused across renders while their look is unchanged. */
 const rowCache = new Map()
-const rowSignature = (c, row, width, open) =>
-  [c.refs.join(','), open ? 1 : 0, width, state.localNames ? state.localNames.size : 0, row ? row.color + ':' + row.col + ':' + JSON.stringify(row.edges) : '-'].join('|')
+// The "3m ago" text and the set of local branch names (which pills show as local) are part of the look.
+const rowSignature = (c, row, width, open, names) =>
+  [c.refs.join(','), open ? 1 : 0, width, names, ago(c.time), row ? row.color + ':' + row.col + ':' + JSON.stringify(row.edges) : '-'].join('|')
 
 /** Reload the first page in the background; redraw only when something changed. */
 let reloadingHistory = false
@@ -1587,11 +1690,14 @@ async function reloadHistoryQuietly() {
   if (reloadingHistory) return void (reloadAgain = true)
   reloadingHistory = true
   const repo = state.repo
+  const gen = historyGen
   try {
     // as many commits as are on screen (at least a page), so a reload never shortens the list
     const limit = Math.min(1000, Math.max(300, H.commits.length))
     const commits = await call('log', { all: H.all, limit, skip: 0, search: H.search, mode: H.mode || 'message' })
-    if (repo !== state.repo) return
+    if (repo !== state.repo || gen !== historyGen) return
+    if (loadingMorePromise) await loadingMorePromise.catch(() => {}) // let a page in flight land first
+    if (repo !== state.repo || gen !== historyGen) return
     const sig = (list) => list.map((c) => c.hash + c.refs.join()).join()
     if (sig(commits) !== sig(H.commits.slice(0, commits.length)) || commits.length !== Math.min(H.commits.length, limit)) {
       H.commits = commits
@@ -1615,9 +1721,11 @@ async function goToHead() {
   const oid = state.status?.oid
   if (!oid) return
   if (state.tab !== 'history') setTab('history')
+  const gen = historyGen
   let row = document.querySelector(`.commit-row[data-hash="${oid}"]`)
   for (let i = 0; !row && !H.done && i < 15; i++) {
     await loadHistory(true)
+    if (gen !== historyGen || state.tab !== 'history') return // the list was reset or left meanwhile
     await renderView()
     row = document.querySelector(`.commit-row[data-hash="${oid}"]`)
   }
@@ -1667,8 +1775,7 @@ async function viewHistory() {
       onChange: (e) => {
         H.mode = e.target.value
         if (H.search) {
-          H.commits = []
-          H.done = false
+          resetHistory()
           renderView()
         }
       }
@@ -1688,8 +1795,7 @@ async function viewHistory() {
     onKeydown: async (e) => {
       if (e.key !== 'Enter') return
       H.search = e.target.value.trim()
-      H.commits = []
-      H.done = false
+      resetHistory()
       renderView()
     }
   })
@@ -1703,8 +1809,7 @@ async function viewHistory() {
   function setAll(v) {
     H.all = v
     store.set('historyAllV2', v)
-    H.commits = []
-    H.done = false
+    resetHistory()
     renderView()
   }
   const headBtn = h('button', { class: 'btn sm', title: 'Scroll to the checked-out commit', onClick: () => goToHead() }, icon('current', 12), 'HEAD')
@@ -1720,10 +1825,11 @@ async function viewHistory() {
   const width = rows ? graphWidth(rows) + 4 : 8
   const list = h('div')
   const frag = document.createDocumentFragment()
+  const names = state.localNames ? [...state.localNames].sort().join(' ') : '' // branch names cannot hold spaces
   H.commits.forEach((c, i) => {
     // Rows are rebuilt only when what they show changed (lines, labels, selection): switching tabs,
     // refreshing or loading more reuses the rest instead of rebuilding hundreds of SVG rows.
-    const sig = rowSignature(c, rows && rows[i], width, H.open === c.hash)
+    const sig = rowSignature(c, rows && rows[i], width, H.open === c.hash, names)
     const cached = rowCache.get(c.hash)
     let row = cached && cached.sig === sig ? cached.el : null
     if (!row) {
@@ -2031,7 +2137,7 @@ async function resetTo(hash, mode) {
   const msg = mode === 'hard' ? 'All uncommitted changes will be lost. This cannot be undone.' : `Your branch will point at ${hash.slice(0, 7)}.`
   if (!(await confirmBox(`${mode[0].toUpperCase() + mode.slice(1)} reset?`, msg, 'Reset', mode === 'hard'))) return
   closeSheet()
-  state.history.commits = []
+  resetHistory()
   run('reset', { hash, mode }, { success: `Reset (${mode})` })
 }
 async function copy(text) {
@@ -2140,12 +2246,15 @@ function checkoutChangesDialog(label, count, { collided = false } = {}) {
       ok.className = `btn ${v === 'reset' ? 'danger solid' : 'primary'}`
       ok.textContent = v === 'reset' ? `Reset & checkout ${label}` : `Checkout ${label}`
     }
+    let closed = false
     const done = (val) => {
+      if (closed) return
+      closed = true
       overlay.remove()
       document.removeEventListener('keydown', onKey)
       resolve(val)
     }
-    const onKey = (e) => e.key === 'Escape' && done(null)
+    const onKey = (e) => e.key === 'Escape' && isTopOverlay(overlay) && done(null)
     const form = h(
       'form',
       {
@@ -2166,7 +2275,7 @@ function checkoutChangesDialog(label, count, { collided = false } = {}) {
     )
     pick(mode)
     const overlay = h('div', { class: 'overlay', onMousedown: (e) => e.target === overlay && done(null) }, form)
-    document.body.append(overlay)
+    mountOverlay(overlay, () => done(null))
     document.addEventListener('keydown', onKey)
     ok.focus()
   })
@@ -2226,7 +2335,7 @@ A branch can be checked out in only one worktree at a time.`,
   setBusy(-1)
   const loc = out?.local
   const shown = loc?.name || label
-  if (out?.stashKept) toast(`Switched to ${shown}. Your changes did not apply cleanly, so they are kept in the stash.`, 'error', 9000)
+  if (out?.stashKept) toast(out.stashMessage || `Switched to ${shown}. Your changes did not apply cleanly, so they are kept in the stash.`, 'error', 9000)
   else toast(out?.stashed ? `Switched to ${shown} with your changes` : `Switched to ${shown}`)
   // origin/x checked out while a local x exists: we switched to the local one; offer to catch it up.
   if (loc && loc.behind > 0 && loc.ahead === 0) {
@@ -2258,7 +2367,7 @@ async function newBranch(start) {
   })
   if (!r?.name.trim()) return
   if (state.sheets.length) closeSheet()
-  state.history.commits = []
+  resetHistory()
   run('branchCreate', { name: r.name.trim(), start: r.start.trim() || undefined, checkout: r.checkout }, { success: `Created ${r.name.trim()}` })
 }
 async function mergeRef(ref) {
@@ -2284,14 +2393,14 @@ async function mergeRef(ref) {
   })
   if (!r) return
   if (state.sheets.length) closeSheet()
-  state.history.commits = []
+  resetHistory()
   const out = await run('merge', { ref, [r.mode]: r.mode !== 'default' }, { success: r.mode === 'squash' ? 'Squashed; review and commit' : 'Merged' })
   if (out === undefined && r.ai && state.status?.files.some((f) => f.conflict)) resolveWithAi()
 }
 async function rebaseOnto(ref) {
   const cur = state.status?.branch || 'HEAD'
   if (!(await confirmBox(`Rebase ${cur} onto ${ref}?`, 'Your commits will be replayed on top of it. Avoid this on branches others already pulled.', 'Rebase'))) return
-  state.history.commits = []
+  resetHistory()
   const out = await run('rebase', { onto: ref }, { success: 'Rebased' })
   if (out === undefined && state.status?.files.some((f) => f.conflict) && (await confirmBox('Rebase hit conflicts', 'Resolve them with AI in a new terminal?', 'Resolve with AI'))) resolveWithAi()
 }
@@ -2308,7 +2417,7 @@ async function newTag(hash) {
   if (!r?.name.trim()) return
   const name = r.name.trim()
   store.set('tagPush', !!r.push)
-  state.history.commits = []
+  resetHistory()
   const made = await run('tagCreate', { name, message: r.message.trim() || undefined, hash }, { success: r.push ? undefined : `Tagged ${name}`, refresh: !r.push })
   if (made !== undefined && r.push) run('tagPush', { name }, { success: `Tagged and pushed ${name}` })
 }
@@ -2567,7 +2676,7 @@ async function viewWorktrees() {
       { class: 'section-head' },
       'Worktrees',
       h('span', { class: 'count' }, list.length),
-      h('div', { class: 'actions' }, iconBtn('trash', 'Prune stale worktrees', () => run('worktreePrune', {}, { success: 'Pruned' })), iconBtn('plus', 'New worktree', () => addWorktree()))
+      h('div', { class: 'actions' }, iconBtn('trash', 'Prune stale worktrees', async () => (await confirmBox('Prune stale worktrees?', 'Removes the records of worktrees whose folders no longer exist. Worktrees on disk are not touched.', 'Prune')) && run('worktreePrune', {}, { success: 'Pruned' })), iconBtn('plus', 'New worktree', () => addWorktree()))
     )
   )
   for (const w of list) {
@@ -2626,7 +2735,8 @@ Git no longer finds this worktree. Its record is removed; any files left in the 
                         ? []
                         : [
                             { key: 'force', label: w.locked ? 'Force (it is locked, and discard its uncommitted changes)' : 'Force (discard its uncommitted changes)', type: 'check', value: !!w.locked },
-                            w.branch && { key: 'deleteBranch', label: `Also delete branch ${w.branch}`, type: 'check', value: false }
+                            w.branch && { key: 'deleteBranch', label: `Also delete branch ${w.branch} (only if it is merged)`, type: 'check', value: false },
+                            w.branch && { key: 'forceBranch', label: `Delete ${w.branch} even if it has unmerged commits`, type: 'check', value: false }
                           ].filter(Boolean),
                       ok: 'Remove',
                       danger: true
@@ -2637,7 +2747,7 @@ Git no longer finds this worktree. Its record is removed; any files left in the 
                     let out
                     setBusy(1)
                     try {
-                      out = await call('worktreeRemove', { path: w.path, force: r.force, deleteBranch: r.deleteBranch })
+                      out = await call('worktreeRemove', { path: w.path, force: r.force, deleteBranch: r.deleteBranch || r.forceBranch, forceBranch: r.forceBranch })
                     } catch (err) {
                       // Uncommitted or untracked files: say so plainly and offer to remove it anyway.
                       if (!r.force && !/still lists/.test(err.message) && /modified|untracked|use --force/i.test(err.message)) {
@@ -2646,7 +2756,7 @@ Git no longer finds this worktree. Its record is removed; any files left in the 
 
 Removing it deletes those changes. This cannot be undone.`, 'Remove anyway', true)
                         setBusy(1) // balanced by finally
-                        if (yes) out = await call('worktreeRemove', { path: w.path, force: true, deleteBranch: r.deleteBranch }).catch((e2) => (toast(e2.message, 'error'), undefined))
+                        if (yes) out = await call('worktreeRemove', { path: w.path, force: true, deleteBranch: r.deleteBranch || r.forceBranch, forceBranch: r.forceBranch }).catch((e2) => (toast(e2.message, 'error'), undefined))
                       } else toast(err.message, 'error')
                     } finally {
                       setBusy(-1)
@@ -2656,6 +2766,7 @@ Removing it deletes those changes. This cannot be undone.`, 'Remove anyway', tru
                     else if (out.leftover) toast(`Worktree removed from Git. Some files are left in the folder:
 ${w.path}`, 'ok', 7000)
                     else toast('Worktree removed')
+                    if (out?.branchKept) toast(`Branch ${w.branch} was kept: ${out.branchKept}`, 'error', 8000)
                     if (out !== undefined) await new Promise((res) => setTimeout(res, 180)) // let the card fold away
                     // always reload the list: on failure too, so an entry removed elsewhere disappears
                     await refreshAll()
@@ -3224,10 +3335,10 @@ function bisectBanner(st) {
     h(
       'div',
       { class: 'row' },
-      h('button', { class: 'btn sm', onClick: () => run('bisect', { action: 'good' }, { success: 'Marked good' }).then(() => (state.history.commits = [])) }, icon('check', 12), 'Good'),
-      h('button', { class: 'btn sm', onClick: () => run('bisect', { action: 'bad' }, { success: 'Marked bad' }).then(() => (state.history.commits = [])) }, icon('x', 12), 'Bad'),
+      h('button', { class: 'btn sm', onClick: () => run('bisect', { action: 'good' }, { success: 'Marked good' }).then(() => resetHistory()) }, icon('check', 12), 'Good'),
+      h('button', { class: 'btn sm', onClick: () => run('bisect', { action: 'bad' }, { success: 'Marked bad' }).then(() => resetHistory()) }, icon('x', 12), 'Bad'),
       h('button', { class: 'btn sm', onClick: () => run('bisect', { action: 'skip' }, { success: 'Skipped' }) }, 'Skip'),
-      h('button', { class: 'btn sm danger', onClick: () => run('bisect', { action: 'reset' }, { success: 'Bisect finished' }).then(() => (state.history.commits = [])) }, 'Stop')
+      h('button', { class: 'btn sm danger', onClick: () => run('bisect', { action: 'reset' }, { success: 'Bisect finished' }).then(() => resetHistory()) }, 'Stop')
     )
   )
 }
@@ -3241,7 +3352,7 @@ async function startBisect(goodHash) {
   } catch (e) {
     toast(e.message, 'error')
   }
-  state.history.commits = []
+  resetHistory()
   refreshAll()
 }
 
@@ -3249,7 +3360,7 @@ async function rewordLast(c) {
   const r = await dialog({ title: 'Reword last commit', fields: [{ key: 'msg', label: 'Message', type: 'textarea', value: c.message }], ok: 'Save' })
   if (!r?.msg.trim()) return
   closeSheet()
-  state.history.commits = []
+  resetHistory()
   run('rewordLast', { message: r.msg }, { success: 'Message updated' })
 }
 
@@ -3269,7 +3380,7 @@ async function squashSince(base) {
   })
   if (!r?.msg.trim()) return
   closeSheet()
-  state.history.commits = []
+  resetHistory()
   run('squashSince', { base, message: r.msg }, { success: 'Squashed' })
 }
 
@@ -3313,7 +3424,11 @@ async function interactiveRebase(base) {
     if (todo[0] && (todo[0].action === 'squash' || todo[0].action === 'fixup')) todo[0].action = 'pick'
   }
   draw()
-  const close = () => overlay.remove()
+  const close = () => {
+    overlay.remove()
+    document.removeEventListener('keydown', onKey)
+  }
+  const onKey = (e) => e.key === 'Escape' && isTopOverlay(overlay) && close()
   const box = h(
     'div',
     { class: 'dialog wide-dialog' },
@@ -3331,7 +3446,7 @@ async function interactiveRebase(base) {
           onClick: async () => {
             close()
             closeSheet()
-            state.history.commits = []
+            resetHistory()
             const out = await run('rebaseInteractive', { base, todo: todo.map(({ hash, action }) => ({ hash, action })) }, { success: 'Rebased' })
             if (out === undefined && state.status?.files.some((f) => f.conflict) && (await confirmBox('Rebase hit conflicts', 'Resolve them with AI in a new terminal?', 'Resolve with AI'))) resolveWithAi()
           }
@@ -3341,7 +3456,8 @@ async function interactiveRebase(base) {
     )
   )
   const overlay = h('div', { class: 'overlay', onMousedown: (e) => e.target === overlay && close() }, box)
-  document.body.append(overlay)
+  mountOverlay(overlay, close)
+  document.addEventListener('keydown', onKey)
 }
 
 async function savePatch(c) {
@@ -3566,8 +3682,10 @@ async function aiCommitModal({ staged, total, onUse, onCommit }) {
     document.removeEventListener('keydown', onKey)
   }
   const onKey = (e) => {
-    if (e.key === 'Escape') close()
-    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) result.value.trim() && !busy ? finish(onCommit) : generate()
+    if (!isTopOverlay(overlay)) return
+    if (e.key === 'Escape' && !busy) close()
+    // Ctrl+Enter commits a ready message, or starts a run; it never stops one in flight.
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !busy) result.value.trim() ? finish(onCommit) : generate()
   }
 
   const box = h(
@@ -3581,7 +3699,7 @@ async function aiCommitModal({ staged, total, onUse, onCommit }) {
     h('div', { class: 'buttons' }, h('button', { type: 'button', class: 'btn', onClick: close }, 'Cancel'), h('span', { class: 'grow' }), genBtn, useBtn, commitBtn)
   )
   const overlay = h('div', { class: 'overlay', onMousedown: (e) => e.target === overlay && !busy && close() }, box)
-  document.body.append(overlay)
+  mountOverlay(overlay, close)
   document.addEventListener('keydown', onKey)
   generate() // start right away, like Orca's one-click generate
 }
@@ -3636,10 +3754,15 @@ async function mergeRequestDialog(target, source, swapped) {
   const drawButtons = () => {
     clear(linkBtn).append(icon('open', 13), 'Open link')
     linkBtn.title = `Push, then open ${service} with this filled in; press Create there. Nothing to install.`
-    clear(createBtn).append(icon('merge', 13), info.tools.signedIn ? 'Create now' : `Set up & create`)
-    createBtn.title = info.tools.signedIn ? `Push and create the ${noun} on ${service} right here` : `Needs ${info.tools.cli}, set up once`
+    const can = !!info.tools.via
+    clear(createBtn).append(icon('merge', 13), can ? 'Create now' : `Set up & create`)
+    createBtn.title = can ? `Push and create the ${noun} on ${service} right here` : `Needs ${info.tools.cli}, set up once`
     clear(note)
-    if (info.tools.signedIn) note.append(icon('check', 13), h('span', null, h('b', null, 'Create now'), ` makes the ${noun} on ${service} directly. `, h('b', null, 'Open link'), ' opens it in your browser instead.'))
+    if (can)
+      note.append(
+        icon('check', 13),
+        h('span', null, h('b', null, 'Create now'), ` makes the ${noun} on ${service} directly${info.tools.via === 'git' ? ', with the login Git already uses' : ` with ${info.tools.cli}`}. `, h('b', null, 'Open link'), ' opens it in your browser instead.')
+      )
     else
       note.append(
         icon('open', 13),
@@ -3670,18 +3793,30 @@ async function mergeRequestDialog(target, source, swapped) {
     try {
       info = await request('mr.info', { repo, target, source: info.source }, 30000)
       drawButtons()
-      if (info.tools.signedIn) toast(`${info.tools.cli} is ready: Create now makes it in one click.`)
+      if (info.tools.via) toast(`${info.tools.via === 'git' ? 'Your Git login' : info.tools.cli} is ready: Create now makes it in one click.`)
     } catch (e) {
       toast(e.message, 'error')
     }
   }
 
+  let busy = false // creating: Escape and the backdrop do nothing
+  let sent = false // finished: nothing left to lose
+  const original = { title: title.value, body: body.value }
   const close = () => {
     overlay.remove()
     document.removeEventListener('keydown', onKey)
   }
-  const onKey = (e) => e.key === 'Escape' && close()
-  const finished = (headline, url, sub, openLabel) =>
+  // Escape / backdrop: ignored while creating; asks first when the title or description were edited.
+  const softClose = async () => {
+    if (busy) return
+    if (!sent && (title.value !== original.title || body.value !== original.body)) {
+      if (!(await confirmBox(`Discard this ${noun}?`, 'The title and description you edited are lost.', 'Discard', true))) return
+    }
+    close()
+  }
+  const onKey = (e) => e.key === 'Escape' && isTopOverlay(overlay) && (e.preventDefault(), softClose())
+  const finished = (headline, url, sub, openLabel) => {
+    sent = true
     clear(form).append(
       h('div', { class: 'mr-done' }, icon('check', 22), h('div', null, h('div', { class: 'mr-done-title' }, headline), sub && h('div', { class: 'dim' }, sub))),
       h(
@@ -3693,13 +3828,15 @@ async function mergeRequestDialog(target, source, swapped) {
         h('button', { type: 'button', class: 'btn primary', onClick: () => openLink(url) }, icon('open', 13), openLabel)
       )
     )
+  }
   async function submit(web) {
-    if (!web && !info.tools.signedIn) {
+    if (!web && !info.tools.via) {
       // first time: set the CLI up (or just sign in) in a terminal; "Check again" enables one click
       return setup(info.tools.installed ? (isGh ? 'gh-login' : 'glab-login') : isGh ? 'gh-install' : 'glab-install')
     }
     if (!web && !title.value.trim()) return title.focus()
     const btn = web ? linkBtn : createBtn
+    busy = true
     linkBtn.disabled = createBtn.disabled = true
     clear(btn).append(h('span', { class: 'spinner' }), info.needsPush ? 'Pushing…' : web ? 'Opening…' : 'Creating…')
     try {
@@ -3714,9 +3851,17 @@ async function mergeRequestDialog(target, source, swapped) {
       state.history.stale = true
       refreshAll()
     } catch (e) {
-      toast(e.message, 'error')
       linkBtn.disabled = createBtn.disabled = false
       drawButtons()
+      if (!web && (e?.data?.kind === 'git-login-denied' || /git login/i.test(e.message))) {
+        // the saved Git login may push but not create merge requests: fall back to the web page
+        toast(`${e.message} Opening ${service} in your browser instead.`, 'error', 7000)
+        busy = false
+        return submit(true)
+      }
+      toast(e.message, 'error')
+    } finally {
+      busy = false
     }
   }
   linkBtn.addEventListener('click', () => submit(true))
@@ -3770,8 +3915,8 @@ async function mergeRequestDialog(target, source, swapped) {
   )
   drawButtons()
   const box = h('div', { class: 'dialog mr-dialog', role: 'dialog' }, h('h3', null, `New ${noun}`), form)
-  const overlay = h('div', { class: 'overlay', onMousedown: (e) => e.target === overlay && close() }, box)
-  document.body.append(overlay)
+  const overlay = h('div', { class: 'overlay', onMousedown: (e) => e.target === overlay && softClose() }, box)
+  mountOverlay(overlay, close)
   document.addEventListener('keydown', onKey)
   title.focus()
   title.select()
@@ -3783,13 +3928,12 @@ async function mergeRequestDialog(target, source, swapped) {
    ========================================================================= */
 let reviewsLoading = null
 async function loadReviews(force) {
-  if (!force && state.reviews && Date.now() - state.reviews.at < 120000) return state.reviews
   if (!force && state.reviews && state.reviews.repo === state.repo && Date.now() - state.reviews.at < 120000) return state.reviews
   const repo = state.repo
   reviewsLoading ||= request('reviews.list', { repo }, 90000)
     .then((r) => {
       state.reviews = { ...r, repo, at: Date.now() }
-      try { store.set('reviewsCache', state.reviews) } catch {}
+      store.set('reviewsCache', state.reviews)
       renderTabs()
       return state.reviews
     })
@@ -3811,13 +3955,7 @@ async function viewReviews() {
     }
     p.catch(() => {})
   }
-  let data
-  try {
-    data = state.reviews
-  } catch (e) {
-    root.append(h('div', { class: 'empty' }, icon('alert', 28), h('div', null, e.message)))
-    return root
-  }
+  const data = state.reviews
   const filter = state.reviewFilter || 'all'
   const seg = h(
     'div',
@@ -3914,8 +4052,9 @@ function reviewRow(it) {
         {
           class: 'btn sm primary',
           onClick: async (e) => {
+            const b = e.currentTarget // gone after the await
             if (!(await confirmBox(`Approve this ${noun}?`, `${it.repo} ${it.provider === 'github' ? '#' : '!'}${it.number}\n${it.title}`, 'Approve'))) return
-            await actOnReview(it, 'approve', '', e.currentTarget)
+            await actOnReview(it, 'approve', '', b)
           }
         },
         icon('check', 12),
@@ -3926,12 +4065,13 @@ function reviewRow(it) {
 }
 
 async function actOnReview(it, action, body, btn) {
+  const label = btn ? [...btn.childNodes] : null
   if (btn) {
     btn.disabled = true
     clear(btn).append(h('span', { class: 'spinner' }), 'Sending…')
   }
   try {
-    await request('reviews.act', { provider: it.provider, host: it.host, url: it.url, projectId: it.projectId, number: it.number, action, body }, 90000)
+    await request('reviews.act', { ...it, ci: undefined, action, body }, 90000)
     toast({ approve: 'Approved', changes: 'Changes requested', comment: 'Comment posted' }[action] + `: ${it.title}`)
     if (action === 'approve' || action === 'changes') {
       await loadReviews(true).catch(() => {})
@@ -3942,7 +4082,7 @@ async function actOnReview(it, action, body, btn) {
     toast(e.message, 'error')
     if (btn) {
       btn.disabled = false
-      clear(btn).append(icon('check', 12), 'Approve')
+      clear(btn).append(...label)
     }
     return false
   }
@@ -4010,7 +4150,7 @@ async function aiReviewModal(it) {
     sync(true, `${name} is reading the ${noun}…`)
     const started = Date.now()
     try {
-      const r = await request('ai.review', { provider: it.provider, host: it.host, url: it.url, projectId: it.projectId, number: it.number, agent: agentSel.value, instructions: instructions.value }, 118000)
+      const r = await request('ai.review', { ...it, ci: undefined, agent: agentSel.value, instructions: instructions.value }, 118000)
       if (my !== gen) return
       result.value = r.review
       verdict = r.verdict
@@ -4036,7 +4176,7 @@ async function aiReviewModal(it) {
     overlay.remove()
     document.removeEventListener('keydown', onKey)
   }
-  const onKey = (e) => e.key === 'Escape' && !document.querySelectorAll('.overlay')[1] && close()
+  const onKey = (e) => e.key === 'Escape' && !busy && isTopOverlay(overlay) && close()
 
   const box = h(
     'div',
@@ -4049,7 +4189,7 @@ async function aiReviewModal(it) {
     h('div', { class: 'buttons' }, h('button', { type: 'button', class: 'btn', onClick: close }, 'Cancel'), h('span', { class: 'grow' }), genBtn, postBtns.comment, postBtns.changes, postBtns.approve)
   )
   const overlay = h('div', { class: 'overlay', onMousedown: (e) => e.target === overlay && !busy && close() }, box)
-  document.body.append(overlay)
+  mountOverlay(overlay, close)
   document.addEventListener('keydown', onKey)
   generate()
 }
@@ -4117,8 +4257,9 @@ async function undoLast() {
     return toast(e.message, 'error')
   }
   if (u.blocked) return toast(u.blocked, 'error')
-  const keep = u.mode === 'soft' ? 'Its changes stay staged, ready to commit again.' : 'Uncommitted changes are kept.'
-  if (!(await confirmBox('Undo the last action?', `${u.what}\n${ago(u.at)}\n\nThe branch goes back to ${u.to.slice(0, 7)}. ${keep}\nThe Reflog tab can take you forward again.`, 'Undo'))) return
+  const keep = u.mode === 'soft' ? 'Its changes stay staged, ready to commit again.' : u.mode === 'switch' ? '' : 'Uncommitted changes are kept.'
+  const what = u.description || `The branch goes back to ${u.to.slice(0, 7)}. ${keep}`
+  if (!(await confirmBox('Undo the last action?', `${u.what}\n${ago(u.at)}\n\n${what}\nThe Reflog tab can take you forward again.`, 'Undo'))) return
   state.history.stale = true
   run('undoLast', {}, { success: `Undone: ${u.what.split(':')[0]}` })
 }
@@ -4134,7 +4275,11 @@ async function cleanupBranches() {
   if (!rows.length) return toast(`No merged or gone branches (compared with ${c.base}).`)
   closeOverlays()
   const checks = rows.map((r) => ({ ...r, box: h('input', { type: 'checkbox', checked: true }) }))
-  const close = () => overlay.remove()
+  const close = () => {
+    overlay.remove()
+    document.removeEventListener('keydown', onKey)
+  }
+  const onKey = (e) => e.key === 'Escape' && isTopOverlay(overlay) && close()
   const box = h(
     'div',
     { class: 'dialog', role: 'dialog' },
@@ -4167,7 +4312,8 @@ async function cleanupBranches() {
     )
   )
   const overlay = h('div', { class: 'overlay', onMousedown: (e) => e.target === overlay && close() }, box)
-  document.body.append(overlay)
+  mountOverlay(overlay, close)
+  document.addEventListener('keydown', onKey)
 }
 
 /** Resolve a conflicted file block by block: ours, theirs or both, then save and mark resolved. */
@@ -4254,7 +4400,7 @@ async function reviewDiffSheet(it) {
   sheet.el.classList.add('wide-sheet')
   let diff
   try {
-    diff = (await request('reviews.diff', { provider: it.provider, host: it.host, url: it.url, projectId: it.projectId, number: it.number }, 90000)).diff
+    diff = (await request('reviews.diff', { ...it, ci: undefined }, 90000)).diff
   } catch (e) {
     closeSheet()
     return toast(e.message, 'error')
@@ -4390,6 +4536,25 @@ window.addEventListener('focus', () => (state.pinned ? pollStatus() : followFocu
 // workspace.changed may not fire for every switch, so also re-check the focused worktree now and then.
 setInterval(() => followFocus(), 5000)
 setInterval(pollStatus, 4000)
+/**
+ * Light theme: Orca passes its colors as --orca-* variables, not a class. Read the background's
+ * luminance and set html.light, again whenever Orca rewrites the variables (theme switch).
+ */
+function syncTheme() {
+  const probe = h('div', { style: { position: 'absolute', visibility: 'hidden', background: 'var(--orca-background, var(--bg))' } })
+  document.body.append(probe)
+  const m = getComputedStyle(probe).backgroundColor.match(/[\d.]+/g)
+  probe.remove()
+  if (!m || (m.length > 3 && +m[3] === 0)) return
+  const lin = (v) => ((v /= 255) <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4)
+  const lum = 0.2126 * lin(+m[0]) + 0.7152 * lin(+m[1]) + 0.0722 * lin(+m[2])
+  document.documentElement.classList.toggle('light', lum > 0.4)
+}
+syncTheme()
+new MutationObserver(syncTheme).observe(document.documentElement, { attributes: true, attributeFilter: ['style', 'data-theme'] })
+new MutationObserver(syncTheme).observe(document.head, { childList: true, subtree: true, characterData: true })
+window.matchMedia?.('(prefers-color-scheme: light)').addEventListener?.('change', syncTheme)
+
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && state.sheets.length && !document.querySelector('.overlay, .menu')) closeSheet()
   if (e.key === 'F5' || ((e.ctrlKey || e.metaKey) && e.key === 'r')) {

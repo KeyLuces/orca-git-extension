@@ -2,10 +2,11 @@
 // Chrome, wired to the real worker (worker/main.mjs) in this Node process. The test only clicks, types
 // and reads the page, then checks the repository from outside with plain git.
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
+import http from 'node:http'
 import puppeteer from 'puppeteer-core'
 
 const PLUGIN = process.argv[2]
@@ -20,7 +21,12 @@ const GLOBAL_CFG = path.join(root, 'global.gitconfig')
 writeFileSync(GLOBAL_CFG, '[user]\n\tname = Global Tester\n\temail = global@e2e.test\n')
 process.env.GIT_CONFIG_GLOBAL = GLOBAL_CFG
 process.env.GIT_CONFIG_NOSYSTEM = '1'
+// Hide gh/glab: the test must never reach the person's real GitHub/GitLab accounts.
+process.env.PATH = process.env.PATH.split(path.delimiter).filter((d) => !['gh.exe', 'glab.exe', 'gh', 'glab'].some((b) => { try { return statSync(path.join(d, b)).isFile() } catch { return false } })).join(path.delimiter)
 process.env.GITX_NO_BROWSER = '1' // the merge request step must not open a real browser
+let browser = null
+const results = []
+try {
 const origin = path.join(root, 'origin.git')
 const repo = path.join(root, 'app')
 const g = (...a) => execFileSync('git', a, { cwd: repo, encoding: 'utf8', env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } }).trim()
@@ -59,7 +65,7 @@ activate({
 })
 
 // ---------- browser ----------
-const browser = await puppeteer.launch({ executablePath: CHROME, headless: true, args: ['--window-size=1500,900'] })
+browser = await puppeteer.launch({ executablePath: CHROME, headless: true, args: ['--window-size=1500,900'] })
 const page = await browser.newPage()
 await page.setViewport({ width: 1500, height: 900 })
 const consoleErrors = []
@@ -171,7 +177,6 @@ const toastText = () => page.$$eval('.toast', (t) => t.map((x) => x.textContent)
 const shot = (name) => page.screenshot({ path: path.join(SHOTS, `${name}.png`) })
 
 // ---------- run ----------
-const results = []
 async function step(name, fn) {
   const t = Date.now()
   try {
@@ -372,7 +377,7 @@ await step('a branch in sync with its remote is one label (main │ origin)', as
   g('switch', '-q', 'main'); g('reset', '-q', '--hard', 'origin/main')
   await refresh()
   await tab('Graph')
-  const text = await until(() => page.evaluate(() => [...document.querySelectorAll('.ref.synced')].map((e) => e.textContent).join('|')), 'synced label')
+  const text = await until(() => page.evaluate(() => { const t = [...document.querySelectorAll('.ref.synced')].map((e) => e.textContent).join('|'); return /main\s*origin/.test(t) && t }), 'main │ origin label').catch(() => page.evaluate(() => [...document.querySelectorAll('.ref.synced')].map((e) => e.textContent).join('|')))
   if (!/main\s*origin/.test(text)) throw new Error('synced label reads: ' + text)
   const separateOriginMain = await page.$$eval('.ref.remote .ref-t', (t) => t.some((x) => x.textContent === 'origin/main'))
   if (separateOriginMain) throw new Error('origin/main is still a separate label while in sync')
@@ -402,6 +407,129 @@ await step('merge request: one button pushes the branch and hands over to GitLab
   await page.keyboard.press('Escape')
   await until(() => page.$('.mr-dialog').then((x) => !x), 'MR dialog closes')
 })
+
+// ---------- merge requests through the saved Git login, against a fake GitHub/GitLab API ----------
+// Hosts are made up (*.example.test) and the API is a local server: no real account is ever used.
+const api = { calls: [], deny: false }
+const apiServer = http.createServer((req, res) => {
+  let data = ''
+  req.on('data', (c) => (data += c))
+  req.on('end', () => {
+    const u = new URL(req.url, 'http://x')
+    api.calls.push({ method: req.method, path: u.pathname, query: u.search, auth: req.headers.authorization || req.headers['private-token'] || '', body: data ? JSON.parse(data) : null })
+    const send = (code, obj) => (res.writeHead(code, { 'Content-Type': 'application/json' }), res.end(JSON.stringify(obj)))
+    if (api.deny) return send(401, { message: '401 Unauthorized' })
+    if (req.method === 'POST' && /\/merge_requests$/.test(u.pathname)) return send(201, { iid: 7, web_url: 'https://gitlab2.example.test/team/app/-/merge_requests/7' })
+    if (req.method === 'POST' && /\/pulls$/.test(u.pathname)) return send(201, { number: 9, html_url: 'https://github.example.test/team/app/pull/9' })
+    if (u.pathname.endsWith('/user')) return send(200, { username: 'me', login: 'me', id: 1 })
+    if (req.method === 'GET' && /merge_requests$/.test(u.pathname)) {
+      const role = u.search.includes('reviewer_username') ? 'review' : u.search.includes('assignee_username') ? 'assigned' : u.search.includes('author_username') ? 'mine' : 'repo'
+      const n = { review: 11, assigned: 12, mine: 13, repo: 14 }[role]
+      return send(200, [
+        {
+          iid: n,
+          project_id: 5,
+          web_url: `https://gitlab2.example.test/team/app/-/merge_requests/${n}`,
+          title: `MR ${role}`,
+          author: { username: role === 'mine' ? 'me' : 'dev' },
+          source_branch: 's' + n,
+          target_branch: 'main',
+          updated_at: new Date().toISOString(),
+          references: { full: `team/app!${n}` }
+        }
+      ])
+    }
+    send(200, [])
+  })
+})
+await new Promise((r) => apiServer.listen(0, '127.0.0.1', r))
+const API = `http://127.0.0.1:${apiServer.address().port}`
+const useLogin = () => g('config', 'credential.helper', '!f() { echo username=me; echo password=TESTTOKEN; }; f')
+
+async function createNow(branch, menuTarget = 'main') {
+  await refresh()
+  await until(() => page.$eval('.branch-chip', (c, b) => c.textContent.includes(b), branch), `header shows ${branch}`)
+  await clickInRow('#side .item', menuTarget, 'More')
+  await clickText('.menu button', `Merge request → ${menuTarget}`)
+  await until(() => exists('.mr-dialog'), 'MR dialog')
+  await until(() => page.$$eval('.mr-dialog .btn', (b) => b.some((x) => x.textContent.includes('Create now'))), '"Create now" offered with the saved Git login')
+  await clickText('.mr-dialog .btn', 'Create now')
+}
+const dialogHas = (t) => page.evaluate((t) => !!document.querySelector('.mr-dialog')?.textContent.includes(t), t)
+
+await step('merge request (GitLab): Create now uses the saved Git login, no glab', async () => {
+  process.env.GITX_API_BASE = API + '/api/v4'
+  g('switch', '-q', 'main'); g('switch', '-q', '-c', 'mr-gl'); write('gl.txt', 'gl\n'); g('add', '.'); g('commit', '-qm', 'Add GitLab change')
+  g('remote', 'set-url', 'origin', 'https://gitlab2.example.test/team/app.git'); g('remote', 'set-url', '--push', 'origin', origin.replace(/\\/g, '/'))
+  useLogin()
+  api.calls = []
+  await createNow('mr-gl')
+  await until(() => dialogHas('created'), 'created', 20000)
+  const post = api.calls.find((c) => c.method === 'POST')
+  if (!post || post.path !== '/api/v4/projects/team%2Fapp/merge_requests') throw new Error('POST went to ' + post?.path)
+  if (!/TESTTOKEN/.test(post.auth)) throw new Error('no token sent')
+  if (post.body.source_branch !== 'mr-gl' || post.body.target_branch !== 'main' || post.body.title !== 'Add GitLab change') throw new Error('body ' + JSON.stringify(post.body))
+  if (!execFileSync('git', ['ls-remote', origin, 'mr-gl'], { encoding: 'utf8' }).trim()) throw new Error('branch was not pushed first')
+  await shot('10-mr-gitlab-created')
+  await page.keyboard.press('Escape')
+})
+
+await step('merge request (GitHub): Create now uses the saved Git login, no gh', async () => {
+  process.env.GITX_API_BASE = API
+  g('switch', '-q', 'main'); g('switch', '-q', '-c', 'mr-gh'); write('gh.txt', 'gh\n'); g('add', '.'); g('commit', '-qm', 'Add GitHub change')
+  g('remote', 'set-url', 'origin', 'https://github.example.test/team/app.git'); g('remote', 'set-url', '--push', 'origin', origin.replace(/\\/g, '/'))
+  g('config', 'gitcontrol.provider', 'github')
+  api.calls = []
+  await createNow('mr-gh')
+  await until(() => dialogHas('created'), 'created', 20000)
+  const post = api.calls.find((c) => c.method === 'POST')
+  if (!post || post.path !== '/repos/team/app/pulls') throw new Error('POST went to ' + post?.path)
+  if (post.body.head !== 'mr-gh' || post.body.base !== 'main' || post.body.title !== 'Add GitHub change') throw new Error('body ' + JSON.stringify(post.body))
+  await page.keyboard.press('Escape')
+})
+
+await step('merge request: a refused Git login falls back to the web page', async () => {
+  g('switch', '-q', 'main'); g('switch', '-q', '-c', 'mr-deny'); write('deny.txt', 'd\n'); g('add', '.'); g('commit', '-qm', 'Add denied change')
+  api.deny = true
+  await createNow('mr-deny')
+  await until(() => dialogHas('Ready on'), 'web page offered instead', 20000)
+  api.deny = false
+  await page.keyboard.press('Escape')
+})
+
+await step('merge request: from main onto a feature branch flips to feature → main', async () => {
+  g('switch', '-q', 'main')
+  await refresh()
+  await until(() => page.$eval('.branch-chip', (c) => c.textContent.includes('main')), 'on main')
+  await clickInRow('#side .item', 'mr-gh', 'More')
+  await clickText('.menu button', 'Merge request → mr-gh')
+  await until(() => exists('.mr-dialog'), 'MR dialog')
+  const route = await page.$eval('.mr-route', (r) => [...r.querySelectorAll('.ref-t')].map((x) => x.textContent).join(' → '))
+  if (route !== 'mr-gh → main') throw new Error('route ' + route)
+  const t = await page.$eval('.mr-dialog input[type=text]', (i) => i.value)
+  if (!t) throw new Error('title is empty after the flip')
+  await page.keyboard.press('Escape')
+})
+
+await step('Inbox (GitLab, saved Git login): to review, assigned, opened by me, all open', async () => {
+  g('config', '--unset', 'gitcontrol.provider')
+  g('remote', 'set-url', 'origin', 'https://gitlab2.example.test/team/app.git')
+  process.env.GITX_API_BASE = API + '/api/v4'
+  await tab('Inbox')
+  await clickText('.reviews .btn', 'Refresh').catch(() => {})
+  const seg = async (label, want, not) => {
+    await clickText('.reviews .segmented button', label)
+    await until(() => page.$eval('.reviews', (r, w) => r.textContent.includes(w), want), `${label} lists ${want}`, 20000)
+    if (not && (await page.$eval('.reviews', (r, n) => r.textContent.includes(n), not))) throw new Error(`${label} also lists ${not}`)
+  }
+  await seg('To review', 'MR review', 'MR mine')
+  await seg('Assigned to me', 'MR assigned', 'MR review')
+  await seg('Opened by me', 'MR mine', 'MR assigned')
+  await seg('All open', 'MR repo', 'MR mine')
+  await seg('All', 'MR mine', 'MR repo')
+  await shot('11-inbox')
+})
+apiServer.close()
 
 await step('AI commit dialog opens with agent, instructions and message', async () => {
   write('ai.txt', 'export const answer = 42\n')
@@ -487,10 +615,15 @@ await step('no page errors', async () => {
   if (consoleErrors.length) throw new Error(consoleErrors.slice(0, 5).join(' | '))
 })
 
-await browser.close()
+} catch (e) {
+  results.push({ name: 'setup', ok: false, ms: 0, error: e.message })
+} finally {
+  // close Chrome and delete the throwaway repositories even when something throws outside step()
+  await browser?.close().catch(() => {})
+  try {
+    rmSync(root, { recursive: true, force: true })
+  } catch {}
+}
 for (const r of results) console.log(`${r.ok ? 'PASS' : 'FAIL'}  ${r.name}  (${r.ms} ms)${r.ok ? '' : `\n      ${r.error}${r.toasts ? `\n      toasts: ${r.toasts}` : ''}`}`)
 console.log(`\n${results.filter((r) => r.ok).length}/${results.length} passed`)
-try {
-  rmSync(root, { recursive: true, force: true })
-} catch {}
-process.exit(results.every((r) => r.ok) ? 0 : 1)
+process.exit(results.length && results.every((r) => r.ok) ? 0 : 1)

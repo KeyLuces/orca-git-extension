@@ -5,7 +5,15 @@ import { pathToFileURL } from 'node:url'
 import puppeteer from 'puppeteer-core'
 const PLUGIN = process.argv[2]
 const SHOTS = process.argv[3]
+if (!PLUGIN || !SHOTS || !process.argv[4]) {
+  console.error('usage: npm run perf -- <path to a large repo>')
+  console.error('   or: node perf.mjs <plugin folder> <scratch folder> <path to a large repo>')
+  process.exit(2)
+}
 mkdirSync(SHOTS, { recursive: true })
+// Read-only timings: the worker must not take index locks or read the machine's system git config.
+process.env.GIT_CONFIG_NOSYSTEM = '1'
+process.env.GIT_OPTIONAL_LOCKS = '0'
 const CHROME = process.env.CHROME || 'C:/Program Files/Google/Chrome/Application/chrome.exe'
 const REPO = process.argv[4]
 const repo = REPO
@@ -153,7 +161,9 @@ const t0 = Date.now()
 await page.goto('http://gitx.test/tab.html', { waitUntil: 'domcontentloaded' })
 await until(() => page.$$eval('.commit-row', (r) => r.length >= 50), 'rows', 20000)
 console.log('cold open → graph rows        ', Date.now() - t0, 'ms')
-await sleep(1500)
+// settle: the background refresh has finished and the page is idle
+await until(() => page.$('.loading').then((x) => !x), 'loading bar gone', 20000)
+await page.evaluate(() => new Promise((r) => requestIdleCallback(() => r(true), { timeout: 3000 })))
 const long0 = await page.evaluate(() => window.__long.splice(0))
 console.log('  long tasks during open      ', JSON.stringify(long0))
 let t = Date.now(); await tab('Commit'); await until(() => page.$('.commit-box'), 'commit view'); console.log('Graph → Commit                ', Date.now() - t, 'ms')

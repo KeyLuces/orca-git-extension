@@ -67,9 +67,9 @@
       },
       {
         "id": "reviews",
-        "text": "Reviews",
+        "text": "Inbox",
         "icon": "bell",
-        "tooltip": "Pull/merge requests waiting for you",
+        "tooltip": "Inbox: pull/merge requests waiting for you",
         "command": "openReviews"
       }
     ],

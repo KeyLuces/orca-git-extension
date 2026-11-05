@@ -1,7 +1,7 @@
 // Git Control worker: runs git for the panel. No dependencies, plain Node.
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -26,9 +26,8 @@ class GitError extends Error {
   }
 }
 
-/** Run git and resolve with stdout. Rejects with stderr on a non-zero exit unless `okCodes` allows it. */
 /**
- * Run git. When another git (an agent in a terminal, an editor) holds the repository lock for a
+ * Run git and resolve with stdout; rejects with stderr on a non-zero exit unless `okCodes` allows it. When another git (an agent in a terminal, an editor) holds the repository lock for a
  * moment, wait and try again instead of failing.
  */
 async function git(cwd, args, opts = {}) {
@@ -61,12 +60,17 @@ function gitOnce(cwd, args, { input, timeout = LOCAL_TIMEOUT, okCodes = [0], sig
     const out = []
     const err = []
     let size = 0
-    const timer = setTimeout(() => child.kill(), timeout)
-    const onAbort = () => child.kill()
+    let killedFor = null // why we stopped it, for a clear message instead of "exit null"
+    const stop = (why) => {
+      killedFor ||= why
+      child.kill()
+    }
+    const timer = setTimeout(() => stop(`git ${args[0]} timed out after ${Math.round(timeout / 1000)} s`), timeout)
+    const onAbort = () => stop(`git ${args[0]} was cancelled`)
     signal?.addEventListener('abort', onAbort)
     child.stdout.on('data', (d) => {
       size += d.length
-      if (size > 8 * 1024 * 1024) child.kill() // keep answers well under the 1 MiB-ish budget after trimming
+      if (size > 8 * 1024 * 1024) stop(`git ${args[0]} output too large`) // keep answers well under the 1 MiB-ish budget after trimming
       else out.push(d)
     })
     child.stderr.on('data', (d) => err.push(d))
@@ -78,9 +82,11 @@ function gitOnce(cwd, args, { input, timeout = LOCAL_TIMEOUT, okCodes = [0], sig
       signal?.removeEventListener('abort', onAbort)
       const stdout = Buffer.concat(out).toString('utf8')
       const stderr = Buffer.concat(err).toString('utf8').trim()
-      if (okCodes.includes(code)) resolve(stdout)
+      if (killedFor) reject(new GitError(killedFor))
+      else if (okCodes.includes(code)) resolve(stdout)
       else reject(new GitError(stderr || stdout.trim() || `git ${args[0]} failed (exit ${code})`))
     })
+    child.stdin.on('error', () => {}) // git may exit before reading its input
     if (input != null) child.stdin.end(input)
     else child.stdin.end()
   })
@@ -130,8 +136,9 @@ async function repoState(repo) {
   return null
 }
 
-const norm = (p) => {
-  const n = path.resolve(p).replace(/\\/g, '/').replace(/\/+$/, '')
+/** A path for comparing; a relative one is taken against `base` (the repository). */
+const norm = (p, base) => {
+  const n = path.resolve(base || '', String(p)).replace(/\\/g, '/').replace(/\/+$/, '')
   return process.platform === 'win32' ? n.toLowerCase() : n
 }
 
@@ -184,8 +191,7 @@ function terminalWorktrees() {
   if (termCache && Date.now() - termCache.at < 8000) return termCache.p
   const p = terminalWorktreesUncached()
   termCache = { at: Date.now(), p }
-  p.then((m) => Object.keys(m).length || (termCache = null))
-  return p
+  return p // an empty map is cached too: no terminals is a normal answer
 }
 function forgetFocusCaches() {
   termCache = null
@@ -251,10 +257,10 @@ function parseStatus(raw) {
   return res
 }
 
-async function status(repo) {
+async function status(repo, { untracked = 'all' } = {}) {
   // One git process: --show-stash adds "# stash <n>" to the header (git 2.35+).
   const [raw, state, { gitDir: d, toplevel }, refsSig] = await Promise.all([
-    git(repo, ['status', '--porcelain=v2', '--branch', '--show-stash', '-z', '--untracked-files=all']),
+    git(repo, ['status', '--porcelain=v2', '--branch', '--show-stash', '-z', `--untracked-files=${untracked === 'normal' ? 'normal' : 'all'}`]),
     repoState(repo),
     paths(repo),
     refsFingerprint(repo).catch(() => '') // any branch, tag or remote moving changes this
@@ -300,15 +306,16 @@ async function commonDir(repo) {
 }
 /** Share an answer for a moment: one refresh asks the same question several times. */
 const shortMemo = new Map()
-function memo(key, ms, fn) {
-  const hit = shortMemo.get(key)
+function cached(map, key, ms, fn) {
+  const hit = map.get(key)
   if (hit && Date.now() - hit.at < ms) return hit.p
-  const p = fn()
-  shortMemo.set(key, { at: Date.now(), p })
-  p.catch(() => shortMemo.delete(key))
-  if (shortMemo.size > 200) shortMemo.delete(shortMemo.keys().next().value)
+  const p = Promise.resolve().then(fn)
+  map.set(key, { at: Date.now(), p })
+  p.catch(() => map.get(key)?.p === p && map.delete(key))
+  if (map.size > 200) map.delete(map.keys().next().value)
   return p
 }
+const memo = (key, ms, fn) => cached(shortMemo, key, ms, fn)
 function refsFingerprint(repo) {
   return memo('fp|' + repo, 300, async () => {
     const raw = await git(repo, ['for-each-ref', '--format=%(objectname) %(refname)'])
@@ -419,6 +426,18 @@ async function commitShow(repo, args) {
   return out
 }
 
+/** `--name-status -z`: STATUS\0path\0 (or STATUS\0old\0new\0 for renames and copies). */
+function parseNameStatus(raw) {
+  const ns = raw.split('\0').filter((x) => x !== '')
+  const out = []
+  for (let i = 0; i < ns.length; ) {
+    const st = ns[i++]
+    if (st[0] === 'R' || st[0] === 'C') out.push({ status: st[0], orig: ns[i++], path: ns[i++] })
+    else out.push({ status: st[0], path: ns[i++] })
+  }
+  return out
+}
+
 async function commitShowUncached(repo, { hash }) {
   const h = req(hash, 'hash')
   const meta = await git(repo, [
@@ -435,15 +454,7 @@ async function commitShowUncached(repo, { hash }) {
     git(repo, ['diff-tree', '--no-commit-id', '-r', '-M', '--numstat', '-z', ...target]),
     git(repo, ['diff-tree', '--no-commit-id', '-r', '-M', '--name-status', '-z', ...target])
   ])
-  // name-status -z: STATUS\0path\0 (or STATUS\0old\0new\0 for renames)
-  const ns = nameStatus.split('\0').filter((x) => x !== '')
-  const filesOut = []
-  for (let i = 0; i < ns.length; ) {
-    const st = ns[i++]
-    if (st[0] === 'R' || st[0] === 'C') {
-      filesOut.push({ status: st[0], orig: ns[i++], path: ns[i++] })
-    } else filesOut.push({ status: st[0], path: ns[i++] })
-  }
+  const filesOut = parseNameStatus(nameStatus)
   // numstat -z: "add\tdel\tpath\0" or "add\tdel\t\0old\0new\0"
   const nm = numstat.split('\0')
   const stats = {}
@@ -540,24 +551,23 @@ async function refsUncached(repo) {
 
 async function push(repo, { force = false, tags = false, remote, branch, hash } = {}) {
   const st = parseStatus(await git(repo, ['status', '--porcelain=v2', '--branch', '-z']))
-  const b = branch || st.branch
+  const b = branch ? req(branch, 'branch') : st.branch
   if (!b) throw new GitError('HEAD is detached; check out a branch to push')
+  if (remote) req(remote, 'remote')
   const args = ['push']
   if (force) args.push('--force-with-lease')
   if (tags) args.push('--follow-tags')
   if (hash) {
     // push only up to this commit: <hash>:refs/heads/<branch> on the branch's remote
     if (!/^[0-9a-f]{4,40}$/i.test(hash)) throw new GitError('bad commit')
-    const remotes = (await git(repo, ['remote'])).split('\n').filter(Boolean)
     const up = st.branch === b && st.upstream ? st.upstream.split('/')[0] : null
-    const r = remote || up || (remotes.includes('origin') ? 'origin' : remotes[0])
+    const r = await defaultRemote(repo, remote || up)
     if (!r) throw new GitError('this repository has no remote; add one in Settings → Remotes')
     args.push(r, `${hash}:refs/heads/${b}`)
     return git(repo, args, net)
   }
   if (!st.upstream || branch) {
-    const remotes = (await git(repo, ['remote'])).split('\n').filter(Boolean)
-    const r = remote || (remotes.includes('origin') ? 'origin' : remotes[0])
+    const r = await defaultRemote(repo, remote)
     if (!r) throw new GitError('this repository has no remote; add one in Settings → Remotes')
     args.push('-u', r, b)
   }
@@ -589,7 +599,7 @@ async function worktrees(repo) {
     else if (key === 'prunable') cur.prunable = val || true
   }
   if (cur) list.push(cur)
-  const top = norm((await git(repo, ['rev-parse', '--show-toplevel'])).trim())
+  const top = norm((await paths(repo)).toplevel)
   list.forEach((w, i) => {
     w.main = i === 0
     w.current = norm(w.path) === top
@@ -661,12 +671,15 @@ const stashRef = (r) => {
 // ---------- helpers for external CLIs ----------
 
 /** Run any program; resolves { code, stdout, stderr }. `shell` is needed for .cmd shims on Windows. */
-function runProc(bin, args, { cwd, input, timeout = 60_000, shell = false } = {}) {
+function runProc(bin, args, { cwd, input, timeout = 60_000, shell = false, env } = {}) {
   return new Promise((resolve) => {
-    const child = spawn(bin, args, { cwd, shell, windowsHide: true, env: BASE_ENV })
+    const child = spawn(bin, args, { cwd, shell, windowsHide: true, env: env ? { ...BASE_ENV, ...env } : BASE_ENV })
     const out = []
     const err = []
-    const timer = setTimeout(() => child.kill(), timeout)
+    const timer = setTimeout(() => {
+      err.push(Buffer.from(`\n${bin} timed out after ${Math.round(timeout / 1000)} s`))
+      child.kill()
+    }, timeout)
     child.stdout.on('data', (d) => out.push(d))
     child.stderr.on('data', (d) => err.push(d))
     child.on('error', (e) => resolve({ code: -1, stdout: '', stderr: e.message }))
@@ -688,7 +701,7 @@ const TAB_FILE = '.orca-git-graph.gitgraph'
  * `git status` in every worktree of the repo, through .git/info/exclude: never committed or shared.
  */
 async function ignoreGraphFiles(repo) {
-  const common = path.resolve(repo, (await git(repo, ['rev-parse', '--git-common-dir'])).trim())
+  const common = await commonDir(repo)
   const exclude = path.join(common, 'info', 'exclude')
   mkdirSync(path.dirname(exclude), { recursive: true })
   const cur = existsSync(exclude) ? readFileSync(exclude, 'utf8') : ''
@@ -701,7 +714,7 @@ async function ignoreGraphFiles(repo) {
  * the tab opens in its worktree in the background, without changing what the person is looking at.
  */
 async function openGraphTab(repo, { focus = true } = {}) {
-  const top = (await git(repo, ['rev-parse', '--show-toplevel'])).trim()
+  const top = (await paths(repo)).toplevel
   const file = path.join(top, TAB_FILE)
   writeFileSync(file, JSON.stringify({ repo: top }) + '\n')
   await ignoreGraphFiles(top)
@@ -751,7 +764,7 @@ async function aiCommitMessage(repo, agent, { instructions = '', scope: want = '
   return r.stdout
     .trim()
     .replace(/^```[a-z]*\n?|```$/g, '')
-    .replace(/^["']|["']$/g, '')
+    .replace(/^(["'])([\s\S]*)\1$/, '$2') // only a matching pair around the whole message
     .trim()
 }
 
@@ -781,17 +794,147 @@ async function aiResolve(orca, repo, agent) {
 
 // ---------- merge requests (GitHub pull requests, GitLab merge requests) ----------
 
-/** Where a remote lives: host, project path, and which service it is. */
+/**
+ * Where a remote lives: host (with the port of an http(s) URL), project path (GitLab subgroups
+ * included), protocol for the API and the credential lookup, and which service it is. SSH remotes
+ * map to the https host without the SSH port.
+ */
 function parseRemote(url) {
-  let m = String(url).match(/^https?:\/\/(?:[^@/]+@)?([^/]+)\/(.+?)(?:\.git)?\/?$/)
-  if (!m) m = String(url).match(/^(?:ssh:\/\/)?[^@]+@([^:/]+)(?::\d+)?[:/](.+?)(?:\.git)?\/?$/)
-  if (!m) return null
-  const host = m[1].replace(/:\d+$/, '')
-  const kind = /github/i.test(host) ? 'github' : /gitlab/i.test(host) ? 'gitlab' : 'gitlab' // self-hosted GitLab is the common case
-  return { host, path: m[2], kind, web: `https://${host}/${m[2]}` }
+  const s = String(url).trim()
+  let m = s.match(/^(https?):\/\/(?:[^@/]+@)?([^/:]+)(?::(\d+))?\/(.+?)(?:\.git)?\/?$/)
+  let protocol = 'https'
+  let hostname
+  let port = ''
+  let p
+  if (m) [, protocol, hostname, port = '', p] = m
+  else {
+    m = s.match(/^(?:ssh:\/\/)?[^@/]+@([^:/]+)(?::\d+)?[:/](.+?)(?:\.git)?\/?$/)
+    if (!m) return null
+    ;[, hostname, p] = m
+    hostname = hostname.replace(/^(ssh|altssh)\.(github\.com|gitlab\.com)$/i, '$2')
+  }
+  p = p.replace(/^\/+/, '')
+  const host = port ? `${hostname}:${port}` : hostname
+  const forced = process.env.GITX_API_KIND // tests only
+  const kind = forced === 'github' || forced === 'gitlab' ? forced : /github/i.test(hostname) ? 'github' : 'gitlab' // self-hosted GitLab is the common case
+  return { host, hostname, path: p, kind, protocol, web: `${protocol}://${host}/${p}` }
 }
 
-const toolOk = (bin, args) => runProc(bin, args, { timeout: 15_000 }).then((r) => r.code === 0, () => false)
+const toolOk = (bin, args, env) => runProc(bin, args, { timeout: 15_000, env }).then((r) => r.code === 0, () => false)
+// Tool and sign-in checks are slow (a process each) and rarely change: remember them for a minute.
+const toolMemo = new Map()
+const slow = (key, fn, ms = 60_000) => cached(toolMemo, key, ms, fn)
+const cliFor = (kind) => (kind === 'github' ? 'gh' : 'glab')
+const installed = (bin) => slow('v|' + bin, () => toolOk(bin, ['--version']))
+const canInstall = () => (process.platform === 'win32' ? slow('winget', () => toolOk('winget', ['--version'])) : Promise.resolve(false))
+const cliSignedIn = (kind, host) =>
+  slow(`auth|${kind}|${host}`, async () => (await installed(cliFor(kind))) && toolOk(cliFor(kind), ['auth', 'status', '--hostname', host]))
+
+/**
+ * The service of a remote. A host named neither github nor gitlab is GitHub Enterprise when
+ * `git config gitcontrol.provider github` says so or gh is signed in to it; otherwise GitLab.
+ */
+async function remoteWhere(repo, remote) {
+  const where = parseRemote((await git(repo, ['remote', 'get-url', remote])).trim())
+  if (!where) return null
+  const set = (await git(repo, ['config', '--get', 'gitcontrol.provider'], { okCodes: [0, 1] }).catch(() => '')).trim().toLowerCase()
+  if (set === 'github' || set === 'gitlab') where.kind = set
+  else if (!process.env.GITX_API_KIND && !/github|gitlab/i.test(where.hostname) && (await cliSignedIn('github', where.host))) where.kind = 'github'
+  return where
+}
+
+/** The remote to use: `preferred` when given, else the branch's own, else origin, else the first one. */
+async function defaultRemote(repo, preferred) {
+  if (preferred) return req(preferred, 'remote')
+  const remotes = (await git(repo, ['remote'])).split(/\s+/).filter(Boolean)
+  return remotes.includes('origin') ? 'origin' : remotes[0] || null
+}
+
+// ---------- the saved Git login (credential helper) as an API token ----------
+
+const credCache = new Map() // protocol://host -> { at, p }
+/**
+ * The token Git already uses for this host (`git credential fill`, never interactive). Only ever
+ * used for API calls to that same host; never logged or sent to the panel.
+ */
+function gitCredential(where, cwd) {
+  const key = `${where.protocol}://${where.host}`
+  const hit = credCache.get(key)
+  if (hit && Date.now() - hit.at < hit.ttl) return hit.p
+  const p = gitOnce(cwd || os.homedir(), ['-c', 'credential.interactive=never', 'credential', 'fill'], {
+    input: `protocol=${where.protocol}\nhost=${where.host}\n\n`,
+    timeout: 15_000,
+    env: { GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never' }
+  }).then(
+    (out) => {
+      const kv = Object.fromEntries(out.split(/\r?\n/).filter((l) => l.includes('=')).map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]))
+      return kv.password ? { username: kv.username || '', token: kv.password } : null
+    },
+    () => null
+  )
+  const entry = { at: Date.now(), p, ttl: 10 * 60_000 }
+  credCache.set(key, entry)
+  p.then((c) => c || (entry.ttl = 60_000)) // no login: look again in a minute
+  return p
+}
+const hasGitLogin = (where, cwd) => gitCredential(where, cwd).then((c) => !!c, () => false)
+
+function apiBase(where) {
+  if (process.env.GITX_API_BASE) return process.env.GITX_API_BASE.replace(/\/+$/, '') // tests only
+  if (where.kind === 'github') return where.hostname === 'github.com' ? 'https://api.github.com' : `${where.protocol}://${where.host}/api/v3`
+  return `${where.protocol}://${where.host}/api/v4`
+}
+
+/** Call the GitHub/GitLab REST API with the saved Git login. Resolves the JSON (or text with `raw`). */
+async function forgeApi(where, method, apiPath, { body, accept, raw, cwd } = {}) {
+  const cred = await gitCredential(where, cwd)
+  if (!cred) throw new GitError(`There is no saved Git login for ${where.host}`)
+  const send = (auth) =>
+    fetch(apiBase(where) + apiPath, {
+      method,
+      headers: {
+        ...auth,
+        Accept: accept || (where.kind === 'github' ? 'application/vnd.github+json' : 'application/json'),
+        'User-Agent': 'git-control',
+        ...(body ? { 'Content-Type': 'application/json' } : {})
+      },
+      body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(60_000)
+    })
+  let res
+  try {
+    res = await send({ Authorization: `Bearer ${cred.token}` })
+    // GitLab: an OAuth token works as Bearer; a personal access token also as PRIVATE-TOKEN
+    if (res.status === 401 && where.kind === 'gitlab') res = await send({ 'PRIVATE-TOKEN': cred.token })
+  } catch (e) {
+    throw new GitError(`${where.host} could not be reached: ${e.cause?.message || e.message}`)
+  }
+  const text = await res.text()
+  let json = null
+  try {
+    json = text ? JSON.parse(text) : null
+  } catch {}
+  if (res.status === 401 || res.status === 403) {
+    if (res.status === 401) credCache.delete(`${where.protocol}://${where.host}`)
+    const detail = json?.message || json?.error_description || json?.error || ''
+    throw Object.assign(
+      new GitError(`The saved Git login for ${where.host} is not allowed to do this (HTTP ${res.status}${detail ? `: ${detail}` : ''}). It may lack the API scope; use the web page instead.`),
+      { data: { kind: 'git-login-denied', status: res.status }, status: res.status }
+    )
+  }
+  if (!res.ok) {
+    const detail = json ? [json.message, ...(Array.isArray(json.errors) ? json.errors.map((x) => x.message || x) : json.errors ? [JSON.stringify(json.errors)] : [])].filter(Boolean).join('; ') || JSON.stringify(json) : text.slice(0, 300)
+    throw Object.assign(new GitError(`${where.host}: ${detail || `HTTP ${res.status}`}`), { status: res.status, json })
+  }
+  return raw ? text : json
+}
+
+/** How to talk to a service: its CLI when signed in, else the saved Git login, else null. */
+async function viaFor(where, cwd, prefer) {
+  if (prefer !== 'git' && (await cliSignedIn(where.kind, where.host))) return 'cli'
+  if (await hasGitLogin(where, cwd)) return 'git'
+  return prefer === 'git' && (await cliSignedIn(where.kind, where.host)) ? 'cli' : null
+}
 
 /**
  * Title and description filled in the way GitLab does: one commit gives its subject and body;
@@ -808,7 +951,7 @@ async function mrDefaults(repo, branch, commits, kind) {
   if (commits.length === 1) commits[0].body && parts.push(commits[0].body)
   else if (commits.length) parts.push(commits.map((c) => `- ${c.subject}`).join('\n'))
   if (issue) parts.push(`Closes #${issue}`)
-  const top = (await git(repo, ['rev-parse', '--show-toplevel']).catch(() => '')).trim()
+  const top = (await paths(repo).catch(() => ({ toplevel: '' }))).toplevel
   const candidates =
     kind === 'github'
       ? ['.github/pull_request_template.md', '.github/PULL_REQUEST_TEMPLATE.md', 'pull_request_template.md', 'docs/pull_request_template.md']
@@ -826,6 +969,8 @@ async function mrDefaults(repo, branch, commits, kind) {
   return { title, body: parts.join('\n\n'), draft }
 }
 
+const escRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
 async function mrInfo(repo, target, source) {
   const head = await headInfo(repo)
   // the branch to merge: the given one, else the checked-out one
@@ -833,19 +978,20 @@ async function mrInfo(repo, target, source) {
   const oid = head.oid
   if (!branch) throw new GitError('Check out the branch you want to merge first (HEAD is detached)')
   if (/^-/.test(branch)) throw new GitError('bad branch name')
-  const remotes = (await git(repo, ['remote'])).split(/\s+/).filter(Boolean)
   const upstream = (await git(repo, ['rev-parse', '--abbrev-ref', `${branch}@{upstream}`], { okCodes: [0, 128] }).catch(() => '')).trim()
-  const remote = upstream.split('/')[0] || (remotes.includes('origin') ? 'origin' : remotes[0])
+  const remote = upstream.split('/')[0] || (await defaultRemote(repo))
   if (!remote) throw new GitError('This repository has no remote to open a merge request on')
-  const where = parseRemote((await git(repo, ['remote', 'get-url', remote])).trim())
+  const where = await remoteWhere(repo, remote)
   if (!where) throw new GitError('Could not tell where the remote is hosted')
-  const targetName = String(target).replace(new RegExp(`^${remote}/`), '')
+  const targetName = String(target).replace(new RegExp(`^${escRe(remote)}/`), '')
   const targetRef = (await git(repo, ['rev-parse', '--verify', '-q', `refs/remotes/${remote}/${targetName}`], { okCodes: [0, 1] })).trim()
     ? `${remote}/${targetName}`
     : targetName
   // the source as git knows it: the local branch, or only its remote copy
   const hasLocal = !!(await git(repo, ['rev-parse', '--verify', '-q', `refs/heads/${branch}`], { okCodes: [0, 1] })).trim()
   const sourceRef = hasLocal ? branch : `${remote}/${branch}`
+  const cli = cliFor(where.kind)
+  const toolsP = Promise.all([installed(cli), cliSignedIn(where.kind, where.host), hasGitLogin(where, repo), canInstall()])
   const full = (await git(repo, ['log', '--format=%s%x1f%b%x1e', '-50', `${targetRef}..${sourceRef}`], { okCodes: [0, 128] }).catch(() => ''))
     .split('\x1e')
     .map((r) => r.trim())
@@ -859,17 +1005,9 @@ async function mrInfo(repo, target, source) {
   const ahead = upstream ? +(await git(repo, ['rev-list', '--count', `${upstream}..${sourceRef}`]).catch(() => '0')).trim() : null
   // commits the other way round (target has, source lacks): the person likely meant the reverse
   const reverse = +(await git(repo, ['rev-list', '--count', `${sourceRef}..${targetRef}`], { okCodes: [0, 128] }).catch(() => '0')).trim() || 0
-  const tools = {}
-  if (where.kind === 'github') {
-    tools.cli = 'gh'
-    tools.installed = await toolOk('gh', ['--version'])
-    tools.signedIn = tools.installed && (await toolOk('gh', ['auth', 'status', '--hostname', where.host]))
-  } else {
-    tools.cli = 'glab'
-    tools.installed = await toolOk('glab', ['--version'])
-    tools.signedIn = tools.installed && (await toolOk('glab', ['auth', 'status', '--hostname', where.host]))
-  }
-  tools.canInstall = process.platform === 'win32' && (await toolOk('winget', ['--version']))
+  const [inst, signedIn, gitLogin, install] = await toolsP
+  // via: how "Create now" will create it: 'cli' (gh/glab), 'git' (the saved Git login), or null (web page only)
+  const tools = { cli, installed: inst, signedIn, gitLogin, canInstall: install, via: signedIn ? 'cli' : gitLogin ? 'git' : null }
   return { source: branch, sourceRef, oid, target: targetName, remote, upstream: upstream || null, needsPush: hasLocal && (!upstream || ahead > 0), reverse, ...where, commits, defaults, tools }
 }
 
@@ -899,38 +1037,71 @@ function openInBrowser(url) {
   return runProc(bin, args, { timeout: 10_000 }).then((r) => r.code === 0 || r.code === null, () => false)
 }
 
+const projectPath = (p) => encodeURIComponent(p) // GitLab: group/sub/project → group%2Fsub%2Fproject
+
+/** Create the merge request with the REST API and the saved Git login. */
+async function mrCreateApi(repo, info, { title, body, draft }) {
+  if (info.kind === 'github') {
+    const base = `/repos/${info.path}/pulls`
+    try {
+      const pr = await forgeApi(info, 'POST', base, { cwd: repo, body: { title, body, head: info.source, base: info.target, draft: !!draft } })
+      return { created: true, url: pr.html_url, number: pr.number }
+    } catch (e) {
+      if (e.status !== 422 || !/already exists/i.test(e.message)) throw e
+      const owner = info.path.split('/')[0]
+      const [pr] = (await forgeApi(info, 'GET', `${base}?state=open&head=${encodeURIComponent(`${owner}:${info.source}`)}`, { cwd: repo })) || []
+      if (!pr) throw e
+      return { created: false, exists: true, url: pr.html_url, number: pr.number }
+    }
+  }
+  const base = `/projects/${projectPath(info.path)}/merge_requests`
+  try {
+    const t = draft && !/^(draft:|\[draft\])/i.test(title) ? `Draft: ${title}` : title
+    const mr = await forgeApi(info, 'POST', base, { cwd: repo, body: { source_branch: info.source, target_branch: info.target, title: t, description: body } })
+    return { created: true, url: mr.web_url, number: mr.iid }
+  } catch (e) {
+    if (e.status !== 409 && !/already exists/i.test(e.message)) throw e
+    const q = `?state=opened&source_branch=${encodeURIComponent(info.source)}&target_branch=${encodeURIComponent(info.target)}`
+    const [mr] = (await forgeApi(info, 'GET', base + q, { cwd: repo })) || []
+    if (!mr) throw e
+    return { created: false, exists: true, url: mr.web_url, number: mr.iid }
+  }
+}
+
 /**
  * Push the branch if needed, then either
  * - web: open the service's prefilled "new merge request" page in the browser, or
- * - direct: create it with the service's CLI (gh / glab), signed in once.
+ * - direct: create it with the service's CLI (gh / glab) when signed in, else with the saved Git login.
  */
 async function mrCreate(repo, { target, source, title, body, draft, web }) {
   const info = await mrInfo(repo, req(target, 'target branch'), source)
   if (info.source === info.target) throw new GitError('Pick a different branch to merge into')
   title = String(title || '').trim()
   body = String(body || '')
-  if (!web && !info.tools.signedIn) throw new GitError(`${info.tools.cli} is not set up yet`)
+  const via = info.tools.via
+  if (!web && !via) throw new GitError(`${info.tools.cli} is not set up and Git has no saved login for ${info.host}. Use "Open link" to create it on the web page.`)
+  if (!web && !title) throw new GitError('A title is required')
   if (info.needsPush) await git(repo, ['push', '-u', info.remote, info.source], net)
   if (web) {
     const url = mrWebUrl(info, { title, body })
     return { url, opened: await openInBrowser(url), pushed: info.needsPush }
   }
-  if (!title) throw new GitError('A title is required')
+  if (via === 'git') return { ...(await mrCreateApi(repo, info, { title, body, draft })), pushed: info.needsPush, via }
   const r =
     info.kind === 'github'
       ? await runProc('gh', ['pr', 'create', '--base', info.target, '--head', info.source, '--title', title, '--body', body, ...(draft ? ['--draft'] : [])], { cwd: repo, timeout: 90_000 })
       : await runProc('glab', ['mr', 'create', '--source-branch', info.source, '--target-branch', info.target, '--title', title, '--description', body, '--yes', ...(draft ? ['--draft'] : [])], { cwd: repo, timeout: 90_000 })
   const all = r.stdout + '\n' + r.stderr
   const url = all.match(/https?:\/\/\S+\/(?:pull|merge_requests)\/\d+/)?.[0]
-  if (r.code === 0 && url) return { created: true, url, pushed: info.needsPush }
-  if (url && /already exists/i.test(all)) return { created: false, exists: true, url, pushed: info.needsPush }
+  const number = url ? +url.match(/(\d+)$/)[1] : undefined
+  if (r.code === 0 && url) return { created: true, url, number, pushed: info.needsPush, via }
+  if (url && /already exists/i.test(all)) return { created: false, exists: true, url, number, pushed: info.needsPush, via }
   throw new GitError(all.trim().split('\n').slice(-4).join('\n') || `${info.tools.cli} could not create it`)
 }
 
-/** Set up one-click merge requests in an Orca terminal, where any prompt (a browser sign-in, a token) is visible. */
-async function mrSetup(orca, repo, { step }) {
-  const info = await mrInfo(repo, 'HEAD').catch(() => null)
-  const host = info?.host || 'gitlab.com'
+/** The terminal command for one setup step (install or sign in to gh / glab). */
+function setupCommand(step, host) {
+  if (!/^[\w.:-]+$/.test(String(host || ''))) throw new GitError('unexpected host name')
   const commands = {
     'glab-install': 'winget install --id GLab.GLab -e --accept-package-agreements --accept-source-agreements',
     'glab-login': `glab auth login --hostname ${host}`,
@@ -939,29 +1110,42 @@ async function mrSetup(orca, repo, { step }) {
   }
   const command = commands[step]
   if (!command) throw new GitError('unknown setup step')
-  if (!/^[\w.:-]+$/.test(host)) throw new GitError('unexpected host name')
-  const ws = (await listWorkspaces(orca)).find((w) => norm(w.path) === norm(repo))
+  return command
+}
+async function runSetup(orca, ws, step, host, title) {
+  const command = setupCommand(step, host)
+  toolMemo.clear() // signed in or installed afterwards: look again
   if (!ws || !orca.host.has('terminal.create')) return { ran: false, command }
-  await orca.host.call('terminal.create', { workspaceId: ws.id, title: 'Merge request setup', command })
+  await orca.host.call('terminal.create', { workspaceId: ws.id, title, command })
   return { ran: true, command }
+}
+
+/** Set up one-click merge requests in an Orca terminal, where any prompt (a browser sign-in, a token) is visible. */
+async function mrSetup(orca, repo, { step }) {
+  const info = await mrInfo(repo, 'HEAD').catch(() => null)
+  const host = info?.host || (/^gh-/.test(step) ? 'github.com' : 'gitlab.com')
+  const ws = (await listWorkspaces(orca)).find((w) => norm(w.path) === norm(repo))
+  return runSetup(orca, ws, step, host, 'Merge request setup')
 }
 
 // ---------- review inbox: pull/merge requests waiting for you, across every repository ----------
 
-/** Every GitLab host the person's Orca workspaces push to (GitHub is always github.com). */
-async function gitlabHosts(orca) {
-  return memo('gitlabHosts', 60_000, async () => {
-    const hosts = new Set()
+/** Every GitHub/GitLab host the person's Orca workspaces push to, plus github.com and the open repo's host. */
+async function forgeHosts(orca, where) {
+  const list = await memo('forgeHosts', 60_000, async () => {
+    const found = new Map([['github|github.com', { kind: 'github', host: 'github.com', hostname: 'github.com', protocol: 'https', path: '' }]])
     const ws = orca ? await listWorkspaces(orca) : []
     await Promise.all(
       ws.slice(0, 60).map(async (w) => {
-        const url = (await git(w.path, ['remote', 'get-url', 'origin']).catch(() => '')).trim()
-        const r = url && parseRemote(url)
-        if (r && r.kind === 'gitlab') hosts.add(r.host)
+        const r = await defaultRemote(w.path).then((rm) => rm && remoteWhere(w.path, rm)).catch(() => null)
+        if (r) found.set(`${r.kind}|${r.host}`, { ...r, path: '' })
       })
     )
-    return [...hosts]
+    return [...found.values()]
   })
+  const out = new Map(list.map((h) => [`${h.kind}|${h.host}`, h]))
+  if (where) out.set(`${where.kind}|${where.host}`, { ...where, path: '' })
+  return [...out.values()]
 }
 
 const jsonOf = (r) => {
@@ -972,88 +1156,100 @@ const jsonOf = (r) => {
   }
 }
 
-async function githubInbox(where) {
-  const fields = 'number,title,url,repository,author,updatedAt,isDraft'
-  const search = (...q) => runProc('gh', ['search', 'prs', ...q, '--state=open', '--json', fields, '--limit', '50'], { timeout: 30_000 })
-  const here = where?.kind === 'github' && /^[\w.-]+\/[\w.-]+$/.test(where.path) ? where.path : null
-  const [rev, asg, mine, repo] = await Promise.all([
-    search('--review-requested=@me'),
-    search('--assignee=@me'),
-    search('--author=@me'),
-    here ? search('--repo', here) : Promise.resolve({ code: 0, stdout: '[]' })
-  ])
-  if (rev.code !== 0 && asg.code !== 0) throw new GitError((rev.stderr || asg.stderr).trim() || 'gh could not list pull requests')
+/** One inbox item list from four queries: review requested, assigned, opened by me, open in this repository. */
+function collect(lists, make) {
   const items = new Map()
-  const add = (list, role) => {
-    for (const p of list || []) {
-      const it = items.get(p.url) || {
-        provider: 'github',
-        host: 'github.com',
-        url: p.url,
-        number: p.number,
-        title: p.title,
-        repo: p.repository?.nameWithOwner || p.repository?.name || '',
-        author: p.author?.login || '',
-        updated: Date.parse(p.updatedAt) / 1000,
-        draft: !!p.isDraft,
-        roles: []
-      }
-      it.roles.push(role)
-      items.set(p.url, it)
+  for (const [list, role] of lists) {
+    for (const x of Array.isArray(list) ? list : []) {
+      const it = make(x)
+      const prev = items.get(it.url) || { ...it, roles: [] }
+      prev.roles.push(role)
+      items.set(it.url, prev)
     }
   }
-  add(jsonOf(rev), 'review')
-  add(jsonOf(asg), 'assigned')
-  add(jsonOf(mine), 'mine')
-  add(jsonOf(repo), 'repo')
   return [...items.values()]
 }
 
-async function gitlabInbox(host, where) {
-  const api = (path, extra = []) => runProc('glab', ['api', '--hostname', host, ...extra, path], { timeout: 30_000 })
-  const me = jsonOf(await api('user'))
-  if (!me?.username) throw new GitError(`glab is not signed in to ${host}`)
+async function githubInbox(h, where, via) {
+  const here = where?.kind === 'github' && where.host === h.host && /^[\w.-]+\/[\w.-]+$/.test(where.path) ? where.path : null
+  const base = { provider: 'github', host: h.host, protocol: h.protocol, via }
+  if (via === 'cli') {
+    const fields = 'number,title,url,repository,author,updatedAt,isDraft'
+    const env = h.host === 'github.com' ? undefined : { GH_HOST: h.host }
+    const search = (...q) => runProc('gh', ['search', 'prs', ...q, '--state=open', '--json', fields, '--limit', '50'], { timeout: 30_000, env })
+    const [rev, asg, mine, repo] = await Promise.all([
+      search('--review-requested=@me'),
+      search('--assignee=@me'),
+      search('--author=@me'),
+      here ? search('--repo', here) : Promise.resolve({ code: 0, stdout: '[]' })
+    ])
+    if (rev.code !== 0 && asg.code !== 0) throw new GitError((rev.stderr || asg.stderr).trim() || 'gh could not list pull requests')
+    return collect([[jsonOf(rev), 'review'], [jsonOf(asg), 'assigned'], [jsonOf(mine), 'mine'], [jsonOf(repo), 'repo']], (p) => ({
+      ...base,
+      url: p.url,
+      number: p.number,
+      title: p.title,
+      repo: p.repository?.nameWithOwner || p.repository?.name || '',
+      author: p.author?.login || '',
+      updated: Date.parse(p.updatedAt) / 1000,
+      draft: !!p.isDraft
+    }))
+  }
+  // the saved Git login: @me works only for user tokens, so ask who that is first
+  const me = await forgeApi(h, 'GET', '/user')
+  if (!me?.login) throw new GitError(`could not tell who is signed in to ${h.host}`)
+  const q = (s) => forgeApi(h, 'GET', `/search/issues?per_page=50&q=${encodeURIComponent(`is:pr is:open ${s}`)}`).then((r) => r?.items || [])
+  const [rev, asg, mine, repo] = await Promise.all([q(`review-requested:${me.login}`), q(`assignee:${me.login}`), q(`author:${me.login}`), here ? q(`repo:${here}`) : []])
+  return collect([[rev, 'review'], [asg, 'assigned'], [mine, 'mine'], [repo, 'repo']], (p) => ({
+    ...base,
+    url: p.html_url,
+    number: p.number,
+    title: p.title,
+    repo: String(p.repository_url || '').replace(/^.*\/repos\//, ''),
+    author: p.user?.login || '',
+    updated: Date.parse(p.updated_at) / 1000,
+    draft: !!p.draft
+  }))
+}
+
+/** GET from the GitLab API through glab (cli) or the saved Git login (git); null when it fails. */
+function gitlabGet(h, via, apiPath) {
+  if (via === 'cli') return runProc('glab', ['api', '--hostname', h.host, apiPath], { timeout: 30_000 }).then(jsonOf)
+  return forgeApi(h, 'GET', '/' + apiPath)
+}
+
+async function gitlabInbox(h, where, via) {
+  const me = await gitlabGet(h, via, 'user')
+  if (!me?.username) throw new GitError(`${via === 'cli' ? 'glab is' : 'the saved Git login is'} not signed in to ${h.host}`)
   const q = 'merge_requests?state=opened&scope=all&per_page=50'
   const u = encodeURIComponent(me.username)
-  const here = where?.kind === 'gitlab' && where.host === host ? `projects/${encodeURIComponent(where.path)}/merge_requests?state=opened&per_page=50` : null
-  const none = Promise.resolve({ code: 0, stdout: '[]' })
-  const [rev, asg, mine, repo] = await Promise.all([api(`${q}&reviewer_username=${u}`), api(`${q}&assignee_username=${u}`), api(`${q}&author_username=${u}`), here ? api(here) : none])
-  const items = new Map()
-  const add = (list, role) => {
-    for (const m of Array.isArray(list) ? list : []) {
-      const it = items.get(m.web_url) || {
-        provider: 'gitlab',
-        host,
-        url: m.web_url,
-        number: m.iid,
-        projectId: m.project_id,
-        title: m.title,
-        repo: m.references?.full?.replace(/!\d+$/, '') || '',
-        author: m.author?.username || '',
-        source: m.source_branch,
-        target: m.target_branch,
-        updated: Date.parse(m.updated_at) / 1000,
-        draft: !!(m.draft || m.work_in_progress),
-        roles: []
-      }
-      it.roles.push(role)
-      items.set(m.web_url, it)
-    }
-  }
-  add(jsonOf(rev), 'review')
-  add(jsonOf(asg), 'assigned')
-  add(jsonOf(mine), 'mine')
-  add(jsonOf(repo), 'repo')
-  return [...items.values()]
+  const here = where?.kind === 'gitlab' && where.host === h.host ? `projects/${projectPath(where.path)}/merge_requests?state=opened&per_page=50` : null
+  const soft = (p) => gitlabGet(h, via, p).catch(() => null)
+  const [rev, asg, mine, repo] = await Promise.all([soft(`${q}&reviewer_username=${u}`), soft(`${q}&assignee_username=${u}`), soft(`${q}&author_username=${u}`), here ? soft(here) : []])
+  return collect([[rev, 'review'], [asg, 'assigned'], [mine, 'mine'], [repo, 'repo']], (m) => ({
+    provider: 'gitlab',
+    host: h.host,
+    protocol: h.protocol,
+    via,
+    url: m.web_url,
+    number: m.iid,
+    projectId: m.project_id,
+    title: m.title,
+    repo: m.references?.full?.replace(/!\d+$/, '') || '',
+    author: m.author?.username || '',
+    source: m.source_branch,
+    target: m.target_branch,
+    updated: Date.parse(m.updated_at) / 1000,
+    draft: !!(m.draft || m.work_in_progress)
+  }))
 }
 
 /** Where the open repository's main remote lives, or null. */
 async function repoWhere(repo) {
   if (!repo) return null
   try {
-    const remotes = (await git(repo, ['remote'])).split(/\s+/).filter(Boolean)
-    const r = remotes.includes('origin') ? 'origin' : remotes[0]
-    return r ? parseRemote((await git(repo, ['remote', 'get-url', r])).trim()) : null
+    const r = await defaultRemote(repo)
+    return r ? await remoteWhere(repo, r) : null
   } catch {
     return null
   }
@@ -1061,85 +1257,114 @@ async function repoWhere(repo) {
 
 async function reviewsList(orca, repo) {
   const where = await repoWhere(repo)
-  const providers = []
   const items = []
   const errors = []
-  // GitHub
-  const ghInstalled = await toolOk('gh', ['--version'])
-  const ghIn = ghInstalled && (await toolOk('gh', ['auth', 'status', '--hostname', 'github.com']))
-  providers.push({ provider: 'github', host: 'github.com', cli: 'gh', installed: ghInstalled, signedIn: ghIn })
-  // GitLab hosts used by the person's projects
-  const glabInstalled = await toolOk('glab', ['--version'])
-  const glHosts = new Set(await gitlabHosts(orca))
-  if (where?.kind === 'gitlab') glHosts.add(where.host)
-  for (const host of glHosts) {
-    const signedIn = glabInstalled && (await toolOk('glab', ['auth', 'status', '--hostname', host]))
-    providers.push({ provider: 'gitlab', host, cli: 'glab', installed: glabInstalled, signedIn })
-  }
-  providers.forEach((p) => (p.canInstall = process.platform === 'win32'))
+  const hosts = await forgeHosts(orca, where)
+  const install = canInstall()
+  // via: 'gh' | 'glab' (the CLI is signed in) or 'git' (the saved Git login), null when neither
+  const providers = await Promise.all(
+    hosts.map(async (h) => {
+      const cli = cliFor(h.kind)
+      const [inst, cliIn] = await Promise.all([installed(cli), cliSignedIn(h.kind, h.host)])
+      const login = !cliIn && (await hasGitLogin(h, repo))
+      return { provider: h.kind, host: h.host, cli, installed: inst, signedIn: cliIn || login, via: cliIn ? cli : login ? 'git' : null, canInstall: await install, _h: h }
+    })
+  )
   await Promise.all(
     providers
       .filter((p) => p.signedIn)
-      .map((p) =>
-        (p.provider === 'github' ? githubInbox(where) : gitlabInbox(p.host, where)).then(
+      .map((p) => {
+        const via = p.via === 'git' ? 'git' : 'cli'
+        return (p.provider === 'github' ? githubInbox(p._h, where, via) : gitlabInbox(p._h, where, via)).then(
           (list) => items.push(...list),
           (e) => errors.push(`${p.host}: ${e.message}`)
         )
-      )
+      })
   )
+  providers.forEach((p) => delete p._h)
   items.sort((a, b) => b.updated - a.updated)
   await Promise.all(items.slice(0, 25).map(async (it) => (it.ci = await reviewCi(it).catch(() => null))))
   return { items, providers, errors, repoPath: where?.path || null }
 }
 
+/** A review item as an API target, and how to reach it (gh/glab or the saved Git login). */
+async function itemTarget(it) {
+  const host = String(it.host || (it.provider === 'github' ? 'github.com' : ''))
+  if (!/^[\w.-]+(:\d+)?$/.test(host)) throw new GitError('bad host')
+  const w = { kind: it.provider === 'github' ? 'github' : 'gitlab', host, hostname: host.replace(/:\d+$/, ''), protocol: it.protocol === 'http' ? 'http' : 'https', path: '' }
+  if (w.kind === 'github') {
+    const m = String(it.url).match(/^https?:\/\/([^/]+)\/([^/]+\/[^/]+)\/pull\/(\d+)$/)
+    if (!m || m[1].toLowerCase() !== host.toLowerCase()) throw new GitError('not a GitHub pull request link')
+    w.path = m[2]
+    w.number = +m[3]
+  } else {
+    if (!Number.isInteger(+it.projectId) || !Number.isInteger(+it.number)) throw new GitError('bad merge request')
+    w.mr = `projects/${+it.projectId}/merge_requests/${+it.number}`
+  }
+  const via = await viaFor(w, undefined, it.via === 'git' ? 'git' : undefined)
+  if (!via) throw new GitError(`Neither ${cliFor(w.kind)} nor a saved Git login can reach ${host}`)
+  return { w, via }
+}
+const cliFail = (r, what) => new GitError((r.stderr || r.stdout).trim() || what)
+
 /** Approve, request changes or comment on a pull/merge request. */
-async function reviewAct({ provider, host, url, projectId, number, action, body }) {
-  const text = String(body || '').trim()
+async function reviewAct(it) {
+  const { action } = it
+  const text = String(it.body || '').trim()
   if (!['approve', 'changes', 'comment'].includes(action)) throw new GitError('unknown review action')
-  if (provider === 'github') {
-    if (!/^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+$/.test(String(url))) throw new GitError('not a GitHub pull request link')
-    if (action !== 'approve' && !text) throw new GitError('Write a comment first')
-    const flag = { approve: '--approve', changes: '--request-changes', comment: '--comment' }[action]
-    const r = await runProc('gh', ['pr', 'review', url, flag, ...(text ? ['--body', text] : [])], { timeout: 60_000 })
-    if (r.code !== 0) throw new GitError((r.stderr || r.stdout).trim() || 'gh could not submit the review')
+  if (action !== 'approve' && !text) throw new GitError('Write a comment first')
+  const { w, via } = await itemTarget(it)
+  if (w.kind === 'github') {
+    if (via === 'cli') {
+      const flag = { approve: '--approve', changes: '--request-changes', comment: '--comment' }[action]
+      const r = await runProc('gh', ['pr', 'review', it.url, flag, ...(text ? ['--body', text] : [])], { timeout: 60_000 })
+      if (r.code !== 0) throw cliFail(r, 'gh could not submit the review')
+    } else {
+      const event = { approve: 'APPROVE', changes: 'REQUEST_CHANGES', comment: 'COMMENT' }[action]
+      await forgeApi(w, 'POST', `/repos/${w.path}/pulls/${w.number}/reviews`, { body: { event, ...(text ? { body: text } : {}) } })
+    }
     return { ok: true }
   }
-  if (!/^[\w.-]+$/.test(String(host)) || !Number.isInteger(+projectId) || !Number.isInteger(+number)) throw new GitError('bad merge request')
-  const base = `projects/${+projectId}/merge_requests/${+number}`
-  const api = (path, extra) => runProc('glab', ['api', '--hostname', host, '-X', 'POST', ...extra, path], { timeout: 60_000 })
-  if (text) {
-    const r = await api(`${base}/notes`, ['-f', `body=${action === 'changes' ? `**Changes requested**\n\n${text}` : text}`])
-    if (r.code !== 0) throw new GitError((r.stderr || r.stdout).trim() || 'could not post the comment')
+  const post = async (p, fields = {}) => {
+    if (via === 'git') return forgeApi(w, 'POST', `/${p}`, { body: fields })
+    const r = await runProc('glab', ['api', '--hostname', w.host, '-X', 'POST', ...Object.entries(fields).flatMap(([k, v]) => ['-f', `${k}=${v}`]), p], { timeout: 60_000 })
+    if (r.code !== 0) throw Object.assign(cliFail(r, `could not post to ${p}`), { status: /404|not found/i.test(r.stderr + r.stdout) ? 404 : undefined })
+    return jsonOf(r)
   }
-  if (action === 'approve') {
-    const r = await api(`${base}/approve`, [])
-    if (r.code !== 0) throw new GitError((r.stderr || r.stdout).trim() || 'could not approve')
-  } else if (action === 'changes') {
-    await api(`${base}/unapprove`, []) // takes back an earlier approval, if any
-  } else if (!text) throw new GitError('Write a comment first')
+  if (text) await post(`${w.mr}/notes`, { body: action === 'changes' ? `**Changes requested**\n\n${text}` : text })
+  if (action === 'approve') await post(`${w.mr}/approve`)
+  else if (action === 'changes') {
+    // take back an earlier approval; "not approved yet" (404) is fine
+    await post(`${w.mr}/unapprove`).catch((e) => {
+      if (e.status !== 404) throw e
+    })
+  }
   return { ok: true }
 }
 
 /** A pull/merge request's title, description and diff, from its service. */
-async function reviewMaterial({ provider, host, url, projectId, number }) {
-  if (provider === 'github') {
-    if (!/^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+$/.test(String(url))) throw new GitError('not a GitHub pull request link')
-    const [view, diff] = await Promise.all([
-      runProc('gh', ['pr', 'view', url, '--json', 'title,body,baseRefName,headRefName,headRefOid'], { timeout: 60_000 }),
-      runProc('gh', ['pr', 'diff', url], { timeout: 90_000 })
-    ])
-    if (diff.code !== 0) throw new GitError(diff.stderr.trim() || 'gh could not read the diff')
-    const v = jsonOf(view) || {}
-    return { title: v.title || '', body: v.body || '', source: v.headRefName, target: v.baseRefName, diff: diff.stdout, headSha: v.headRefOid }
+async function reviewMaterial(it) {
+  const { w, via } = await itemTarget(it)
+  if (w.kind === 'github') {
+    if (via === 'cli') {
+      const [view, diff] = await Promise.all([
+        runProc('gh', ['pr', 'view', it.url, '--json', 'title,body,baseRefName,headRefName,headRefOid'], { timeout: 60_000 }),
+        runProc('gh', ['pr', 'diff', it.url], { timeout: 90_000 })
+      ])
+      if (diff.code !== 0) throw new GitError(diff.stderr.trim() || 'gh could not read the diff')
+      const v = jsonOf(view) || {}
+      return { title: v.title || '', body: v.body || '', source: v.headRefName, target: v.baseRefName, diff: diff.stdout, headSha: v.headRefOid }
+    }
+    const p = `/repos/${w.path}/pulls/${w.number}`
+    const [v, diff] = await Promise.all([forgeApi(w, 'GET', p), forgeApi(w, 'GET', p, { accept: 'application/vnd.github.diff', raw: true })])
+    return { title: v.title || '', body: v.body || '', source: v.head?.ref, target: v.base?.ref, diff, headSha: v.head?.sha }
   }
-  if (!/^[\w.-]+$/.test(String(host)) || !Number.isInteger(+projectId) || !Number.isInteger(+number)) throw new GitError('bad merge request')
-  const r = await runProc('glab', ['api', '--hostname', host, `projects/${+projectId}/merge_requests/${+number}/changes`], { timeout: 90_000 })
-  const m = jsonOf(r)
-  if (!m) throw new GitError(r.stderr.trim() || 'glab could not read the merge request')
+  const m = await gitlabGet(w, via, `${w.mr}/changes`)
+  if (!m) throw new GitError('could not read the merge request')
   const diff = (m.changes || [])
     .map((c) => `diff --git a/${c.old_path} b/${c.new_path}\n--- a/${c.old_path}\n+++ b/${c.new_path}\n${c.diff}`)
     .join('\n')
-  return { title: m.title || '', body: m.description || '', source: m.source_branch, target: m.target_branch, diff, diffRefs: m.diff_refs }
+  return { title: m.title || '', body: m.description || '', source: m.source_branch, target: m.target_branch, diff, diffRefs: m.diff_refs, changes: (m.changes || []).map((c) => ({ old_path: c.old_path, new_path: c.new_path })) }
 }
 
 /** Review a pull/merge request with the AI agent: summary, issues with file and line, a verdict. */
@@ -1220,38 +1445,56 @@ function rollup(states) {
   if (list.every((x) => x === 'canceled')) return 'canceled'
   return 'passed'
 }
+/** GitHub check runs + commit statuses of one commit, through gh or the saved Git login; null when neither answers. */
+async function githubCommitCi(w, via, sha, cwd) {
+  const base = `repos/${w.path}/commits/${sha}`
+  if (via === 'cli') {
+    const [runs, st] = await Promise.all([
+      runProc('gh', ['api', '--hostname', w.host, `${base}/check-runs`, '--jq', '[.check_runs[] | (.conclusion // .status)]'], { timeout: 30_000 }),
+      runProc('gh', ['api', '--hostname', w.host, `${base}/status`, '--jq', '[.statuses[].state]'], { timeout: 30_000 })
+    ])
+    if (runs.code !== 0 && st.code !== 0) return undefined
+    return rollup([...(jsonOf(runs) || []), ...(jsonOf(st) || [])])
+  }
+  const [runs, st] = await Promise.all([
+    forgeApi(w, 'GET', `/${base}/check-runs`, { cwd }).catch(() => null),
+    forgeApi(w, 'GET', `/${base}/status`, { cwd }).catch(() => null)
+  ])
+  if (!runs && !st) return undefined
+  return rollup([...(runs?.check_runs || []).map((c) => c.conclusion || c.status), ...(st?.statuses || []).map((s) => s.state)])
+}
 async function ciStatus(repo, { ref = 'HEAD' } = {}) {
   const sha = (await git(repo, ['rev-parse', '--verify', '-q', req(ref, 'ref')], { okCodes: [0, 1] })).trim()
   if (!sha) return { state: null }
-  const remotes = (await git(repo, ['remote'])).split(/\s+/).filter(Boolean)
-  const remote = remotes.includes('origin') ? 'origin' : remotes[0]
-  if (!remote) return { state: null }
-  const where = parseRemote((await git(repo, ['remote', 'get-url', remote])).trim())
+  const where = await repoWhere(repo)
   if (!where) return { state: null }
   return memo(`ci|${where.host}|${where.path}|${sha}`, 45_000, async () => {
+    const via = await viaFor(where, repo)
+    if (!via) return { state: null, reason: cliFor(where.kind) }
     if (where.kind === 'github') {
-      const [runs, st] = await Promise.all([
-        runProc('gh', ['api', `repos/${where.path}/commits/${sha}/check-runs`, '--jq', '[.check_runs[] | (.conclusion // .status)]'], { timeout: 30_000 }),
-        runProc('gh', ['api', `repos/${where.path}/commits/${sha}/status`, '--jq', '[.statuses[].state]'], { timeout: 30_000 })
-      ])
-      if (runs.code !== 0 && st.code !== 0) return { state: null, reason: 'gh' }
-      const state = rollup([...(jsonOf(runs) || []), ...(jsonOf(st) || [])])
-      return { state, sha, url: `https://github.com/${where.path}/commit/${sha}/checks` }
+      const state = await githubCommitCi(where, via, sha, repo)
+      if (state === undefined) return { state: null, reason: via === 'cli' ? 'gh' : 'git' }
+      return { state, sha, url: `${where.web}/commit/${sha}/checks` }
     }
-    const r = await runProc('glab', ['api', '--hostname', where.host, `projects/${encodeURIComponent(where.path)}/repository/commits/${sha}`], { timeout: 30_000 })
-    const c = jsonOf(r)
-    if (!c) return { state: null, reason: 'glab' }
+    const c = await gitlabGet(where, via, `projects/${projectPath(where.path)}/repository/commits/${sha}`).catch(() => null)
+    if (!c) return { state: null, reason: via === 'cli' ? 'glab' : 'git' }
     return { state: CI_STATE(c.last_pipeline?.status), sha, url: c.last_pipeline?.web_url || `${where.web}/-/commit/${sha}` }
   })
 }
-/** CI state of one review item (pull/merge request head). */
-async function reviewCi(it) {
-  if (it.provider === 'github') {
-    const r = await runProc('gh', ['pr', 'view', it.url, '--json', 'statusCheckRollup', '--jq', '[.statusCheckRollup[] | (.conclusion // .state // .status)]'], { timeout: 30_000 })
-    return r.code === 0 ? rollup(jsonOf(r) || []) : null
-  }
-  const r = await runProc('glab', ['api', '--hostname', it.host, `projects/${+it.projectId}/merge_requests/${+it.number}`], { timeout: 30_000 })
-  return CI_STATE(jsonOf(r)?.head_pipeline?.status)
+/** CI state of one review item (pull/merge request head), remembered for a minute. */
+function reviewCi(it) {
+  return slow('rci|' + it.url, async () => {
+    const { w, via } = await itemTarget(it)
+    if (w.kind === 'github') {
+      if (via === 'cli') {
+        const r = await runProc('gh', ['pr', 'view', it.url, '--json', 'statusCheckRollup', '--jq', '[.statusCheckRollup[] | (.conclusion // .state // .status)]'], { timeout: 30_000 })
+        return r.code === 0 ? rollup(jsonOf(r) || []) : null
+      }
+      const pr = await forgeApi(w, 'GET', `/repos/${w.path}/pulls/${w.number}`)
+      return pr?.head?.sha ? (await githubCommitCi(w, via, pr.head.sha)) ?? null : null
+    }
+    return CI_STATE((await gitlabGet(w, via, w.mr).catch(() => null))?.head_pipeline?.status)
+  })
 }
 
 // ---------- line comments on a pull/merge request ----------
@@ -1259,28 +1502,53 @@ async function reviewLineComment(it, { path: file, line, side, body }) {
   const text = String(body || '').trim()
   if (!text) throw new GitError('Write a comment first')
   if (!Number.isInteger(+line) || +line < 1) throw new GitError('bad line')
+  const f = String(file || '')
+  if (!f) throw new GitError('file is required')
   const mat = await reviewMaterial(it)
-  if (it.provider === 'github') {
-    const repoPath = String(it.url).match(/^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)$/)
-    if (!repoPath) throw new GitError('not a GitHub pull request link')
-    const r = await runProc('gh', ['api', `repos/${repoPath[1]}/pulls/${repoPath[2]}/comments`, '-f', `body=${text}`, '-f', `commit_id=${mat.headSha}`, '-f', `path=${file}`, '-F', `line=${+line}`, '-f', `side=${side === 'old' ? 'LEFT' : 'RIGHT'}`], { timeout: 60_000 })
-    if (r.code !== 0) throw new GitError((r.stderr || r.stdout).trim() || 'could not post the comment')
+  const { w, via } = await itemTarget(it)
+  if (w.kind === 'github') {
+    const fields = { body: text, commit_id: mat.headSha, path: f, line: +line, side: side === 'old' ? 'LEFT' : 'RIGHT' }
+    const p = `repos/${w.path}/pulls/${w.number}/comments`
+    if (via === 'git') await forgeApi(w, 'POST', '/' + p, { body: fields })
+    else {
+      const r = await runProc('gh', ['api', '--hostname', w.host, p, '-f', `body=${text}`, '-f', `commit_id=${mat.headSha}`, '-f', `path=${f}`, '-F', `line=${+line}`, '-f', `side=${fields.side}`], { timeout: 60_000 })
+      if (r.code !== 0) throw cliFail(r, 'could not post the comment')
+    }
     return { ok: true }
   }
   const d = mat.diffRefs || {}
-  const args = ['api', '--hostname', it.host, '-X', 'POST', `projects/${+it.projectId}/merge_requests/${+it.number}/discussions`, '-f', `body=${text}`, '-f', 'position[position_type]=text', '-f', `position[base_sha]=${d.base_sha}`, '-f', `position[start_sha]=${d.start_sha}`, '-f', `position[head_sha]=${d.head_sha}`, '-f', `position[new_path]=${file}`, '-f', `position[old_path]=${file}`, '-F', `position[${side === 'old' ? 'old_line' : 'new_line'}]=${+line}`]
-  const r = await runProc('glab', args, { timeout: 60_000 })
-  if (r.code !== 0) throw new GitError((r.stderr || r.stdout).trim() || 'could not post the comment')
+  const oldPath = mat.changes?.find((c) => c.new_path === f)?.old_path || f // renamed files keep their old name on the old side
+  const position = { position_type: 'text', base_sha: d.base_sha, start_sha: d.start_sha, head_sha: d.head_sha, new_path: f, old_path: oldPath, [side === 'old' ? 'old_line' : 'new_line']: +line }
+  const p = `${w.mr}/discussions`
+  if (via === 'git') await forgeApi(w, 'POST', '/' + p, { body: { body: text, position } })
+  else {
+    const args = ['api', '--hostname', w.host, '-X', 'POST', p, '-f', `body=${text}`, ...Object.entries(position).flatMap(([k, v]) => [typeof v === 'number' ? '-F' : '-f', `position[${k}]=${v}`])]
+    const r = await runProc('glab', args, { timeout: 60_000 })
+    if (r.code !== 0) throw cliFail(r, 'could not post the comment')
+  }
   return { ok: true }
 }
 
 // ---------- files in the working tree (conflict resolution) ----------
+/**
+ * The real path of a working-tree file. Symlinks are resolved (for a new file: its nearest existing
+ * folder), so a link pointing outside the repository cannot be read or written through.
+ */
 async function workPath(repo, file) {
-  const { toplevel } = await paths(repo)
-  const top = path.resolve(toplevel)
+  const top = realpathSync(path.resolve((await paths(repo)).toplevel))
   const p = path.resolve(top, String(file))
-  if (!(p + path.sep).startsWith(top + path.sep) && p !== top) throw new GitError('That file is outside the repository')
-  return p
+  let dir = p
+  const rest = []
+  while (!existsSync(dir)) {
+    rest.unshift(path.basename(dir))
+    const up = path.dirname(dir)
+    if (up === dir) break
+    dir = up
+  }
+  const real = path.join(realpathSync(dir), ...rest)
+  const cmp = (x) => (process.platform === 'win32' ? x.toLowerCase() : x)
+  if (!cmp(real + path.sep).startsWith(cmp(top + path.sep)) || cmp(real) === cmp(top)) throw new GitError('That file is outside the repository')
+  return real
 }
 
 // ---------- operations exposed to the panel ----------
@@ -1322,7 +1590,14 @@ const ops = {
     const msg = String(a.message || '')
     if (!msg.trim()) throw new GitError('commit message is empty')
     const out = await git(r, args, { input: msg })
-    if (a.push) await push(r, {})
+    if (a.push) {
+      // the commit is made: a failed push must not look like a failed commit
+      try {
+        await push(r, {})
+      } catch (e) {
+        return { committed: true, output: out, pushError: e.message }
+      }
+    }
     return out
   },
   lastMessage: (r) => git(r, ['log', '-1', '--format=%B'], { okCodes: [0, 128] }),
@@ -1347,7 +1622,6 @@ const ops = {
         a = { ...a, track: false }
       }
     }
-    if (a.discard && a.clean) await git(r, ['clean', '-f', '-d']) // Reset with "also delete untracked files"
     const args = ['switch']
     if (a.discard) args.push('--discard-changes')
     else if (a.merge) args.push('--merge')
@@ -1356,29 +1630,46 @@ const ops = {
     else if (a.detach) args.push('--detach')
     args.push(ref)
     let stashed = false
+    let stashSha = null
     if (a.stash) {
       const dirty = (await git(r, ['status', '--porcelain'])).trim()
       if (dirty) {
         await git(r, ['stash', 'push', '--include-untracked', '-m', `Auto stash before switching to ${ref}`])
+        stashSha = (await git(r, ['rev-parse', '--verify', '-q', 'refs/stash'], { okCodes: [0, 1] })).trim() || null
         stashed = true
+      }
+    }
+    // Pop exactly the stash made above (another one may have been pushed meanwhile).
+    const restore = async () => {
+      const list = (await git(r, ['stash', 'list', '--format=%H']).catch(() => '')).split('\n').filter(Boolean)
+      const i = stashSha ? list.indexOf(stashSha) : 0
+      const ref = `stash@{${Math.max(i, 0)}}`
+      if (i < 0) return `your changes are kept in stash ${stashSha.slice(0, 7)}`
+      try {
+        await git(r, ['stash', 'pop', ref])
+        return null
+      } catch {
+        return `your changes are kept in ${ref} (${(stashSha || '').slice(0, 7)})`
       }
     }
     try {
       await git(r, args)
     } catch (e) {
-      if (stashed) await git(r, ['stash', 'pop']).catch(() => {})
+      if (stashed) {
+        const kept = await restore()
+        if (kept) e.message += `\nCould not restore your changes: ${kept}.`
+      }
       const inUse = e.message.match(/(?:already (?:checked out|used by worktree) at|is already used by worktree at) '([^']+)'/)
       if (inUse) throw Object.assign(new GitError(`${ref} is checked out in another worktree:\n${inUse[1]}`), { data: { kind: 'in-worktree', path: inUse[1] } })
       if (/would be overwritten|Please commit your changes or stash them/i.test(e.message))
         throw Object.assign(new GitError('You have changes that this checkout would overwrite.'), { data: { kind: 'dirty' } })
       throw e
     }
+    // Reset with "also delete untracked files": only once the switch worked
+    if (a.discard && a.clean) await git(r, ['clean', '-f', '-d'])
     if (stashed) {
-      try {
-        await git(r, ['stash', 'pop'])
-      } catch {
-        return { switched: true, stashKept: true, local } // conflicts: the stash stays for the person to apply
-      }
+      const kept = await restore()
+      if (kept) return { switched: true, stashKept: true, stashMessage: `Switched, but ${kept}.`, local } // conflicts: the stash stays for the person to apply
     }
     return { switched: true, stashed, local }
   },
@@ -1477,7 +1768,7 @@ const ops = {
   worktreeAdd: (r, a) => worktreeAdd(r, a),
   worktreeRemove: async (r, a) => {
     const p = req(a.path, 'path')
-    const listed = async () => (await worktrees(r)).find((x) => norm(x.path) === norm(p)) || null
+    const listed = async () => (await worktrees(r)).find((x) => norm(x.path) === norm(p, r)) || null
     const w = await listed()
     if (!w) return { removed: true, alreadyGone: true } // removed elsewhere meanwhile: nothing to do
     if (w.main) throw new GitError('The main worktree cannot be removed')
@@ -1485,13 +1776,21 @@ const ops = {
     const done = async (extra = {}) => {
       // Git's own list is the truth: never report success while git still has the worktree.
       let still = await listed()
-      if (still?.prunable || (still && !existsSync(path.join(p, '.git')))) {
+      if (still?.prunable || (still && !existsSync(path.join(w.path, '.git')))) {
         await git(r, ['worktree', 'prune']).catch(() => {})
         still = await listed()
       }
       if (still) throw new GitError(`Git still lists this worktree.\n${reasons.join('\n') || 'It may be locked or in use by another program.'}`)
-      if (a.deleteBranch && w.branch) await git(r, ['branch', a.force ? '-D' : '-d', w.branch]).catch(() => {})
-      return { removed: true, leftover: existsSync(p), ...extra }
+      // force removes a dirty worktree; only forceBranch deletes an unmerged branch (-D)
+      if (a.deleteBranch && w.branch) {
+        try {
+          await git(r, ['branch', a.forceBranch ? '-D' : '-d', w.branch])
+          extra.branchDeleted = w.branch
+        } catch (e) {
+          extra.branchKept = e.message.split('\n')[0]
+        }
+      }
+      return { removed: true, leftover: existsSync(w.path), ...extra }
     }
     // A worktree whose folder is gone or no longer linked ("missing"): drop its stale record.
     // Files left in the folder are not touched.
@@ -1555,8 +1854,12 @@ const ops = {
   },
   writeWorkFile: async (r, a) => {
     const p = await workPath(r, a.file)
+    mkdirSync(path.dirname(p), { recursive: true })
     writeFileSync(p, String(a.text ?? ''))
-    if (a.stage) await git(r, ['add', '--', String(a.file)])
+    if (a.stage) {
+      const top = realpathSync((await paths(r)).toplevel)
+      await git(top, ['add', '--', path.relative(top, p).replace(/\\/g, '/')])
+    }
     return ''
   },
   branchCleanup: async (r) => {
@@ -1591,12 +1894,38 @@ const ops = {
       return { hash, subject, time: +time }
     })
     if (!now || !prev) return { blocked: 'Nothing to undo' }
-    return { what: now.subject, at: now.time, to: prev.hash, mode: /^commit/.test(now.subject) ? 'soft' : 'keep' }
+    const s = now.subject
+    const base = { what: s, at: now.time, head: now.hash }
+    const short = (h) => h.slice(0, 7)
+    // checkout: switch back instead of moving any branch
+    const co = s.match(/^checkout: moving from (\S+) to (\S+)$/)
+    if (co) {
+      const from = co[1]
+      const isBranch = !!(await git(r, ['rev-parse', '--verify', '-q', `refs/heads/${from}`], { okCodes: [0, 1] })).trim()
+      const switchTo = isBranch ? from : prev.hash
+      return { ...base, to: prev.hash, mode: 'switch', switchTo, detach: !isBranch, description: isBranch ? `Switches back to ${from}. No branch moves; uncommitted changes go along.` : `Checks out ${short(prev.hash)} again (detached). No branch moves.` }
+    }
+    // rebase (also pull --rebase): back to where the branch was before it, from the branch's own reflog
+    if (/^(rebase|pull --rebase)\b.*\(finish\)/.test(s) || /^rebase.*\(finish\)/.test(s)) {
+      const { branch } = await headInfo(r)
+      if (!branch) return { blocked: 'The rebase left HEAD detached; use the Reflog tab to go back' }
+      const top = (await git(r, ['reflog', '-1', `--format=%gs`, `refs/heads/${branch}`]).catch(() => '')).trim()
+      if (!/rebase/.test(top)) return { blocked: `Can't find where ${branch} was before the rebase; use the Reflog tab` }
+      const to = (await git(r, ['rev-parse', '--verify', '-q', `refs/heads/${branch}@{1}`], { okCodes: [0, 1] })).trim()
+      if (!to) return { blocked: `Can't find where ${branch} was before the rebase; use the Reflog tab` }
+      return { ...base, to, mode: 'keep', description: `${branch} goes back to ${short(to)}, where it was before the rebase. Uncommitted changes are kept.` }
+    }
+    if (/^commit/.test(s)) return { ...base, to: prev.hash, mode: 'soft', description: `The branch goes back to ${short(prev.hash)}. The commit's changes stay staged, ready to commit again.` }
+    if (/^(reset|merge|pull)\b/.test(s)) return { ...base, to: prev.hash, mode: 'keep', description: `The branch goes back to ${short(prev.hash)}. Uncommitted changes are kept.` }
+    return { blocked: `"${s.split(':')[0]}" can't be undone automatically; use the Reflog tab` }
   },
   undoLast: async (r) => {
     const u = await ops.undoInfo(r)
     if (u.blocked) throw new GitError(u.blocked)
-    await git(r, ['reset', `--${u.mode}`, u.to])
+    const cur = (await git(r, ['rev-parse', 'HEAD'])).trim()
+    if (cur !== u.head) throw new GitError('The repository changed meanwhile; look again before undoing')
+    if (u.mode === 'switch') await git(r, ['switch', ...(u.detach ? ['--detach'] : []), u.switchTo])
+    else await git(r, ['reset', `--${u.mode}`, u.to])
     return u
   },
   init: (_r, a) => git(req(a.path, 'path'), ['init']),
@@ -1616,11 +1945,12 @@ const ops = {
     args.push('-')
     return git(r, args, { input: String(a.patch || '') })
   },
-  ignore: (r, a) => {
-    const file = path.join(r, '.gitignore')
-    const cur = existsSync(file) ? readFileSync(file, 'utf8') : ''
+  ignore: async (r, a) => {
     const line = String(a.pattern || '').trim()
     if (!line) throw new GitError('pattern is required')
+    if (/[\r\n]/.test(line)) throw new GitError('one pattern per line, please')
+    const file = path.join((await paths(r)).toplevel, '.gitignore')
+    const cur = existsSync(file) ? readFileSync(file, 'utf8') : ''
     if (!cur.split(/\r?\n/).includes(line)) writeFileSync(file, cur + (cur && !cur.endsWith('\n') ? '\n' : '') + line + '\n')
     return ''
   },
@@ -1654,13 +1984,7 @@ const ops = {
   compare: async (r, a) => {
     const x = req(a.a, 'first revision')
     const y = req(a.b, 'second revision')
-    const ns = (await git(r, ['diff', '--name-status', '-M', '-z', x, y])).split('\0').filter((v) => v !== '')
-    const files = []
-    for (let i = 0; i < ns.length; ) {
-      const st = ns[i++]
-      if (st[0] === 'R' || st[0] === 'C') files.push({ status: st[0], orig: ns[i++], path: ns[i++] })
-      else files.push({ status: st[0], path: ns[i++] })
-    }
+    const files = parseNameStatus(await git(r, ['diff', '--name-status', '-M', '-z', x, y]))
     const counts = (await git(r, ['rev-list', '--left-right', '--count', `${x}...${y}`]).catch(() => '0 0')).trim().split(/\s+/)
     return { files, behind: +counts[0] || 0, ahead: +counts[1] || 0 }
   },
@@ -1727,8 +2051,14 @@ const ops = {
     if (!msg.trim()) throw new GitError('message is empty')
     if ((await git(r, ['status', '--porcelain', '--untracked-files=no'])).trim())
       throw new GitError('Commit or stash your changes before squashing')
+    const before = (await git(r, ['rev-parse', 'HEAD'])).trim()
     await git(r, ['reset', '--soft', base])
-    return git(r, ['commit', '-F', '-'], { input: msg })
+    try {
+      return await git(r, ['commit', '-F', '-'], { input: msg })
+    } catch (e) {
+      await git(r, ['reset', '--soft', before]).catch(() => {}) // put the branch back as it was
+      throw e
+    }
   },
   rebaseTodo: async (r, a) => {
     const raw = await git(r, ['log', '--reverse', `--format=%H${SEP}%s`, `${req(a.base, 'base')}..HEAD`])
@@ -1740,7 +2070,7 @@ const ops = {
         return { hash, subject }
       })
   },
-  rebaseInteractive: (r, a) => {
+  rebaseInteractive: async (r, a) => {
     const base = req(a.base, 'base')
     const ACTIONS = new Set(['pick', 'squash', 'fixup', 'drop'])
     const todo = (a.todo || [])
@@ -1750,15 +2080,20 @@ const ops = {
       })
       .join('\n')
     if (!todo) throw new GitError('nothing to rebase')
-    const file = path.join(os.tmpdir(), `orca-git-todo-${Date.now()}.txt`)
-    writeFileSync(file, todo + '\n')
-    // Git runs the sequence editor with the todo file's path; a tiny script copies our plan over it.
-    const script = path.join(os.tmpdir(), 'orca-git-seq-editor.cjs')
-    writeFileSync(script, "require('fs').copyFileSync(process.env.ORCA_GIT_TODO, process.argv[2])\n")
-    const q = (p) => '"' + p.replace(/\\/g, '/') + '"'
-    return git(r, ['-c', `sequence.editor=${q(process.execPath)} ${q(script)}`, '-c', 'core.editor=true', 'rebase', '-i', base], {
-      env: { ELECTRON_RUN_AS_NODE: '1', ORCA_GIT_TODO: file }
-    })
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'orca-git-rebase-'))
+    try {
+      const file = path.join(dir, 'todo.txt')
+      writeFileSync(file, todo + '\n')
+      // Git runs the sequence editor with the todo file's path; a tiny script copies our plan over it.
+      const script = path.join(dir, 'seq-editor.cjs')
+      writeFileSync(script, "require('fs').copyFileSync(process.env.ORCA_GIT_TODO, process.argv[2])\n")
+      const q = (p) => '"' + p.replace(/\\/g, '/') + '"'
+      return await git(r, ['-c', `sequence.editor=${q(process.execPath)} ${q(script)}`, '-c', 'core.editor=true', 'rebase', '-i', base], {
+        env: { ELECTRON_RUN_AS_NODE: '1', ORCA_GIT_TODO: file }
+      })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   }
 }
 
@@ -1780,6 +2115,7 @@ export default function activate(orca) {
     const scopeGlobal = args.scope === 'global'
     if (!repo && !(NO_REPO_OK.has(op) && (scopeGlobal || op === 'init' || op === 'clone')))
       throw new GitError('no repository selected')
+    if (args.fresh) shortMemo.clear() // an explicit Refresh: nothing from the short cache
     if (READ_ONLY_OPS.has(op)) return fn(repo, args)
     // Anything that may change the repository: drop the shared short-lived answers before and after.
     shortMemo.clear()
@@ -1791,7 +2127,6 @@ export default function activate(orca) {
   })
 
   // Find the repository for the focused Orca workspace, plus every local workspace for the picker.
-  // Which repository the focused Orca workspace is.
   async function resolveFocused() {
     const workspaces = await listWorkspaces(orca)
     let focused = null
@@ -1825,10 +2160,10 @@ export default function activate(orca) {
   let lastBar = ''
   let barBusy = false // a slow git must not pile up overlapping polls
   async function updateStatusBar() {
-    if (barBusy || !orca.host.has('statusBar.update')) return
+    if (barBusy || !orca.host.has('statusBar.update')) return false
     barBusy = true
     try {
-      await updateStatusBarOnce()
+      return await updateStatusBarOnce()
     } finally {
       barBusy = false
     }
@@ -1839,7 +2174,7 @@ export default function activate(orca) {
       const { focused } = await resolveFocused()
       if (!focused) item.visible = false
       else {
-        const st = await status(focused)
+        const st = await status(focused, { untracked: 'normal' }) // a count is enough: no walk into new folders
         const parts = [st.branch || `detached ${(st.oid || '').slice(0, 7)}`]
         if (st.ahead) parts.push(`↑${st.ahead}`)
         if (st.behind) parts.push(`↓${st.behind}`)
@@ -1857,14 +2192,26 @@ Click to open Git Control`
       item.visible = false
     }
     const key = JSON.stringify(item)
-    if (key === lastBar) return
+    if (key === lastBar) return false
     lastBar = key
     try {
       await orca.host.call('statusBar.update', item)
     } catch {}
+    return true
+  }
+  // Poll every 4 s while things change; slow down to 15 s while nothing does.
+  let barDelay = 4000
+  let barTimer = null
+  const scheduleBar = () => {
+    clearTimeout(barTimer)
+    barTimer = setTimeout(async () => {
+      const changed = await updateStatusBar().catch(() => false)
+      barDelay = changed ? 4000 : Math.min(15_000, Math.round(barDelay * 1.5))
+      scheduleBar()
+    }, barDelay)
   }
   updateStatusBar()
-  setInterval(updateStatusBar, 4000)
+  scheduleBar()
 
   // Orca keeps editor tabs per workspace, so the Git Control tab cannot follow the person from one
   // workspace to the next. Instead, each workspace they switch to gets its own Git Control tab:
@@ -1894,7 +2241,9 @@ Click to open Git Control`
   // Older Orca builds have no worker events; the rest of the plugin works without them.
   orca.events?.on?.('workspace.changed', () => {
     forgetFocusCaches() // a new focus: look it up again, and update the status bar now
+    barDelay = 4000
     updateStatusBar()
+    scheduleBar()
     // Read before awaiting anything: the new workspace's own tab may report itself shown meanwhile.
     const wasOnGraph = graphShown || Date.now() - graphHiddenAt < SWITCH_WINDOW
     opening = opening.then(async () => {
@@ -1950,19 +2299,8 @@ Click to open Git Control`
   orca.panels.handle('reviews.act', (input = {}) => reviewAct(input))
   orca.panels.handle('reviews.setup', async ({ host, step } = {}) => {
     // same terminal setup as the merge request dialog, for a host instead of a repository
-    if (!/^[\w.:-]+$/.test(String(host || ''))) throw new GitError('unexpected host name')
-    const commands = {
-      'glab-install': 'winget install --id GLab.GLab -e --accept-package-agreements --accept-source-agreements',
-      'glab-login': `glab auth login --hostname ${host}`,
-      'gh-install': 'winget install --id GitHub.cli -e --accept-package-agreements --accept-source-agreements',
-      'gh-login': 'gh auth login --hostname github.com --web --git-protocol https'
-    }
-    const command = commands[step]
-    if (!command) throw new GitError('unknown setup step')
-    const ws = (await listWorkspaces(orca))[0]
-    if (!ws || !orca.host.has('terminal.create')) return { ran: false, command }
-    await orca.host.call('terminal.create', { workspaceId: ws.id, title: 'Review inbox setup', command })
-    return { ran: true, command }
+    setupCommand(step, host) // validates before looking up workspaces
+    return runSetup(orca, (await listWorkspaces(orca))[0], step, host, 'Review inbox setup')
   })
   orca.panels.handle('ai.mrDescription', async (input = {}) => aiMrDescription(req(input.repo, 'repo'), input, AI[input.agent] ? input.agent : await agentSetting()))
   orca.panels.handle('reviews.diff', async (input = {}) => {

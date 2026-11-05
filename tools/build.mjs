@@ -11,7 +11,8 @@ const panel = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'pan
 const read = (f) => readFileSync(path.join(panel, f), 'utf8')
 
 let html = read('tab.html')
-const css = read('style.css')
+// "</style" inside the CSS (a comment, a content string) would end the inline element early
+const css = read('style.css').replace(/<\/style/gi, '<\\/style')
 // "</script" inside the script would end the inline element early
 const js = read('app.js').replace(/<\/script/gi, '<\\/script')
 

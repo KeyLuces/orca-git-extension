@@ -17,7 +17,11 @@ const CHROME = process.env.CHROME || 'C:/Program Files/Google/Chrome/Application
 const root = mkdtempSync(path.join(tmpdir(), 'gitx-mobile-'))
 process.env.GIT_CONFIG_GLOBAL = path.join(root, 'global.gitconfig') // never the person's real config
 writeFileSync(process.env.GIT_CONFIG_GLOBAL, '[user]\n\tname = Phone Tester\n\temail = phone@e2e.test\n')
+process.env.GIT_CONFIG_NOSYSTEM = '1' // nor the machine's system config
 process.env.GITX_NO_BROWSER = '1'
+let browser = null
+const results = []
+try {
 const repo = path.join(root, 'app')
 const g = (...a) => execFileSync('git', a, { cwd: repo, encoding: 'utf8', env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } }).trim()
 execFileSync('git', ['init', '-q', '-b', 'main', repo])
@@ -45,7 +49,7 @@ activate({
   host: { has: (m) => m === 'settings.get', call: async () => ({ settings: {} }) }
 })
 
-const browser = await puppeteer.launch({ executablePath: CHROME, headless: true })
+browser = await puppeteer.launch({ executablePath: CHROME, headless: true })
 const page = await browser.newPage()
 await page.emulate({
   viewport: { width: 390, height: 844, deviceScaleFactor: 2, isMobile: true, hasTouch: true },
@@ -94,8 +98,9 @@ async function until(fn, label, ms = 10000) {
   }
   throw new Error('timed out: ' + label)
 }
+/** wait until the element's transitions and animations have finished */
+const settled = (sel) => until(() => page.$eval(sel, (el) => el.getAnimations().length === 0), `${sel} settled`)
 const shot = (n) => page.screenshot({ path: path.join(SHOTS, n + '.png') })
-const results = []
 async function step(name, fn) {
   try {
     await fn()
@@ -115,11 +120,11 @@ await step('graph renders on a phone, no sideways scrolling', async () => {
 await step('the ☰ button opens the branch drawer; the backdrop closes it', async () => {
   await page.tap('#sideToggle')
   await until(() => page.evaluate(() => document.body.classList.contains('side-open')), 'drawer open')
-  await sleep(300)
+  await settled('#side') // slid in
   await shot('mobile-02-drawer')
   await page.touchscreen.tap(380, 400) // the dimmed strip right of the drawer
   await until(() => page.evaluate(() => !document.body.classList.contains('side-open')), 'drawer closed')
-  await sleep(350) // let it slide away
+  await settled('#side') // slid away
 })
 
 await step('long-press on a commit opens its menu, on screen', async () => {
@@ -165,10 +170,15 @@ await step('no page errors', async () => {
   if (errors.length) throw new Error(errors.slice(0, 3).join(' | '))
 })
 
-await browser.close()
+} catch (e) {
+  results.push(['FAIL', 'setup', e.message])
+} finally {
+  // close Chrome and delete the throwaway repository even when a step throws outside step()
+  await browser?.close().catch(() => {})
+  try {
+    rmSync(root, { recursive: true, force: true })
+  } catch {}
+}
 for (const r of results) console.log(r[0] + '  ' + r[1] + (r[2] ? '\n      ' + r[2] : ''))
 console.log(`\n${results.filter((r) => r[0] === 'PASS').length}/${results.length} passed`)
-try {
-  rmSync(root, { recursive: true, force: true })
-} catch {}
-process.exit(results.every((r) => r[0] === 'PASS') ? 0 : 1)
+process.exit(results.length && results.every((r) => r[0] === 'PASS') ? 0 : 1)
