@@ -1012,17 +1012,23 @@ async function mrInfo(repo, target, source) {
 }
 
 /** The service's own "new merge request" page, prefilled: works with nothing installed. */
-function mrWebUrl(info, { title, body }) {
+function mrWebUrl(info, { title, body, assignees = [], reviewers = [], removeSource, squash }) {
   const seg = (b) => encodeURIComponent(b).replace(/%2F/g, '/') // branch names keep their slashes in a path
-  const q = (o) => Object.entries(o).filter(([, v]) => v).map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&')
+  // pairs, so a key can repeat (GitLab's assignee_ids[])
+  const q = (pairs) => pairs.filter(([, v]) => v !== undefined && v !== null && v !== '').map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&')
   if (info.kind === 'github')
-    return `${info.web}/compare/${seg(info.target)}...${seg(info.source)}?${q({ expand: '1', title, body })}`
-  return `${info.web}/-/merge_requests/new?${q({
-    'merge_request[source_branch]': info.source,
-    'merge_request[target_branch]': info.target,
-    'merge_request[title]': title,
-    'merge_request[description]': body
-  })}`
+    // GitHub's compare page takes assignees but not reviewers
+    return `${info.web}/compare/${seg(info.target)}...${seg(info.source)}?${q([['expand', '1'], ['title', title], ['body', body], ['assignees', assignees.map((a) => a.username).join(',')]])}`
+  return `${info.web}/-/merge_requests/new?${q([
+    ['merge_request[source_branch]', info.source],
+    ['merge_request[target_branch]', info.target],
+    ['merge_request[title]', title],
+    ['merge_request[description]', body],
+    ...assignees.map((a) => ['merge_request[assignee_ids][]', a.id]),
+    ...reviewers.map((r) => ['merge_request[reviewer_ids][]', r.id]),
+    ['merge_request[force_remove_source_branch]', removeSource ? '1' : removeSource === false ? '0' : undefined],
+    ['merge_request[squash]', squash ? '1' : squash === false ? '0' : undefined]
+  ])}`
 }
 
 /** Open a web page in the person's default browser (the worker is not limited to a click like frames are). */
@@ -1039,13 +1045,81 @@ function openInBrowser(url) {
 
 const projectPath = (p) => encodeURIComponent(p) // GitLab: group/sub/project → group%2Fsub%2Fproject
 
+/** One REST call through gh/glab (`via: 'cli'`) or the saved Git login. */
+async function forgeCall(w, via, method, apiPath, body, cwd) {
+  if (via === 'cli') {
+    const bin = w.kind === 'github' ? 'gh' : 'glab'
+    const args = ['api', '--hostname', w.host, '-X', method, apiPath.replace(/^\//, '')]
+    if (body) args.push('--input', '-')
+    const r = await runProc(bin, args, { cwd, input: body ? JSON.stringify(body) : undefined, timeout: 60_000 })
+    if (r.code !== 0) throw new GitError((r.stderr || r.stdout).trim().split('\n').slice(-3).join('\n') || `${bin} api failed`)
+    return jsonOf(r)
+  }
+  return forgeApi(w, method, apiPath.startsWith('/') ? apiPath : '/' + apiPath, { body, cwd })
+}
+
+const PERSON = /^[\w.-]{1,100}$/
+/** People of the project who can be assignees/reviewers, plus who "me" is and the project's MR defaults. */
+async function mrPeople(repo, { query = '' } = {}) {
+  const remote = await defaultRemote(repo)
+  if (!remote) throw new GitError('This repository has no remote')
+  const w = await remoteWhere(repo, remote)
+  if (!w) throw new GitError('Could not tell where the remote is hosted')
+  const via = await viaFor(w, repo)
+  if (!via) return { people: [], me: null, via: null, kind: w.kind, defaults: {} }
+  const q = String(query).slice(0, 60)
+  if (w.kind === 'github') {
+    const [list, me] = await Promise.all([
+      forgeCall(w, via, 'GET', `/repos/${w.path}/assignees?per_page=100`, null, repo).catch(() => []),
+      forgeCall(w, via, 'GET', '/user', null, repo).catch(() => null)
+    ])
+    const people = (Array.isArray(list) ? list : []).map((u) => ({ id: u.id, username: u.login, name: u.name || u.login, avatar: u.avatar_url || '' }))
+    return { people, me: me?.login ? { id: me.id, username: me.login, name: me.name || me.login } : null, via, kind: 'github', defaults: {} }
+  }
+  const p = projectPath(w.path)
+  const [list, me, proj] = await Promise.all([
+    forgeCall(w, via, 'GET', `/projects/${p}/members/all?per_page=100${q ? `&query=${encodeURIComponent(q)}` : ''}`, null, repo).catch(() => []),
+    forgeCall(w, via, 'GET', '/user', null, repo).catch(() => null),
+    forgeCall(w, via, 'GET', `/projects/${p}`, null, repo).catch(() => null)
+  ])
+  const people = (Array.isArray(list) ? list : []).filter((u) => u.state !== 'blocked').map((u) => ({ id: u.id, username: u.username, name: u.name || u.username, avatar: u.avatar_url || '' }))
+  const squashOpt = proj?.squash_option || 'default_off'
+  return {
+    people,
+    me: me?.username ? { id: me.id, username: me.username, name: me.name || me.username } : null,
+    via,
+    kind: 'gitlab',
+    defaults: { removeSource: proj ? proj.remove_source_branch_after_merge !== false : undefined, squash: squashOpt === 'always' || squashOpt === 'default_on', squashLocked: squashOpt === 'always' || squashOpt === 'never' }
+  }
+}
+
+/** Assignees / reviewers from the panel: [{ id, username }], checked. */
+function cleanPeople(list) {
+  return (Array.isArray(list) ? list : [])
+    .slice(0, 20)
+    .filter((p) => p && PERSON.test(String(p.username || '')) && Number.isInteger(+p.id))
+    .map((p) => ({ id: +p.id, username: String(p.username) }))
+}
+
+/** GitHub: add assignees and request reviewers on a new PR. Returns a warning text, or ''. */
+async function githubAddPeople(w, via, number, assignees, reviewers, cwd) {
+  const bad = []
+  if (assignees.length)
+    await forgeCall(w, via, 'POST', `/repos/${w.path}/issues/${number}/assignees`, { assignees: assignees.map((a) => a.username) }, cwd).catch((e) => bad.push(`assignees (${e.message})`))
+  const others = reviewers.filter((r) => r.username) // GitHub refuses the PR author as reviewer
+  if (others.length)
+    await forgeCall(w, via, 'POST', `/repos/${w.path}/pulls/${number}/requested_reviewers`, { reviewers: others.map((r) => r.username) }, cwd).catch((e) => bad.push(`reviewers (${e.message})`))
+  return bad.length ? `Created, but GitHub did not accept the ${bad.join(' and ')}` : ''
+}
+
 /** Create the merge request with the REST API and the saved Git login. */
-async function mrCreateApi(repo, info, { title, body, draft }) {
+async function mrCreateApi(repo, info, { title, body, draft, assignees = [], reviewers = [], removeSource, squash }) {
   if (info.kind === 'github') {
     const base = `/repos/${info.path}/pulls`
     try {
       const pr = await forgeApi(info, 'POST', base, { cwd: repo, body: { title, body, head: info.source, base: info.target, draft: !!draft } })
-      return { created: true, url: pr.html_url, number: pr.number }
+      const warn = await githubAddPeople(info, 'git', pr.number, assignees, reviewers, repo)
+      return { created: true, url: pr.html_url, number: pr.number, ...(warn ? { warning: warn } : {}) }
     } catch (e) {
       if (e.status !== 422 || !/already exists/i.test(e.message)) throw e
       const owner = info.path.split('/')[0]
@@ -1057,7 +1131,19 @@ async function mrCreateApi(repo, info, { title, body, draft }) {
   const base = `/projects/${projectPath(info.path)}/merge_requests`
   try {
     const t = draft && !/^(draft:|\[draft\])/i.test(title) ? `Draft: ${title}` : title
-    const mr = await forgeApi(info, 'POST', base, { cwd: repo, body: { source_branch: info.source, target_branch: info.target, title: t, description: body } })
+    const mr = await forgeApi(info, 'POST', base, {
+      cwd: repo,
+      body: {
+        source_branch: info.source,
+        target_branch: info.target,
+        title: t,
+        description: body,
+        ...(assignees.length ? { assignee_ids: assignees.map((a) => a.id) } : {}),
+        ...(reviewers.length ? { reviewer_ids: reviewers.map((r) => r.id) } : {}),
+        ...(removeSource !== undefined ? { remove_source_branch: !!removeSource } : {}),
+        ...(squash !== undefined ? { squash: !!squash } : {})
+      }
+    })
     return { created: true, url: mr.web_url, number: mr.iid }
   } catch (e) {
     if (e.status !== 409 && !/already exists/i.test(e.message)) throw e
@@ -1073,7 +1159,12 @@ async function mrCreateApi(repo, info, { title, body, draft }) {
  * - web: open the service's prefilled "new merge request" page in the browser, or
  * - direct: create it with the service's CLI (gh / glab) when signed in, else with the saved Git login.
  */
-async function mrCreate(repo, { target, source, title, body, draft, web }) {
+async function mrCreate(repo, { target, source, title, body, draft, web, assignees, reviewers, removeSource, squash }) {
+  assignees = cleanPeople(assignees)
+  reviewers = cleanPeople(reviewers)
+  removeSource = removeSource === undefined ? undefined : !!removeSource
+  squash = squash === undefined ? undefined : !!squash
+  const extra = { assignees, reviewers, removeSource, squash }
   const info = await mrInfo(repo, req(target, 'target branch'), source)
   if (info.source === info.target) throw new GitError('Pick a different branch to merge into')
   title = String(title || '').trim()
@@ -1083,14 +1174,14 @@ async function mrCreate(repo, { target, source, title, body, draft, web }) {
   if (!web && !title) throw new GitError('A title is required')
   if (info.needsPush) await git(repo, ['push', '-u', info.remote, info.source], net)
   if (web) {
-    const url = mrWebUrl(info, { title, body })
+    const url = mrWebUrl(info, { title, body, ...extra })
     return { url, opened: await openInBrowser(url), pushed: info.needsPush }
   }
-  if (via === 'git') return { ...(await mrCreateApi(repo, info, { title, body, draft })), pushed: info.needsPush, via }
+  if (via === 'git') return { ...(await mrCreateApi(repo, info, { title, body, draft, ...extra })), pushed: info.needsPush, via }
   const r =
     info.kind === 'github'
-      ? await runProc('gh', ['pr', 'create', '--base', info.target, '--head', info.source, '--title', title, '--body', body, ...(draft ? ['--draft'] : [])], { cwd: repo, timeout: 90_000 })
-      : await runProc('glab', ['mr', 'create', '--source-branch', info.source, '--target-branch', info.target, '--title', title, '--description', body, '--yes', ...(draft ? ['--draft'] : [])], { cwd: repo, timeout: 90_000 })
+      ? await runProc('gh', ['pr', 'create', '--base', info.target, '--head', info.source, '--title', title, '--body', body, ...(draft ? ['--draft'] : []), ...(assignees.length ? ['--assignee', assignees.map((a) => a.username).join(',')] : []), ...(reviewers.length ? ['--reviewer', reviewers.map((r) => r.username).join(',')] : [])], { cwd: repo, timeout: 90_000 })
+      : await runProc('glab', ['mr', 'create', '--source-branch', info.source, '--target-branch', info.target, '--title', title, '--description', body, '--yes', ...(draft ? ['--draft'] : []), ...(assignees.length ? ['--assignee', assignees.map((a) => a.username).join(',')] : []), ...(reviewers.length ? ['--reviewer', reviewers.map((r) => r.username).join(',')] : []), ...(removeSource ? ['--remove-source-branch'] : []), ...(squash ? ['--squash-before-merge'] : [])], { cwd: repo, timeout: 90_000 })
   const all = r.stdout + '\n' + r.stderr
   const url = all.match(/https?:\/\/\S+\/(?:pull|merge_requests)\/\d+/)?.[0]
   const number = url ? +url.match(/(\d+)$/)[1] : undefined
@@ -2293,6 +2384,7 @@ Click to open Git Control`
     shortMemo.clear()
     return mrCreate(req(input.repo, 'repo'), input)
   })
+  orca.panels.handle('mr.people', async ({ repo, query } = {}) => mrPeople(req(repo, 'repo'), { query }))
   orca.panels.handle('mr.setup', async ({ repo, step } = {}) => mrSetup(orca, req(repo, 'repo'), { step }))
   orca.panels.handle('reviews.list', ({ repo } = {}) => reviewsList(orca, repo))
   orca.panels.handle('ai.review', async (input = {}) => aiReview(input, AI[input.agent] ? input.agent : await agentSetting()))

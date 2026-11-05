@@ -725,6 +725,30 @@ span.ci { cursor: default; height: 17px; padding: 0 7px; font-size: 10.5px; }
   input[type='text'], input:not([type]), select, textarea { font-size: 16px; } /* no zoom-on-focus in mobile Safari */
 }
 
+/* Merge request: assignees / reviewers pickers and merge options */
+.mr-people { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.mr-people > .pp-note { grid-column: 1 / -1; }
+@media (max-width: 620px) { .mr-people { grid-template-columns: 1fr; } }
+.mr-opts { display: flex; flex-direction: column; gap: 6px; }
+.pp { position: relative; }
+.pp-box { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; min-height: 32px; padding: 3px 6px; border: 1px solid var(--line-hi); border-radius: var(--radius); background: var(--input, var(--bg)); cursor: text; }
+.pp-box:focus-within { border-color: var(--ren); }
+.pp-input { flex: 1; min-width: 90px; border: 0 !important; background: transparent !important; box-shadow: none !important; padding: 3px 2px !important; outline: none; }
+.pp-chip { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 2px 0 3px; border-radius: 999px; background: var(--card-hi); font-size: 12px; }
+.pp-x { border: 0; background: none; color: var(--t2); cursor: pointer; padding: 0 5px; font-size: 14px; line-height: 1; }
+.pp-x:hover { color: var(--fg); }
+.pp-av { width: 18px; height: 18px; border-radius: 50%; flex: none; object-fit: cover; }
+.pp-initial { display: inline-grid; place-items: center; font-size: 10px; font-weight: 700; background: color-mix(in srgb, var(--ren) 30%, var(--card)); color: var(--fg); }
+.pp-list { position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 58; max-height: 220px; overflow: auto; padding: 4px; border-radius: var(--radius); background: var(--card); border: 1px solid var(--line-hi); box-shadow: var(--shadow); }
+.pp-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; cursor: pointer; }
+.pp-item.on, .pp-item:hover { background: var(--sel); }
+.pp-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pp-empty { padding: 8px; }
+.pp-note { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.pp-me { height: 22px; }
+.link-btn { border: 0; background: none; padding: 0; color: var(--ren); font: inherit; font-size: 11.5px; font-weight: 500; text-transform: none; letter-spacing: 0; cursor: pointer; }
+.link-btn:hover { text-decoration: underline; }
+
 </style>
   </head>
   <body class="wide">
@@ -4468,6 +4492,85 @@ function mrItem(local, remote, cur) {
   if (targets.length === 1) return { label: `Merge request → ${targets[0]}…`, icon: 'pr', cls: 'mr-item', badge: 'MR', onClick: () => mergeRequestDialog(targets[0]) }
   return { label: 'Merge request', icon: 'pr', cls: 'mr-item', badge: 'MR', items: targets.map((b) => ({ label: `→ ${b}…`, icon: 'pr', onClick: () => mergeRequestDialog(b) })) }
 }
+/**
+ * Pick people (assignees, reviewers): chips plus a search box with a list of the project's members.
+ * `value()` gives [{ id, username }].
+ */
+function peoplePicker(placeholder, { me } = {}) {
+  let people = []
+  let chosen = []
+  let open = false
+  let active = 0
+  const chips = h('div', { class: 'pp-chips' })
+  const input = h('input', { type: 'text', class: 'pp-input', placeholder, autocomplete: 'off', spellcheck: 'false' })
+  const list = h('div', { class: 'pp-list hidden', role: 'listbox' })
+  const meBtn = h('button', { type: 'button', class: 'link-btn pp-me hidden', onClick: () => me && add(me) }, 'Assign to me')
+  const el = h('div', { class: 'pp' }, h('div', { class: 'pp-box', onMousedown: (e) => e.target !== input && (e.preventDefault(), input.focus()) }, chips, input), list)
+  const matches = () => {
+    const q = input.value.trim().toLowerCase()
+    return people.filter((p) => !chosen.some((c) => c.id === p.id) && (!q || p.username.toLowerCase().includes(q) || p.name.toLowerCase().includes(q))).slice(0, 30)
+  }
+  const avatar = (p) => (p.avatar ? h('img', { class: 'pp-av', src: p.avatar, alt: '', referrerpolicy: 'no-referrer', onError: (e) => e.target.remove() }) : h('span', { class: 'pp-av pp-initial' }, (p.name || p.username)[0].toUpperCase()))
+  function drawChips() {
+    clear(chips)
+    for (const c of chosen) chips.append(h('span', { class: 'pp-chip', title: `@${c.username}` }, avatar(c), h('span', null, c.name || c.username), h('button', { type: 'button', class: 'pp-x', title: `Remove ${c.username}`, onClick: () => remove(c) }, '×')))
+    meBtn.classList.toggle('hidden', !me || chosen.some((c) => c.id === me.id))
+  }
+  function drawList() {
+    const m = matches()
+    active = Math.min(active, Math.max(0, m.length - 1))
+    clear(list)
+    if (!people.length) list.append(h('div', { class: 'pp-empty dim' }, 'No members found'))
+    else if (!m.length) list.append(h('div', { class: 'pp-empty dim' }, 'No match'))
+    m.forEach((p, i) =>
+      list.append(
+        h('div', { class: `pp-item ${i === active ? 'on' : ''}`, role: 'option', onMousedown: (e) => (e.preventDefault(), add(p)) }, avatar(p), h('span', { class: 'pp-name' }, p.name), h('span', { class: 'dim mono' }, `@${p.username}`))
+      )
+    )
+    list.classList.toggle('hidden', !open)
+  }
+  function add(p) {
+    if (!chosen.some((c) => c.id === p.id)) chosen.push(p)
+    input.value = ''
+    drawChips()
+    drawList()
+  }
+  function remove(p) {
+    chosen = chosen.filter((c) => c.id !== p.id)
+    drawChips()
+    drawList()
+  }
+  input.addEventListener('focus', () => ((open = true), drawList()))
+  input.addEventListener('blur', () => ((open = false), drawList()))
+  input.addEventListener('input', () => ((active = 0), (open = true), drawList()))
+  input.addEventListener('keydown', (e) => {
+    const m = matches()
+    if (e.key === 'ArrowDown') (e.preventDefault(), (active = Math.min(active + 1, m.length - 1)), drawList())
+    else if (e.key === 'ArrowUp') (e.preventDefault(), (active = Math.max(active - 1, 0)), drawList())
+    else if (e.key === 'Enter' && open && m[active]) (e.preventDefault(), add(m[active]))
+    else if (e.key === 'Backspace' && !input.value && chosen.length) remove(chosen[chosen.length - 1])
+    else if (e.key === 'Escape' && open) (e.stopPropagation(), (open = false), drawList())
+  })
+  drawChips()
+  return {
+    el,
+    meBtn,
+    setPeople(list2, me2) {
+      people = list2 || []
+      me = me2 || me
+      chosen = chosen.map((c) => people.find((p) => p.id === c.id) || c)
+      drawChips()
+      drawList()
+    },
+    set(list2) {
+      chosen = (list2 || []).slice()
+      drawChips()
+    },
+    value: () => chosen.map((c) => ({ id: c.id, username: c.username, name: c.name, avatar: c.avatar })),
+    focusInput: () => input.focus()
+  }
+}
+
 async function mergeRequestDialog(target, source, swapped) {
   closeOverlays()
   let info
@@ -4499,6 +4602,36 @@ async function mergeRequestDialog(target, source, swapped) {
   body.value = info.defaults?.body ?? info.commits.map((c) => `- ${c}`).join('\n')
   const draft = h('input', { type: 'checkbox' })
   draft.checked = !!info.defaults?.draft
+  // People and merge options, as on the service's own form. Members load in the background.
+  const peopleKey = `mrPeople:${info.host}/${info.path || ''}`
+  const remembered = store.get(peopleKey, null)
+  const assignees = peoplePicker('Search…')
+  const reviewers = peoplePicker('Search…')
+  if (remembered?.reviewers) reviewers.set(remembered.reviewers)
+  const removeSource = h('input', { type: 'checkbox' })
+  removeSource.checked = true // GitLab's default for a new merge request
+  const squash = h('input', { type: 'checkbox' })
+  const peopleNote = h('div', { class: 'dim pp-note' }, h('span', { class: 'spinner' }), 'Loading members…')
+  const gitlabOpts = !isGh && h('div', { class: 'mr-opts' }, h('label', { class: 'check' }, removeSource, 'Delete source branch when merge request is accepted'), h('label', { class: 'check' }, squash, 'Squash commits when merge request is accepted'))
+  request('mr.people', { repo, query: '' }, 30000).then(
+    (r) => {
+      peopleNote.remove()
+      if (!r.via) {
+        const msg = h('div', { class: 'dim pp-note' }, `Sign in (${info.tools.cli} or your Git login) to pick people here. `, h('b', null, 'Open link'), ' lets you choose them on the web page.')
+        assignees.el.before(msg)
+        return
+      }
+      assignees.setPeople(r.people, r.me)
+      reviewers.setPeople(r.people, r.me)
+      if (!assignees.value().length && r.me && remembered?.assignMe !== false) assignees.set([r.me]) // GitLab's "Assign to me"
+      if (!isGh && r.defaults) {
+        if (typeof r.defaults.removeSource === 'boolean') removeSource.checked = r.defaults.removeSource // the project's setting
+        squash.checked = !!r.defaults.squash
+        squash.disabled = !!r.defaults.squashLocked
+      }
+    },
+    (e) => ((peopleNote.textContent = `Could not load members: ${e.message}`), null)
+  )
   const note = h('div', { class: 'mr-status' })
   const linkBtn = h('button', { type: 'button', class: 'btn' })
   const createBtn = h('button', { type: 'button', class: 'btn primary' })
@@ -4592,7 +4725,10 @@ async function mergeRequestDialog(target, source, swapped) {
     linkBtn.disabled = createBtn.disabled = true
     clear(btn).append(h('span', { class: 'spinner' }), info.needsPush ? 'Pushing…' : web ? 'Opening…' : 'Creating…')
     try {
-      const r = await request('mr.create', { repo, target: info.target, source: info.source, title: title.value, body: body.value, draft: draft.checked, web }, 120000)
+      const who = { assignees: assignees.value(), reviewers: reviewers.value(), ...(!isGh ? { removeSource: removeSource.checked, squash: squash.checked } : {}) }
+      store.set(peopleKey, { reviewers: who.reviewers, assignMe: who.assignees.length > 0 })
+      const r = await request('mr.create', { repo, target: info.target, source: info.source, title: title.value, body: body.value, draft: draft.checked, web, ...who }, 120000)
+      if (r.warning) toast(r.warning, 'error', 8000)
       const pushed = r.pushed ? `${info.source} pushed to ${info.remote}. ` : ''
       if (web && r.opened) {
         close()
@@ -4661,6 +4797,8 @@ async function mergeRequestDialog(target, source, swapped) {
       title
     ),
     h('div', { class: 'field' }, h('label', null, 'Description'), body),
+    h('div', { class: 'mr-people' }, peopleNote, h('div', { class: 'field' }, h('label', { class: 'row' }, 'Assignees', h('span', { class: 'grow' }), assignees.meBtn), assignees.el), h('div', { class: 'field' }, h('label', { class: 'row' }, isGh ? 'Reviewers (Create now only)' : 'Reviewers', h('span', { class: 'grow' }), reviewers.meBtn), reviewers.el)),
+    gitlabOpts,
     h('label', { class: 'check' }, draft, 'Draft (Create now only)'),
     note,
     h('div', { class: 'buttons' }, h('button', { type: 'button', class: 'btn', onClick: close }, 'Cancel'), h('span', { class: 'grow' }), linkBtn, createBtn)

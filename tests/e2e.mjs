@@ -421,7 +421,11 @@ const apiServer = http.createServer((req, res) => {
     if (api.deny) return send(401, { message: '401 Unauthorized' })
     if (req.method === 'POST' && /\/merge_requests$/.test(u.pathname)) return send(201, { iid: 7, web_url: 'https://gitlab2.example.test/team/app/-/merge_requests/7' })
     if (req.method === 'POST' && /\/pulls$/.test(u.pathname)) return send(201, { number: 9, html_url: 'https://github.example.test/team/app/pull/9' })
-    if (u.pathname.endsWith('/user')) return send(200, { username: 'me', login: 'me', id: 1 })
+    if (u.pathname.endsWith('/user')) return send(200, { username: 'me', login: 'me', id: 1, name: 'Me Myself' })
+    if (u.pathname.endsWith('/members/all')) return send(200, [{ id: 1, username: 'me', name: 'Me Myself' }, { id: 2, username: 'dev1', name: 'Dev One' }, { id: 3, username: 'qa', name: 'Quality Person' }])
+    if (u.pathname === '/api/v4/projects/team%2Fapp') return send(200, { remove_source_branch_after_merge: true, squash_option: 'default_on' })
+    if (u.pathname.endsWith('/assignees') && req.method === 'GET') return send(200, [{ id: 1, login: 'me' }, { id: 2, login: 'dev1' }])
+    if (req.method === 'POST' && /\/(assignees|requested_reviewers)$/.test(u.pathname)) return send(201, {})
     if (req.method === 'GET' && /merge_requests$/.test(u.pathname)) {
       const role = u.search.includes('reviewer_username') ? 'review' : u.search.includes('assignee_username') ? 'assigned' : u.search.includes('author_username') ? 'mine' : 'repo'
       const n = { review: 11, assigned: 12, mine: 13, repo: 14 }[role]
@@ -446,13 +450,24 @@ await new Promise((r) => apiServer.listen(0, '127.0.0.1', r))
 const API = `http://127.0.0.1:${apiServer.address().port}`
 const useLogin = () => g('config', 'credential.helper', '!f() { echo username=me; echo password=TESTTOKEN; }; f')
 
-async function createNow(branch, menuTarget = 'main') {
+async function createNow(branch, menuTarget = 'main', pickReviewer = false) {
   await refresh()
   await until(() => page.$eval('.branch-chip', (c, b) => c.textContent.includes(b), branch), `header shows ${branch}`)
   await clickInRow('#side .item', menuTarget, 'More')
   await clickText('.menu button', `Merge request → ${menuTarget}`)
   await until(() => exists('.mr-dialog'), 'MR dialog')
   await until(() => page.$$eval('.mr-dialog .btn', (b) => b.some((x) => x.textContent.includes('Create now'))), '"Create now" offered with the saved Git login')
+  if (pickReviewer) {
+    // members load in the background; "me" is assigned like GitLab's "Assign to me"
+    await until(() => page.$$eval('.mr-dialog .pp-chip', (c) => c.some((x) => x.textContent.includes('Me Myself') || x.textContent.includes('me'))), 'assigned to me')
+    const inputs = await page.$$('.mr-dialog .pp-input')
+    await inputs[1].click()
+    await inputs[1].type('dev')
+    await until(() => page.$$eval('.mr-dialog .pp-item', (i) => i.some((x) => x.textContent.includes('dev1'))), 'reviewer search lists dev1')
+    await page.keyboard.press('Enter')
+    await until(() => page.$$eval('.mr-dialog .pp-chip', (c) => c.some((x) => x.textContent.includes('Dev One') || x.textContent.includes('dev1'))), 'dev1 chosen as reviewer')
+    await shot(`10a-mr-people-${branch}`)
+  }
   await clickText('.mr-dialog .btn', 'Create now')
 }
 const dialogHas = (t) => page.evaluate((t) => !!document.querySelector('.mr-dialog')?.textContent.includes(t), t)
@@ -463,9 +478,11 @@ await step('merge request (GitLab): Create now uses the saved Git login, no glab
   g('remote', 'set-url', 'origin', 'https://gitlab2.example.test/team/app.git'); g('remote', 'set-url', '--push', 'origin', origin.replace(/\\/g, '/'))
   useLogin()
   api.calls = []
-  await createNow('mr-gl')
+  await createNow('mr-gl', 'main', true)
   await until(() => dialogHas('created'), 'created', 20000)
   const post = api.calls.find((c) => c.method === 'POST')
+  if (JSON.stringify(post?.body.assignee_ids) !== '[1]' || JSON.stringify(post?.body.reviewer_ids) !== '[2]') throw new Error('people ' + JSON.stringify(post?.body))
+  if (post.body.remove_source_branch !== true || post.body.squash !== true) throw new Error('options ' + JSON.stringify(post.body))
   if (!post || post.path !== '/api/v4/projects/team%2Fapp/merge_requests') throw new Error('POST went to ' + post?.path)
   if (!/TESTTOKEN/.test(post.auth)) throw new Error('no token sent')
   if (post.body.source_branch !== 'mr-gl' || post.body.target_branch !== 'main' || post.body.title !== 'Add GitLab change') throw new Error('body ' + JSON.stringify(post.body))
@@ -480,8 +497,12 @@ await step('merge request (GitHub): Create now uses the saved Git login, no gh',
   g('remote', 'set-url', 'origin', 'https://github.example.test/team/app.git'); g('remote', 'set-url', '--push', 'origin', origin.replace(/\\/g, '/'))
   g('config', 'gitcontrol.provider', 'github')
   api.calls = []
-  await createNow('mr-gh')
+  await createNow('mr-gh', 'main', true)
   await until(() => dialogHas('created'), 'created', 20000)
+  const rv = api.calls.find((c) => c.path.endsWith('/requested_reviewers'))
+  if (JSON.stringify(rv?.body?.reviewers) !== '["dev1"]') throw new Error('reviewers ' + JSON.stringify(rv?.body))
+  const as = api.calls.find((c) => c.path.endsWith('/issues/9/assignees'))
+  if (JSON.stringify(as?.body?.assignees) !== '["me"]') throw new Error('assignees ' + JSON.stringify(as?.body))
   const post = api.calls.find((c) => c.method === 'POST')
   if (!post || post.path !== '/repos/team/app/pulls') throw new Error('POST went to ' + post?.path)
   if (post.body.head !== 'mr-gh' || post.body.base !== 'main' || post.body.title !== 'Add GitHub change') throw new Error('body ' + JSON.stringify(post.body))
