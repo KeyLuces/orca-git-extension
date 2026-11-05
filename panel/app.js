@@ -332,6 +332,25 @@ function setBusy(delta) {
   if (state.busy <= 0) bar?.remove()
 }
 
+/**
+ * Open a web link outside Orca. Desktop: the worker hands it to the system default browser (no Orca
+ * prompt, no in-app tab). Orca's web client (e.g. on a phone): a new tab of that browser.
+ */
+const isDesktop = /Electron/i.test(navigator.userAgent)
+async function openLink(url) {
+  if (!/^https?:\/\//.test(String(url))) return
+  if (isDesktop) {
+    try {
+      const r = await request('shell.open', { url }, 15000)
+      if (r?.opened) return
+    } catch {}
+  }
+  const w = window.open(url, '_blank', 'noopener')
+  if (!w) {
+    await copy(url)
+    toast('The link was copied: paste it into your browser.')
+  }
+}
 /** Run an op with a spinner and error toast, then refresh. Returns the result, or undefined on failure. */
 async function run(op, args, { success, refresh = true, quiet = false } = {}) {
   setBusy(1)
@@ -3379,7 +3398,7 @@ async function mergeRequestDialog(target) {
         h('button', { type: 'button', class: 'btn', onClick: () => copy(url) }, icon('copy', 13), 'Copy link'),
         h('span', { class: 'grow' }),
         h('button', { type: 'button', class: 'btn', onClick: close }, 'Close'),
-        h('button', { type: 'button', class: 'btn primary', onClick: () => (window.orca?.shell?.openExternal ? window.orca.shell.openExternal(url) : window.open(url)) }, icon('open', 13), openLabel)
+        h('button', { type: 'button', class: 'btn primary', onClick: () => openLink(url) }, icon('open', 13), openLabel)
       )
     )
   async function submit(web) {
@@ -3541,7 +3560,7 @@ async function viewReviews() {
 }
 
 function reviewRow(it) {
-  const open = () => (window.orca?.shell?.openExternal ? window.orca.shell.openExternal(it.url) : window.open(it.url))
+  const open = () => openLink(it.url)
   const noun = it.provider === 'github' ? 'pull request' : 'merge request'
   return h(
     'div',
@@ -3754,7 +3773,7 @@ function ciBadge() {
   const ci = state.ci
   if (!ci || !ci.state || ci.sha !== state.status?.oid) return null
   const label = { passed: 'CI passed', failed: 'CI failed', running: 'CI running', canceled: 'CI canceled' }[ci.state]
-  return h('button', { class: `ci ci-${ci.state}`, title: `${label} for ${ci.sha.slice(0, 7)}. Click to open.`, onClick: () => ci.url && (window.orca?.shell?.openExternal ? window.orca.shell.openExternal(ci.url) : window.open(ci.url)) }, ciIcon(ci.state), label)
+  return h('button', { class: `ci ci-${ci.state}`, title: `${label} for ${ci.sha.slice(0, 7)}. Click to open.`, onClick: () => ci.url && openLink(ci.url) }, ciIcon(ci.state), label)
 }
 let ciLoading = false
 async function loadCi() {

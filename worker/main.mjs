@@ -1915,6 +1915,7 @@ Click to open Git Graph`
     if (focused) await openGraphTab(focused)
     return 'Opened Reviews'
   })
+  orca.panels.handle('shell.open', async ({ url } = {}) => ({ opened: await openInBrowser(String(url || '')) }))
   orca.panels.handle('tab.open', async ({ repo } = {}) => openGraphTab(req(repo, 'repo')))
 
   orca.panels.handle('repo.check', async ({ path: p } = {}) => {
