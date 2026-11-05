@@ -538,13 +538,23 @@ async function refsUncached(repo) {
   return { local, remote, tags }
 }
 
-async function push(repo, { force = false, tags = false, remote, branch } = {}) {
+async function push(repo, { force = false, tags = false, remote, branch, hash } = {}) {
   const st = parseStatus(await git(repo, ['status', '--porcelain=v2', '--branch', '-z']))
   const b = branch || st.branch
   if (!b) throw new GitError('HEAD is detached; check out a branch to push')
   const args = ['push']
   if (force) args.push('--force-with-lease')
   if (tags) args.push('--follow-tags')
+  if (hash) {
+    // push only up to this commit: <hash>:refs/heads/<branch> on the branch's remote
+    if (!/^[0-9a-f]{4,40}$/i.test(hash)) throw new GitError('bad commit')
+    const remotes = (await git(repo, ['remote'])).split('\n').filter(Boolean)
+    const up = st.branch === b && st.upstream ? st.upstream.split('/')[0] : null
+    const r = remote || up || (remotes.includes('origin') ? 'origin' : remotes[0])
+    if (!r) throw new GitError('this repository has no remote; add one in Settings → Remotes')
+    args.push(r, `${hash}:refs/heads/${b}`)
+    return git(repo, args, net)
+  }
   if (!st.upstream || branch) {
     const remotes = (await git(repo, ['remote'])).split('\n').filter(Boolean)
     const r = remote || (remotes.includes('origin') ? 'origin' : remotes[0])

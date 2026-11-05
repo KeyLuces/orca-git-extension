@@ -1951,6 +1951,8 @@ function commitMenu(anchor, c) {
         { label: 'This commit (detached HEAD)', icon: 'commit', onClick: () => checkoutCommit(c.hash) }
       ]
     },
+    ...local.map((b) => ({ label: b === cur && state.status?.ahead ? `Push ${b} (${state.status.ahead})` : `Push ${b}`, icon: 'push', onClick: () => run('push', b === cur ? {} : { branch: b }, { success: `Pushed ${b}` }) })),
+    !local.length && cur && cur !== 'HEAD' && state.status?.ahead > 0 && { label: `Push ${cur} up to here`, icon: 'push', hint: short, onClick: () => run('push', { branch: cur, hash: c.hash }, { success: `Pushed ${cur} up to ${short}` }) },
     { label: 'Create branch here…', icon: 'plus', onClick: () => newBranch(c.hash) },
     { label: 'Create tag here…', icon: 'tag', onClick: () => newTag(c.hash) },
     { label: 'New worktree here…', icon: 'worktree', onClick: () => addWorktree({ base: c.hash }) },
