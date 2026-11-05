@@ -674,7 +674,7 @@ function renderBanner() {
 const TABS = [
   ['history', IN_TAB ? 'Graph' : 'History', 'history'],
   ['changes', IN_TAB ? 'Commit' : 'Changes', 'file'],
-  ['reviews', 'Reviews', 'merge'],
+  ['reviews', 'Inbox', 'merge'],
   ['branches', 'Branches', 'branch'],
   ['worktrees', 'Worktrees', 'worktree'],
   ['stash', 'Stash', 'stash'],
@@ -3780,19 +3780,37 @@ async function mergeRequestDialog(target, source, swapped) {
 /* =========================================================================
    Reviews: every open pull/merge request you are asked to review or assigned
    ========================================================================= */
+let reviewsLoading = null
 async function loadReviews(force) {
   if (!force && state.reviews && Date.now() - state.reviews.at < 120000) return state.reviews
-  const r = await request('reviews.list', {}, 90000)
-  state.reviews = { ...r, at: Date.now() }
-  renderTabs()
-  return state.reviews
+  reviewsLoading ||= request('reviews.list', {}, 90000)
+    .then((r) => {
+      state.reviews = { ...r, at: Date.now() }
+      try { store.set('reviewsCache', state.reviews) } catch {}
+      renderTabs()
+      return state.reviews
+    })
+    .finally(() => (reviewsLoading = null))
+  return reviewsLoading
 }
 
 async function viewReviews() {
   const root = h('div', { class: 'view reviews' })
+  // Show at once: the last list (even from an earlier session) while a fresh one loads behind it.
+  if (!state.reviews) state.reviews = store.get('reviewsCache', null)
+  const stale = !state.reviews || Date.now() - state.reviews.at >= 120000
+  if (stale) {
+    const p = loadReviews(true).then(() => state.tab === 'reviews' && renderView({ force: true }))
+    if (!state.reviews) {
+      p.catch((e) => state.tab === 'reviews' && clear(root).append(h('div', { class: 'empty' }, icon('alert', 28), h('div', null, e.message))))
+      root.append(h('div', { class: 'skeleton-list' }, h('div', { class: 'skeleton-row' }, h('span', { class: 'bar' })), h('div', { class: 'skeleton-row' }, h('span', { class: 'bar' })), h('div', { class: 'skeleton-row' }, h('span', { class: 'bar' }))))
+      return root
+    }
+    p.catch(() => {})
+  }
   let data
   try {
-    data = await loadReviews()
+    data = state.reviews
   } catch (e) {
     root.append(h('div', { class: 'empty' }, icon('alert', 28), h('div', null, e.message)))
     return root
