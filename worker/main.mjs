@@ -947,44 +947,54 @@ const ops = {
   worktreeAdd: (r, a) => worktreeAdd(r, a),
   worktreeRemove: async (r, a) => {
     const p = req(a.path, 'path')
-    const w = (await worktrees(r)).find((x) => norm(x.path) === norm(p))
-    if (w?.main) throw new GitError('The main worktree cannot be removed')
-    // A worktree whose folder is gone or no longer linked ("missing"): git refuses to remove it,
-    // so drop its stale record instead. Files left in the folder are not touched.
-    const prune = async () => {
-      await git(r, ['worktree', 'prune'])
-      return { pruned: true, leftover: existsSync(p) }
+    const listed = async () => (await worktrees(r)).find((x) => norm(x.path) === norm(p)) || null
+    const w = await listed()
+    if (!w) return { removed: true, alreadyGone: true } // removed elsewhere meanwhile: nothing to do
+    if (w.main) throw new GitError('The main worktree cannot be removed')
+    const reasons = []
+    const done = async (extra = {}) => {
+      // Git's own list is the truth: never report success while git still has the worktree.
+      let still = await listed()
+      if (still?.prunable || (still && !existsSync(path.join(p, '.git')))) {
+        await git(r, ['worktree', 'prune']).catch(() => {})
+        still = await listed()
+      }
+      if (still) throw new GitError(`Git still lists this worktree.\n${reasons.join('\n') || 'It may be locked or in use by another program.'}`)
+      if (a.deleteBranch && w.branch) await git(r, ['branch', a.force ? '-D' : '-d', w.branch]).catch(() => {})
+      return { removed: true, leftover: existsSync(p), ...extra }
     }
-    if (w?.prunable) return prune()
-    // A worktree Orca shows as a workspace: let Orca remove it. It stops the workspace's terminals
-    // first (on Windows git cannot delete a folder a terminal is still in) and drops it from the sidebar.
+    // A worktree whose folder is gone or no longer linked ("missing"): drop its stale record.
+    // Files left in the folder are not touched.
+    if (w.prunable) return done({ pruned: true })
+
+    // A worktree Orca shows as a workspace: let Orca remove it first. It stops the workspace's
+    // terminals (on Windows git cannot delete a folder a terminal is still in) and drops it from the sidebar.
     if (ORCA && (await listWorkspaces(ORCA)).some((x) => norm(x.path) === norm(p))) {
       const cli = ['worktree', 'rm', '--worktree', `path:${p}`, '--json']
       if (a.force) cli.push('--force')
-      if (a.deleteBranch) cli.push('--delete-branch')
       const res = await runProc(ORCA_BIN, cli, { timeout: 60_000 })
+      forgetFocusCaches()
       let out = null
       try {
         out = JSON.parse(res.stdout)
       } catch {}
-      if (out?.ok) return { removed: true, viaOrca: true, leftover: existsSync(p) }
-      const msg = out?.error?.message || res.stderr.trim()
-      if (!a.force && /modified|untracked|dirty|uncommitted|changes/i.test(msg || ''))
-        throw new GitError(`${msg}
-Tick "Force" to remove it anyway.`)
-      // otherwise fall through to git
+      const msg = out?.ok ? '' : out?.error?.message || res.stderr.trim()
+      if (!a.force && /modified|untracked|dirty|uncommitted|changes/i.test(msg))
+        throw new GitError(`${msg}\nTick "Force" to remove it anyway.`)
+      if (msg) reasons.push(`Orca: ${msg}`)
+      if (!(await listed())) return done({ viaOrca: true })
+      // Orca dropped its record (or could not find it) but git still has the worktree: git removes it.
     }
     const args = ['worktree', 'remove']
     if (a.force) args.push('--force')
-    if (a.force && w?.locked) args.push('--force') // a locked worktree needs it twice
+    if (a.force && w.locked) args.push('--force') // a locked worktree needs it twice
     try {
       await git(r, [...args, p])
     } catch (e) {
-      if (/validation failed|is not a working tree|does not exist/i.test(e.message)) return prune()
-      throw e
+      if (!a.force && /modified|untracked|use --force/i.test(e.message)) throw e // the panel offers "remove anyway"
+      reasons.push(`git: ${e.message}`)
     }
-    if (a.deleteBranch && w?.branch) await git(r, ['branch', a.force ? '-D' : '-d', w.branch]).catch(() => {})
-    return { removed: true, leftover: existsSync(p) }
+    return done()
   },
   worktreePrune: (r) => git(r, ['worktree', 'prune', '-v']),
   worktreeLock: (r, a) => git(r, ['worktree', a.unlock ? 'unlock' : 'lock', req(a.path, 'path')]),

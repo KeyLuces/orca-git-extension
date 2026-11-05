@@ -2298,7 +2298,7 @@ Git no longer finds this worktree. Its record is removed; any files left in the 
                       out = await call('worktreeRemove', { path: w.path, force: r.force, deleteBranch: r.deleteBranch })
                     } catch (err) {
                       // Uncommitted or untracked files: say so plainly and offer to remove it anyway.
-                      if (!r.force && /--force|modified|untracked/i.test(err.message)) {
+                      if (!r.force && !/still lists/.test(err.message) && /modified|untracked|use --force/i.test(err.message)) {
                         setBusy(-1)
                         const yes = await confirmBox('This worktree has uncommitted changes', `${w.path}
 
@@ -2310,11 +2310,14 @@ Removing it deletes those changes. This cannot be undone.`, 'Remove anyway', tru
                       setBusy(-1)
                     }
                     if (out === undefined) card?.classList.remove('leaving')
+                    else if (out.alreadyGone) toast('That worktree was already removed. The list is up to date now.')
                     else if (out.leftover) toast(`Worktree removed from Git. Some files are left in the folder:
 ${w.path}`, 'ok', 7000)
                     else toast('Worktree removed')
                     if (out !== undefined) await new Promise((res) => setTimeout(res, 180)) // let the card fold away
-                    refreshAll()
+                    // always reload the list: on failure too, so an entry removed elsewhere disappears
+                    await refreshAll()
+                    if (state.tab === 'worktrees') renderView({ force: true })
                   }
                 }
               ])
