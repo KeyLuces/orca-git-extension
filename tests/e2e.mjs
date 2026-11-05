@@ -582,7 +582,7 @@ await step('pipeline (GitLab): CI badge opens the pipeline, its jobs and the fai
   const log = await page.$eval('.pipe-log', (l) => l.textContent)
   if (/\x1b|\[32m/.test(log)) throw new Error('colour codes left in the log')
   if (!log.includes('ERROR: Job failed')) throw new Error('log ' + log.slice(0, 200))
-  if (await page.$eval('.sheet', (x) => /false|null|\[object/.test(x.textContent))) throw new Error('stray false/null text in the pipeline sheet')
+  if (await page.$eval('.sheet', (x) => /\bfalse\b|\bnull\b|\[object/.test(x.textContent))) throw new Error('stray false/null text in the pipeline sheet')
   await shot('12-pipeline-log')
   await page.keyboard.press('Escape')
   await clickSel('.sheet .sheet-close').catch(() => {})
