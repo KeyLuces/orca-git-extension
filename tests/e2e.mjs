@@ -269,7 +269,7 @@ await step('stashes from the toolbar and pops from the Stash tab', async () => {
   await clickSel('[title="Stash changes"]')
   await until(() => g('stash', 'list').split('\n').filter(Boolean).length === 1, 'stash created')
   await tab('Stash')
-  await clickInRow('.view .item', '', 'Pop (apply and drop)')
+  await clickInRow('.view .item', '', 'Apply and remove the stash')
   await until(() => !g('stash', 'list') && readFileSync(path.join(repo, 'b.txt'), 'utf8').includes('changed'), 'stash popped')
   g('checkout', '--', 'b.txt')
 })

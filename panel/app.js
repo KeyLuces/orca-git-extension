@@ -2613,13 +2613,17 @@ async function viewStash() {
         'div',
         { class: 'item', title: s.subject, onClick: () => showDiff(s.subject, () => call('stashShow', { ref: s.ref }), [iconBtn('check', 'Apply', () => (closeSheet(), run('stashApply', { ref: s.ref }, { success: 'Applied' })))]) },
         icon('stash', 13),
-        h('span', { class: 'grow ellipsis' }, s.subject.replace(/^(WIP on|On) [^:]+: /, '') || s.ref),
-        h('span', { class: 'meta-right dim', style: { fontSize: '11px' } }, ago(s.time)),
         h(
           'div',
-          { class: 'hover-actions', onClick: (e) => e.stopPropagation() },
-          iconBtn('check', 'Apply (keep stash)', () => run('stashApply', { ref: s.ref }, { success: 'Applied' })),
-          iconBtn('pull', 'Pop (apply and drop)', () => run('stashPop', { ref: s.ref }, { success: 'Popped' })),
+          { class: 'grow', style: { minWidth: 0 } },
+          h('div', { class: 'ellipsis', style: { color: 'var(--t1)' } }, s.subject.replace(/^(WIP on|On) [^:]+: /, '') || s.ref),
+          h('div', { class: 'stash-meta' }, icon('branch', 10), (s.subject.match(/^(?:WIP on|On) ([^:]+):/) || [])[1] || '?', ` · ${ago(s.time)} · `, h('span', { class: 'mono' }, s.ref))
+        ),
+        h(
+          'div',
+          { class: 'stash-actions', onClick: (e) => e.stopPropagation() },
+          h('button', { class: 'btn sm', title: 'Apply and keep the stash', onClick: () => run('stashApply', { ref: s.ref }, { success: 'Applied' }) }, icon('check', 12), 'Apply'),
+          h('button', { class: 'btn sm', title: 'Apply and remove the stash', onClick: () => run('stashPop', { ref: s.ref }, { success: 'Popped' }) }, icon('pull', 12), 'Pop'),
           iconBtn('trash', 'Drop', async () => (await confirmBox('Drop stash?', s.subject, 'Drop', true)) && run('stashDrop', { ref: s.ref }, { success: 'Dropped' }))
         )
       )
@@ -2758,7 +2762,7 @@ async function viewSettings() {
   )
 
   // identity + common options
-  root.append(h('div', { class: 'section-head' }, scope === 'global' ? 'Identity & defaults' : 'Repository overrides'))
+  if (scope !== 'global') root.append(h('div', { class: 'dim', style: { padding: '6px 16px 0', fontSize: '11.5px' } }, 'Empty fields use the global value shown in grey.'))
   const inputs = {}
   const form = h('div', { class: 'form' })
   for (const f of COMMON) {
@@ -3067,12 +3071,18 @@ function fileAt(rev, file) {
   })
 }
 
+/** "commit: msg" → a coloured label for the kind of step. */
+function reflogKind(subject) {
+  const k = (subject.match(/^([\w-]+)/)?.[1] || '').toLowerCase()
+  const kind = ['commit', 'checkout', 'reset', 'merge', 'rebase', 'pull', 'cherry-pick', 'revert', 'branch', 'clone'].includes(k) ? k : 'other'
+  return h('span', { class: `rk rk-${kind}` }, kind === 'other' ? k || 'step' : kind)
+}
 async function viewReflog() {
   const list = await call('reflog')
   const root = h('div', { class: 'view' })
   root.append(
     h('div', { class: 'section-head' }, 'Reflog', h('span', { class: 'count' }, list.length)),
-    h('div', { class: 'dim', style: { padding: '0 10px 6px', fontSize: '11px' } }, 'Everywhere HEAD has been. Use it to recover commits after a reset, rebase or deleted branch.')
+    h('div', { class: 'dim', style: { padding: '0 16px 8px', fontSize: '11.5px' } }, 'Everywhere HEAD has been. Use it to recover commits after a reset, rebase or deleted branch.')
   )
   for (const e of list)
     root.append(
@@ -3080,7 +3090,8 @@ async function viewReflog() {
         'div',
         { class: 'item', title: e.subject, onClick: () => openCommit(e.hash) },
         h('span', { class: 'mono dim', style: { width: '56px', flex: 'none' } }, e.hash.slice(0, 7)),
-        h('span', { class: 'grow ellipsis' }, e.subject),
+        reflogKind(e.subject),
+        h('span', { class: 'grow ellipsis' }, e.subject.replace(/^[\w -]+?(\(.*?\))?: /, '')),
         h('span', { class: 'meta-right dim', style: { fontSize: '11px' } }, ago(e.time)),
         h(
           'div',
