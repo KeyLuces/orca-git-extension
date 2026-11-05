@@ -3598,6 +3598,34 @@ async function renderSide() {
 /* =========================================================================
    AI commit message modal (modeled on Orca's Source Control "Generate" dialog)
    ========================================================================= */
+/**
+ * While an AI agent works: a shimmering skeleton over the text box it will fill (via the
+ * `generating` class), and a status line that names the agent, says what it is doing and counts
+ * the seconds. Returns stop().
+ */
+function aiWrap(textarea) {
+  return h('div', { class: 'ai-wrap' }, textarea, h('div', { class: 'ai-skel', 'aria-hidden': 'true' }, h('span'), h('span'), h('span'), h('span'), h('span')))
+}
+function aiTicker(statusEl, name, what = 'your changes') {
+  const started = Date.now()
+  const phase = (t) => (t < 6 ? `${name} is reading ${what}` : t < 20 ? `${name} is thinking` : t < 60 ? `${name} is writing` : `${name} is still working (large changes take longer)`)
+  const text = h('span', { class: 'ai-phase' })
+  const secs = h('span', { class: 'ai-secs mono' })
+  const draw = () => {
+    const t = Math.floor((Date.now() - started) / 1000)
+    text.textContent = phase(t) + '…'
+    secs.textContent = `${t}s`
+  }
+  draw()
+  append(clear(statusEl), [h('span', { class: 'ai-dots' }, h('i'), h('i'), h('i')), text, secs])
+  statusEl.classList.add('working')
+  const id = setInterval(draw, 1000)
+  return () => {
+    clearInterval(id)
+    statusEl.classList.remove('working')
+  }
+}
+
 async function aiCommitModal({ staged, total, onUse, onCommit }) {
   closeOverlays()
   const prefs = store.get('aiPrefs', { instructions: '' })
@@ -3637,11 +3665,14 @@ async function aiCommitModal({ staged, total, onUse, onCommit }) {
   const useBtn = h('button', { type: 'button', class: 'btn', disabled: true, onClick: () => finish(onUse) }, 'Use message')
   const commitBtn = h('button', { type: 'button', class: 'btn primary', disabled: true, onClick: () => finish(onCommit) }, icon('check', 13), 'Commit')
 
+  let stopTick = () => {}
   const setBusy2 = (on, text) => {
     busy = on
     result.classList.toggle('generating', on)
     result.readOnly = on
-    append(clear(status), [on ? [h('span', { class: 'spinner' }), text] : text || ''])
+    stopTick()
+    if (on) stopTick = aiTicker(status, agents.find((a) => a.id === agentSel.value)?.name || 'AI', 'your changes')
+    else append(clear(status), [text || ''])
     append(clear(genBtn), [on ? [icon('x', 13), 'Stop'] : [icon('sparkle', 13), result.value.trim() ? 'Regenerate' : 'Generate']])
     genBtn.className = `btn ${on ? '' : result.value.trim() ? '' : 'primary'}`
     const has = !on && !!result.value.trim()
@@ -3696,7 +3727,7 @@ async function aiCommitModal({ staged, total, onUse, onCommit }) {
     h('div', { class: 'ai-title' }, h('span', { class: 'ai-badge' }, icon('sparkle', 14)), h('div', null, h('h3', null, 'Generate commit message'), h('p', null, 'An AI agent reads your diff and drafts a message. Nothing is committed until you choose.'))),
     h('div', { class: 'ai-row' }, h('div', { class: 'field grow' }, h('label', null, 'Agent'), agentSel), h('div', { class: 'field grow' }, h('label', null, 'Changes'), scopeSel)),
     h('div', { class: 'field' }, h('label', null, 'Instructions'), instructions),
-    h('div', { class: 'field' }, h('label', null, 'Message'), result),
+    h('div', { class: 'field' }, h('label', null, 'Message'), aiWrap(result)),
     status,
     h('div', { class: 'buttons' }, h('button', { type: 'button', class: 'btn', onClick: close }, 'Cancel'), h('span', { class: 'grow' }), genBtn, useBtn, commitBtn)
   )
@@ -4003,7 +4034,13 @@ async function mergeRequestDialog(target, source, swapped) {
             onClick: async (e) => {
               const b = e.currentTarget
               b.disabled = true
-              append(clear(b), [h('span', { class: 'spinner' }), 'Writing…'])
+              const t0 = Date.now()
+              const tick = () => append(clear(b), [h('span', { class: 'ai-dots' }, h('i'), h('i'), h('i')), `AI is writing… ${Math.floor((Date.now() - t0) / 1000)}s`])
+              tick()
+              const timer = setInterval(tick, 1000)
+              title.classList.add('generating')
+              body.classList.add('generating')
+              title.readOnly = body.readOnly = true
               try {
                 const r = await request('ai.mrDescription', { repo, target: info.target, source: info.source, instructions: store.get('aiPrefs', {}).instructions || '' }, 118000)
                 if (r.title) title.value = r.title
@@ -4011,6 +4048,10 @@ async function mergeRequestDialog(target, source, swapped) {
               } catch (err) {
                 toast(err.message, 'error')
               } finally {
+                clearInterval(timer)
+                title.classList.remove('generating')
+                body.classList.remove('generating')
+                title.readOnly = body.readOnly = false
                 b.disabled = false
                 append(clear(b), [icon('sparkle', 12), 'Write with AI'])
               }
@@ -4020,9 +4061,9 @@ async function mergeRequestDialog(target, source, swapped) {
           'Write with AI'
         )
       ),
-      title
+      aiWrap(title)
     ),
-    h('div', { class: 'field' }, h('label', null, 'Description'), body),
+    h('div', { class: 'field' }, h('label', null, 'Description'), aiWrap(body)),
     h('div', { class: 'mr-people' }, peopleNote, h('div', { class: 'field' }, h('label', { class: 'row' }, 'Assignees', h('span', { class: 'grow' }), assignees.meBtn), assignees.el), h('div', { class: 'field' }, h('label', { class: 'row' }, isGh ? 'Reviewers (Create now only)' : 'Reviewers', h('span', { class: 'grow' }), reviewers.meBtn), reviewers.el)),
     gitlabOpts,
     h('label', { class: 'check' }, draft, 'Draft (Create now only)'),
@@ -4239,11 +4280,14 @@ async function aiReviewModal(it) {
     changes: h('button', { type: 'button', class: 'btn danger', onClick: () => post('changes') }, icon('x', 13), 'Request changes'),
     approve: h('button', { type: 'button', class: 'btn', onClick: () => post('approve') }, icon('check', 13), 'Approve')
   }
+  let stopTick = () => {}
   const sync = (on, text) => {
     busy = on
     result.classList.toggle('generating', on)
     result.readOnly = on
-    append(clear(status), [on ? [h('span', { class: 'spinner' }), text] : text || ''])
+    stopTick()
+    if (on) stopTick = aiTicker(status, agents.find((a) => a.id === agentSel.value)?.name || 'AI', `the ${noun}`)
+    else append(clear(status), [text || ''])
     append(clear(genBtn), [on ? [icon('x', 13), 'Stop'] : [icon('sparkle', 13), result.value.trim() ? 'Regenerate' : 'Generate']])
     const has = !on && !!result.value.trim()
     for (const [k, b] of Object.entries(postBtns)) {
@@ -4300,7 +4344,7 @@ async function aiReviewModal(it) {
     h('div', { class: 'ai-title' }, h('span', { class: 'ai-badge' }, icon('sparkle', 14)), h('div', null, h('h3', null, 'AI review'), h('p', null, `${it.repo} ${it.provider === 'github' ? '#' : '!'}${it.number} · ${it.title}`))),
     h('div', { class: 'ai-row' }, h('div', { class: 'field grow' }, h('label', null, 'Agent'), agentSel)),
     h('div', { class: 'field' }, h('label', null, 'Instructions'), instructions),
-    h('div', { class: 'field' }, h('label', { class: 'row' }, 'Review', h('span', { class: 'grow' }), verdictEl), result),
+    h('div', { class: 'field' }, h('label', { class: 'row' }, 'Review', h('span', { class: 'grow' }), verdictEl), aiWrap(result)),
     status,
     h('div', { class: 'buttons' }, h('button', { type: 'button', class: 'btn', onClick: close }, 'Cancel'), h('span', { class: 'grow' }), genBtn, postBtns.comment, postBtns.changes, postBtns.approve)
   )

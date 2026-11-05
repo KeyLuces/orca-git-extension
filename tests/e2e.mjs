@@ -71,8 +71,11 @@ await page.setViewport({ width: 1500, height: 900 })
 const consoleErrors = []
 page.on('pageerror', (e) => consoleErrors.push(String(e)))
 page.on('console', (m) => m.type() === 'error' && !/favicon|status of 404/.test(m.text()) && consoleErrors.push(m.text()))
+// Tests can stand in for the AI agent (no claude/codex here): name -> async (input) => output
+const fakes = {}
 await page.exposeFunction('__orcaRequest', async (name, input) => {
   try {
+    if (fakes[name]) return { out: await fakes[name](input) }
     return { out: await handlers[name](input) }
   } catch (e) {
     return { error: e.message, code: e.code }
@@ -621,6 +624,15 @@ await step('AI commit dialog opens with agent, instructions and message', async 
   const status = await page.$eval('.ai-status', (s) => s.textContent)
   if (/object HTML/.test(status)) throw new Error('status shows ' + status)
   await shot('06-ai-dialog')
+  // while the agent works: a skeleton over the message box and a live "…is thinking 2s" line
+  fakes['ai.commitMessage'] = () => new Promise((r) => setTimeout(() => r('feat: add the answer'), 2600))
+  await clickText('.ai-dialog .btn', 'Generate')
+  await until(() => page.$eval('.ai-dialog .ai-skel', (k) => getComputedStyle(k).display === 'flex'), 'skeleton shown while generating')
+  await until(() => page.$eval('.ai-status', (s) => /is (reading|thinking).*\d+s/.test(s.textContent)), 'status names the agent and counts seconds')
+  await shot('06b-ai-working')
+  await until(() => page.$eval('.ai-dialog .ai-result', (t) => t.value === 'feat: add the answer'), 'message filled in', 10000)
+  if (await page.$eval('.ai-dialog .ai-skel', (k) => getComputedStyle(k).display !== 'none')) throw new Error('skeleton still shown after generating')
+  delete fakes['ai.commitMessage']
   await clickText('.ai-dialog .btn', 'Cancel')
   g('clean', '-fdq')
 })
