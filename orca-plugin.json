@@ -4,7 +4,7 @@
   "execution": "trusted-worker",
   "id": "git-extension",
   "name": "Git Extension",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "description": "A lightweight Git client inside Orca: a full-tab history graph with changes, branches, merge/rebase, stash, worktrees, git config, right-click menus, and AI commit messages and conflict resolution.",
   "license": "MIT",
   "engines": {
@@ -51,6 +51,10 @@
       {
         "id": "openGraph",
         "title": "Git: Open Git Graph"
+      },
+      {
+        "id": "openReviews",
+        "title": "Git: Open Reviews (pull/merge requests waiting for you)"
       }
     ],
     "statusBarItems": [
@@ -60,6 +64,13 @@
         "icon": "branch",
         "tooltip": "Open Git Graph",
         "command": "openGraph"
+      },
+      {
+        "id": "reviews",
+        "text": "Reviews",
+        "icon": "bell",
+        "tooltip": "Pull/merge requests waiting for you",
+        "command": "openReviews"
       }
     ],
     "events": [

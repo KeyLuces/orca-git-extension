@@ -990,6 +990,7 @@ async function reviewsList(orca) {
       )
   )
   items.sort((a, b) => b.updated - a.updated)
+  await Promise.all(items.slice(0, 25).map(async (it) => (it.ci = await reviewCi(it).catch(() => null))))
   return { items, providers, errors }
 }
 
@@ -1026,12 +1027,12 @@ async function reviewMaterial({ provider, host, url, projectId, number }) {
   if (provider === 'github') {
     if (!/^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+$/.test(String(url))) throw new GitError('not a GitHub pull request link')
     const [view, diff] = await Promise.all([
-      runProc('gh', ['pr', 'view', url, '--json', 'title,body,baseRefName,headRefName'], { timeout: 60_000 }),
+      runProc('gh', ['pr', 'view', url, '--json', 'title,body,baseRefName,headRefName,headRefOid'], { timeout: 60_000 }),
       runProc('gh', ['pr', 'diff', url], { timeout: 90_000 })
     ])
     if (diff.code !== 0) throw new GitError(diff.stderr.trim() || 'gh could not read the diff')
     const v = jsonOf(view) || {}
-    return { title: v.title || '', body: v.body || '', source: v.headRefName, target: v.baseRefName, diff: diff.stdout }
+    return { title: v.title || '', body: v.body || '', source: v.headRefName, target: v.baseRefName, diff: diff.stdout, headSha: v.headRefOid }
   }
   if (!/^[\w.-]+$/.test(String(host)) || !Number.isInteger(+projectId) || !Number.isInteger(+number)) throw new GitError('bad merge request')
   const r = await runProc('glab', ['api', '--hostname', host, `projects/${+projectId}/merge_requests/${+number}/changes`], { timeout: 90_000 })
@@ -1040,7 +1041,7 @@ async function reviewMaterial({ provider, host, url, projectId, number }) {
   const diff = (m.changes || [])
     .map((c) => `diff --git a/${c.old_path} b/${c.new_path}\n--- a/${c.old_path}\n+++ b/${c.new_path}\n${c.diff}`)
     .join('\n')
-  return { title: m.title || '', body: m.description || '', source: m.source_branch, target: m.target_branch, diff }
+  return { title: m.title || '', body: m.description || '', source: m.source_branch, target: m.target_branch, diff, diffRefs: m.diff_refs }
 }
 
 /** Review a pull/merge request with the AI agent: summary, issues with file and line, a verdict. */
@@ -1075,6 +1076,113 @@ async function aiReview(input, agent) {
   // the verdict line is for the person; the posted review starts at the summary
   const review = text.replace(/^\s*\**verdict:?\**.*\n+/i, '').trim()
   return { review, verdict, title: mat.title }
+}
+
+// ---------- AI: merge request title and description ----------
+async function aiMrDescription(repo, { target, instructions }, agent) {
+  const a = AI[agent] || AI.claude
+  const info = await mrInfo(repo, req(target, 'target branch'))
+  const remoteTarget = `${info.remote}/${info.target}`
+  const base = (await git(repo, ['rev-parse', '--verify', '-q', `refs/remotes/${remoteTarget}`], { okCodes: [0, 1] })).trim() ? remoteTarget : info.target
+  let diff = await git(repo, ['diff', '--no-color', '-U2', `${base}...HEAD`]).catch(() => '')
+  if (!diff.trim() && !info.commits.length) throw new GitError(`${info.source} has no changes compared with ${info.target}`)
+  if (diff.length > 80_000) diff = diff.slice(0, 80_000) + '\n… (diff truncated)'
+  const prompt = [
+    `Write the title and description for a ${info.kind === 'github' ? 'GitHub pull request' : 'GitLab merge request'} from ${info.source} into ${info.target}.`,
+    'Output format, exactly:',
+    'Line 1: the title, under 72 characters, no prefix like "Title:".',
+    'Line 2: empty.',
+    'Then a Markdown description with "## Summary" (two or three sentences: what and why) and "## Changes" (short bullets).',
+    'Add "## Testing" only if the diff shows tests or clear manual steps. No other text, no code fences.',
+    String(instructions || '').trim() ? `Extra instructions: ${String(instructions).trim()}` : '',
+    info.commits.length ? `\nCommits:\n${info.commits.map((c) => `- ${c}`).join('\n')}` : '',
+    `\nDiff:\n${diff}`
+  ].join('\n')
+  const r = await runProc(a.bin, a.args, { cwd: repo, input: prompt, timeout: 110_000, shell: a.shell })
+  if (r.code !== 0) throw new GitError(r.code === -1 ? `${a.name} CLI (${a.bin}) was not found on PATH` : r.stderr.trim().split('\n').slice(-3).join('\n') || `${a.name} failed`)
+  const out = r.stdout.trim().replace(/^```(?:markdown)?\n?|```$/g, '').trim()
+  const [first, ...rest] = out.split(/\r?\n/)
+  return { title: first.replace(/^(title:\s*|#+\s*)/i, '').trim(), body: rest.join('\n').trim() }
+}
+
+// ---------- CI / pipeline status ----------
+const CI_STATE = (s) => {
+  s = String(s || '').toLowerCase()
+  if (['failure', 'failed', 'error', 'timed_out', 'action_required', 'startup_failure'].includes(s)) return 'failed'
+  if (['success', 'passed', 'neutral', 'skipped', 'completed'].includes(s)) return 'passed'
+  if (['canceled', 'cancelled'].includes(s)) return 'canceled'
+  if (s) return 'running'
+  return null
+}
+function rollup(states) {
+  const list = states.map(CI_STATE).filter(Boolean)
+  if (!list.length) return null
+  if (list.includes('failed')) return 'failed'
+  if (list.includes('running')) return 'running'
+  if (list.every((x) => x === 'canceled')) return 'canceled'
+  return 'passed'
+}
+async function ciStatus(repo, { ref = 'HEAD' } = {}) {
+  const sha = (await git(repo, ['rev-parse', '--verify', '-q', req(ref, 'ref')], { okCodes: [0, 1] })).trim()
+  if (!sha) return { state: null }
+  const remotes = (await git(repo, ['remote'])).split(/\s+/).filter(Boolean)
+  const remote = remotes.includes('origin') ? 'origin' : remotes[0]
+  if (!remote) return { state: null }
+  const where = parseRemote((await git(repo, ['remote', 'get-url', remote])).trim())
+  if (!where) return { state: null }
+  return memo(`ci|${where.host}|${where.path}|${sha}`, 45_000, async () => {
+    if (where.kind === 'github') {
+      const [runs, st] = await Promise.all([
+        runProc('gh', ['api', `repos/${where.path}/commits/${sha}/check-runs`, '--jq', '[.check_runs[] | (.conclusion // .status)]'], { timeout: 30_000 }),
+        runProc('gh', ['api', `repos/${where.path}/commits/${sha}/status`, '--jq', '[.statuses[].state]'], { timeout: 30_000 })
+      ])
+      if (runs.code !== 0 && st.code !== 0) return { state: null, reason: 'gh' }
+      const state = rollup([...(jsonOf(runs) || []), ...(jsonOf(st) || [])])
+      return { state, sha, url: `https://github.com/${where.path}/commit/${sha}/checks` }
+    }
+    const r = await runProc('glab', ['api', '--hostname', where.host, `projects/${encodeURIComponent(where.path)}/repository/commits/${sha}`], { timeout: 30_000 })
+    const c = jsonOf(r)
+    if (!c) return { state: null, reason: 'glab' }
+    return { state: CI_STATE(c.last_pipeline?.status), sha, url: c.last_pipeline?.web_url || `${where.web}/-/commit/${sha}` }
+  })
+}
+/** CI state of one review item (pull/merge request head). */
+async function reviewCi(it) {
+  if (it.provider === 'github') {
+    const r = await runProc('gh', ['pr', 'view', it.url, '--json', 'statusCheckRollup', '--jq', '[.statusCheckRollup[] | (.conclusion // .state // .status)]'], { timeout: 30_000 })
+    return r.code === 0 ? rollup(jsonOf(r) || []) : null
+  }
+  const r = await runProc('glab', ['api', '--hostname', it.host, `projects/${+it.projectId}/merge_requests/${+it.number}`], { timeout: 30_000 })
+  return CI_STATE(jsonOf(r)?.head_pipeline?.status)
+}
+
+// ---------- line comments on a pull/merge request ----------
+async function reviewLineComment(it, { path: file, line, side, body }) {
+  const text = String(body || '').trim()
+  if (!text) throw new GitError('Write a comment first')
+  if (!Number.isInteger(+line) || +line < 1) throw new GitError('bad line')
+  const mat = await reviewMaterial(it)
+  if (it.provider === 'github') {
+    const repoPath = String(it.url).match(/^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)$/)
+    if (!repoPath) throw new GitError('not a GitHub pull request link')
+    const r = await runProc('gh', ['api', `repos/${repoPath[1]}/pulls/${repoPath[2]}/comments`, '-f', `body=${text}`, '-f', `commit_id=${mat.headSha}`, '-f', `path=${file}`, '-F', `line=${+line}`, '-f', `side=${side === 'old' ? 'LEFT' : 'RIGHT'}`], { timeout: 60_000 })
+    if (r.code !== 0) throw new GitError((r.stderr || r.stdout).trim() || 'could not post the comment')
+    return { ok: true }
+  }
+  const d = mat.diffRefs || {}
+  const args = ['api', '--hostname', it.host, '-X', 'POST', `projects/${+it.projectId}/merge_requests/${+it.number}/discussions`, '-f', `body=${text}`, '-f', 'position[position_type]=text', '-f', `position[base_sha]=${d.base_sha}`, '-f', `position[start_sha]=${d.start_sha}`, '-f', `position[head_sha]=${d.head_sha}`, '-f', `position[new_path]=${file}`, '-f', `position[old_path]=${file}`, '-F', `position[${side === 'old' ? 'old_line' : 'new_line'}]=${+line}`]
+  const r = await runProc('glab', args, { timeout: 60_000 })
+  if (r.code !== 0) throw new GitError((r.stderr || r.stdout).trim() || 'could not post the comment')
+  return { ok: true }
+}
+
+// ---------- files in the working tree (conflict resolution) ----------
+async function workPath(repo, file) {
+  const { toplevel } = await paths(repo)
+  const top = path.resolve(toplevel)
+  const p = path.resolve(top, String(file))
+  if (!(p + path.sep).startsWith(top + path.sep) && p !== top) throw new GitError('That file is outside the repository')
+  return p
 }
 
 // ---------- operations exposed to the panel ----------
@@ -1339,6 +1447,59 @@ const ops = {
   configSet: (r, a) => configSet(r, a),
   configUnset: (r, a) => configUnset(r, a),
 
+  ciStatus: (r, a) => ciStatus(r, a),
+  readWorkFile: async (r, a) => {
+    const p = await workPath(r, a.file)
+    const buf = readFileSync(p)
+    if (buf.length > 4 * 1024 * 1024) throw new GitError('The file is too large to resolve here')
+    return buf.toString('utf8')
+  },
+  writeWorkFile: async (r, a) => {
+    const p = await workPath(r, a.file)
+    writeFileSync(p, String(a.text ?? ''))
+    if (a.stage) await git(r, ['add', '--', String(a.file)])
+    return ''
+  },
+  branchCleanup: async (r) => {
+    const head = await headInfo(r)
+    let base = (await git(r, ['symbolic-ref', '-q', '--short', 'refs/remotes/origin/HEAD'], { okCodes: [0, 1] })).trim().replace(/^origin\//, '')
+    const locals = (await git(r, ['for-each-ref', '--format=%(refname:short)%09%(upstream:track)', 'refs/heads'])).split('\n').filter(Boolean).map((l) => l.split('\t'))
+    const names = locals.map(([n]) => n)
+    if (!base || !names.includes(base)) base = ['main', 'master', 'develop', 'dev'].find((b) => names.includes(b)) || head.branch
+    const keep = new Set([head.branch, base].filter(Boolean))
+    const merged = base ? (await git(r, ['branch', '--merged', base, '--format=%(refname:short)'])).split('\n').filter((b) => b && !keep.has(b)) : []
+    const gone = locals.filter(([n, t]) => t === '[gone]' && !keep.has(n)).map(([n]) => n)
+    return { base, current: head.branch, merged, gone }
+  },
+  branchDeleteMany: async (r, a) => {
+    const results = []
+    for (const name of a.names || []) {
+      const n = req(name, 'branch')
+      try {
+        await git(r, ['branch', a.force?.includes(n) ? '-D' : '-d', n])
+        results.push({ name: n, ok: true })
+      } catch (e) {
+        results.push({ name: n, ok: false, error: e.message.split('\n')[0] })
+      }
+    }
+    return results
+  },
+  undoInfo: async (r) => {
+    if (await repoState(r)) return { blocked: 'Finish or abort the operation in progress first' }
+    const raw = await git(r, ['reflog', '-2', `--format=%H${SEP}%gs${SEP}%ct`], { okCodes: [0, 128] }).catch(() => '')
+    const [now, prev] = raw.split('\n').filter(Boolean).map((l) => {
+      const [hash, subject, time] = l.split(SEP)
+      return { hash, subject, time: +time }
+    })
+    if (!now || !prev) return { blocked: 'Nothing to undo' }
+    return { what: now.subject, at: now.time, to: prev.hash, mode: /^commit/.test(now.subject) ? 'soft' : 'keep' }
+  },
+  undoLast: async (r) => {
+    const u = await ops.undoInfo(r)
+    if (u.blocked) throw new GitError(u.blocked)
+    await git(r, ['reset', `--${u.mode}`, u.to])
+    return u
+  },
   init: (_r, a) => git(req(a.path, 'path'), ['init']),
   clone: async (_r, a) => {
     const url = req(a.url, 'url')
@@ -1505,7 +1666,7 @@ const ops = {
 const READ_ONLY_OPS = new Set([
   'status', 'diff', 'log', 'commitShow', 'commitFileDiff', 'refs', 'worktrees', 'stashList', 'stashShow', 'remotes',
   'configList', 'blame', 'showFile', 'treeFiles', 'compare', 'compareFileDiff', 'reflog', 'cleanPreview', 'submodules',
-  'aheadBehind', 'rebaseTodo', 'lastMessage', 'formatPatch'
+  'aheadBehind', 'rebaseTodo', 'lastMessage', 'formatPatch', 'ciStatus', 'readWorkFile', 'branchCleanup', 'undoInfo'
 ])
 const NO_REPO_OK = new Set(['configList', 'configSet', 'configUnset', 'init', 'clone'])
 
@@ -1703,6 +1864,56 @@ Click to open Git Graph`
     if (!ws || !orca.host.has('terminal.create')) return { ran: false, command }
     await orca.host.call('terminal.create', { workspaceId: ws.id, title: 'Review inbox setup', command })
     return { ran: true, command }
+  })
+  orca.panels.handle('ai.mrDescription', async (input = {}) => aiMrDescription(req(input.repo, 'repo'), input, AI[input.agent] ? input.agent : await agentSetting()))
+  orca.panels.handle('reviews.diff', async (input = {}) => {
+    const m = await reviewMaterial(input)
+    return { diff: m.diff.length > 1_500_000 ? m.diff.slice(0, 1_500_000) : m.diff, title: m.title }
+  })
+  orca.panels.handle('reviews.lineComment', async (input = {}) => reviewLineComment(input.item || {}, input))
+  orca.panels.handle('ui.pending', () => {
+    const p = pendingUi
+    pendingUi = null
+    return p
+  })
+
+  // Reviews in the status bar, and a desktop notification when a new request arrives.
+  let pendingUi = null
+  let knownReviews = null
+  let reviewsBusy = false
+  async function pollReviews() {
+    if (reviewsBusy || !orca.host.has('statusBar.update')) return
+    reviewsBusy = true
+    try {
+      const { items, providers } = await reviewsList(orca)
+      if (!providers.some((p) => p.signedIn)) return orca.host.call('statusBar.update', { id: 'reviews', visible: false }).catch(() => {})
+      const waiting = items.filter((i) => i.roles.includes('review') || i.roles.includes('assigned'))
+      await orca.host.call('statusBar.update', {
+        id: 'reviews',
+        visible: waiting.length > 0,
+        text: `${waiting.length} review${waiting.length === 1 ? '' : 's'}`,
+        tone: waiting.length ? 'accent' : 'neutral',
+        tooltip: waiting.slice(0, 5).map((i) => `${i.repo} ${i.provider === 'github' ? '#' : '!'}${i.number}: ${i.title}`).join('\n') + '\nClick to open Reviews'
+      }).catch(() => {})
+      const urls = new Set(waiting.map((i) => i.url))
+      if (knownReviews && orca.host.has('notifications.show'))
+        for (const i of waiting.filter((x) => !knownReviews.has(x.url)).slice(0, 3))
+          await orca.host.call('notifications.show', { title: i.roles.includes('review') ? 'Review requested' : 'Assigned to you', body: `${i.repo} ${i.provider === 'github' ? '#' : '!'}${i.number}: ${i.title}` }).catch(() => {})
+      knownReviews = urls
+    } catch (e) {
+      orca.log(`reviews poll: ${e.message}`)
+    } finally {
+      reviewsBusy = false
+    }
+  }
+  setTimeout(pollReviews, 15_000)
+  setInterval(pollReviews, 3 * 60_000)
+  orca.commands.register('openReviews', async () => {
+    pendingUi = { tab: 'reviews' }
+    orca.panels.post?.('ui.show', { tab: 'reviews' })
+    const { focused } = await resolveFocused()
+    if (focused) await openGraphTab(focused)
+    return 'Opened Reviews'
   })
   orca.panels.handle('tab.open', async ({ repo } = {}) => openGraphTab(req(repo, 'repo')))
 

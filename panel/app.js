@@ -501,6 +501,7 @@ function renderHeader() {
     lbl(iconBtn('push', 'Push', (e) => pushMenu(e.currentTarget), { disabled: dis }), st0.ahead ? `Push ${st0.ahead}` : 'Push'),
     IN_TAB && lbl(iconBtn('stash', 'Stash changes', () => run('stashSave', { untracked: true }, { success: 'Stashed' }), { disabled: dis || !st0.files?.length }), 'Stash'),
     iconBtn('refresh', 'Refresh', () => refreshAll(true), { disabled: !state.repo }),
+    iconBtn('undo', 'Undo the last action (commit, reset, merge, rebase…)', undoLast, { disabled: dis }),
     iconBtn('settings', 'Git settings (identity, HTTPS, remotes)', () => setTab('settings'), { disabled: !state.repo }),
     !IN_TAB && iconBtn('expand', 'Open Git Graph in a full tab', openTab, { disabled: dis })
   ])
@@ -522,7 +523,8 @@ function renderHeader() {
           h('span', { class: 'row', style: { gap: '2px' } }, icon('push', 11), st.ahead),
           h('span', { class: 'row', style: { gap: '2px' } }, icon('pull', 11), st.behind)
         )
-      : st.branch && h('span', { class: 'sync' }, 'not published')
+      : st.branch && h('span', { class: 'sync' }, 'not published'),
+    ciBadge()
   ])
 }
 
@@ -696,6 +698,7 @@ async function refreshAll(full = false) {
     if (full) state.history.stale = true // reload quietly instead of emptying the list
     await renderAll()
     snap.save()
+    loadCi()
   })()
   try {
     await refreshing
@@ -882,14 +885,26 @@ function renderDiff(text, hunkActions) {
 }
 
 async function showDiff(title, loader, actions = [], hunkActions) {
-  openSheet(title, h('div', { class: 'empty' }, 'Loading…'), actions)
-  const sheet = state.sheets[state.sheets.length - 1]
+  // In the Commit tab the diff opens beside the file list, not over it.
+  const pane = IN_TAB && state.tab === 'changes' ? document.querySelector('#main .diff-pane') : null
+  let sheet
+  if (pane) {
+    clear(pane).append(
+      h('div', { class: 'sheet-head' }, h('div', { class: 'sheet-title', title }, title), ...actions),
+      h('div', { class: 'sheet-body' }, h('div', { class: 'inline-skeleton' }, h('span'), h('span'), h('span')))
+    )
+    sheet = { el: pane, inPane: true }
+  } else {
+    openSheet(title, h('div', { class: 'empty' }, 'Loading…'), actions)
+    sheet = state.sheets[state.sheets.length - 1]
+  }
   const load = async () => {
     try {
       const text = await loader()
       const body = sheet.el.querySelector('.sheet-body')
       if (!text.trim() && hunkActions) {
-        if (state.sheets.includes(sheet)) closeSheet()
+        if (sheet.inPane) clear(sheet.el).append(h('div', { class: 'empty' }, 'No changes left in this file'))
+        else if (state.sheets.includes(sheet)) closeSheet()
         return
       }
       clear(body).append(
@@ -932,7 +947,7 @@ function fileRow(f, { staged, onClick, actions }) {
   const dir = dirname(f.path)
   return h(
     'div',
-    { class: 'item', title: f.orig ? `${f.orig} → ${f.path}` : f.path, onClick },
+    { class: 'item', title: f.orig ? `${f.orig} → ${f.path}` : f.path, 'data-path': f.path, 'data-staged': staged ? '1' : '0', onClick: (e) => (markSelected(e.currentTarget), onClick && onClick(e)) },
     h('span', { class: `status-letter s-${letter}`, title: f.untracked ? 'Untracked' : '' }, f.untracked ? 'U' : letter),
     h('span', { class: 'file-name' }, name),
     dir && h('span', { class: 'file-dir grow' }, dir),
@@ -1062,7 +1077,7 @@ async function viewChanges() {
     for (const f of conflicts)
       root.append(
         fileRow(f, {
-          onClick: () => showDiff(f.path, () => call('diff', { file: f.path })),
+          onClick: () => resolveConflict(f.path),
           actions: [
             iconBtn('more', 'Resolve', (e) =>
               menu(e.currentTarget, [
@@ -1129,8 +1144,36 @@ async function viewChanges() {
         })
       )
   }
-  return root
+  if (!IN_TAB) return root
+  // Full tab: the file list on the left, the selected file's diff on the right (↑/↓ to move).
+  root.classList.add('changes-list')
+  const pane = h('div', { class: 'diff-pane' }, h('div', { class: 'empty' }, icon('file', 26), h('div', null, 'Select a file to see its changes'), h('div', { class: 'dim' }, '↑ ↓ move between files')))
+  const split = h('div', { class: 'view changes-split' }, root, pane)
+  root.classList.remove('view')
+  requestAnimationFrame(() => {
+    const sel = state.changesSel
+    const row = sel && [...root.querySelectorAll('.item[data-path]')].find((r) => r.dataset.path === sel.path && r.dataset.staged === sel.staged)
+    if (row) row.click()
+  })
+  return split
 }
+
+function markSelected(row) {
+  row.parentElement?.closest('.view, .changes-list')?.querySelectorAll('.item.sel').forEach((r) => r.classList.remove('sel'))
+  row.classList.add('sel')
+  if (row.dataset.path) state.changesSel = { path: row.dataset.path, staged: row.dataset.staged }
+}
+document.addEventListener('keydown', (e) => {
+  if (state.tab !== 'changes' || !IN_TAB || (e.key !== 'ArrowDown' && e.key !== 'ArrowUp')) return
+  if (e.target.closest?.('input, textarea, select, .overlay, .menu')) return
+  const rows = [...document.querySelectorAll('#main .changes-list .item[data-path]')]
+  if (!rows.length) return
+  e.preventDefault()
+  const i = rows.findIndex((r) => r.classList.contains('sel'))
+  const next = rows[Math.max(0, Math.min(rows.length - 1, i + (e.key === 'ArrowDown' ? 1 : -1)))] || rows[0]
+  next.click()
+  next.scrollIntoView({ block: 'nearest' })
+})
 
 async function discard(list, fromSheet) {
   const what = list.length === 1 ? basename(list[0].path) : `${list.length} files`
@@ -3129,7 +3172,10 @@ async function renderSide() {
     if (open) side.append(items())
   }
   if (!state.status) return
-  section('local', 'Branches', refs.local.length, () => h('div', null, refs.local.map((b) => localBranchRow(b))), iconBtn('plus', 'New branch', (e) => (e.stopPropagation(), newBranch())))
+  section('local', 'Branches', refs.local.length, () => h('div', null, refs.local.map((b) => localBranchRow(b))), [
+    iconBtn('trash', 'Clean up merged and gone branches', (e) => (e.stopPropagation(), cleanupBranches())),
+    iconBtn('plus', 'New branch', (e) => (e.stopPropagation(), newBranch()))
+  ])
   section('remote', 'Remotes', refs.remote.length, () => h('div', null, refs.remote.map((b) => remoteBranchRow(b, refs.local))))
   section('tags', 'Tags', refs.tags.length, () => h('div', null, refs.tags.map((t) => tagRow(t))))
   side.scrollTop = scroll
@@ -3370,7 +3416,42 @@ async function mergeRequestDialog(target) {
     { class: 'mr-form' },
     h('div', { class: 'mr-route' }, h('span', { class: 'ref' }, icon('branch', 10), h('span', { class: 'ref-t' }, info.source)), icon('right', 14), h('span', { class: 'ref' }, icon('branch', 10), h('span', { class: 'ref-t' }, info.target))),
     info.needsPush && h('div', { class: 'dim mr-note' }, icon('push', 12), `${info.source} ${info.upstream ? 'has commits not on' : 'is not on'} ${info.remote} yet; it is pushed first.`),
-    h('div', { class: 'field' }, h('label', null, 'Title'), title),
+    h(
+      'div',
+      { class: 'field' },
+      h(
+        'label',
+        { class: 'row' },
+        'Title',
+        h('span', { class: 'grow' }),
+        h(
+          'button',
+          {
+            type: 'button',
+            class: 'btn sm',
+            title: 'Write the title and description from the whole branch with AI',
+            onClick: async (e) => {
+              const b = e.currentTarget
+              b.disabled = true
+              append(clear(b), [h('span', { class: 'spinner' }), 'Writing…'])
+              try {
+                const r = await request('ai.mrDescription', { repo, target: info.target, instructions: store.get('aiPrefs', {}).instructions || '' }, 118000)
+                if (r.title) title.value = r.title
+                if (r.body) body.value = r.body
+              } catch (err) {
+                toast(err.message, 'error')
+              } finally {
+                b.disabled = false
+                append(clear(b), [icon('sparkle', 12), 'Write with AI'])
+              }
+            }
+          },
+          icon('sparkle', 12),
+          'Write with AI'
+        )
+      ),
+      title
+    ),
     h('div', { class: 'field' }, h('label', null, 'Description'), body),
     h('label', { class: 'check' }, draft, 'Draft (Create now only)'),
     note,
@@ -3475,7 +3556,8 @@ function reviewRow(it) {
         h('span', { class: 'ellipsis', title: it.title }, it.title),
         it.draft && h('span', { class: 'pill' }, 'Draft'),
         it.roles.includes('review') && h('span', { class: 'pill role-review' }, 'Review requested'),
-        it.roles.includes('assigned') && h('span', { class: 'pill role-assigned' }, 'Assigned')
+        it.roles.includes('assigned') && h('span', { class: 'pill role-assigned' }, 'Assigned'),
+        it.ci && h('span', { class: `ci ci-${it.ci}`, title: `CI: ${it.ci}` }, ciIcon(it.ci), it.ci)
       ),
       h(
         'div',
@@ -3489,6 +3571,7 @@ function reviewRow(it) {
       'div',
       { class: 'review-actions' },
       h('button', { class: 'btn sm', title: `Open the ${noun} in the browser`, onClick: open }, icon('open', 12), 'Open'),
+      h('button', { class: 'btn sm', title: 'See the changes and comment on lines', onClick: () => reviewDiffSheet(it) }, icon('file', 12), 'Diff'),
       h('button', { class: 'btn sm', title: 'Review it with AI, then post', onClick: () => aiReviewModal(it) }, icon('sparkle', 12), 'AI review'),
       h('button', { class: 'btn sm', onClick: () => reviewDialog(it) }, icon('edit', 12), 'Review…'),
       h(
@@ -3660,6 +3743,237 @@ async function reviewDialog(it) {
   if (!r) return
   if (r.action !== 'approve' && !r.body.trim()) return toast('Write a comment for this kind of review', 'error')
   await actOnReview(it, r.action, r.body)
+}
+
+
+/* =========================================================================
+   CI status, undo, branch clean-up, conflict resolver, review diffs
+   ========================================================================= */
+const ciIcon = (st) => icon(st === 'passed' ? 'check' : st === 'failed' ? 'x' : st === 'running' ? 'refresh' : 'minus', 11)
+function ciBadge() {
+  const ci = state.ci
+  if (!ci || !ci.state || ci.sha !== state.status?.oid) return null
+  const label = { passed: 'CI passed', failed: 'CI failed', running: 'CI running', canceled: 'CI canceled' }[ci.state]
+  return h('button', { class: `ci ci-${ci.state}`, title: `${label} for ${ci.sha.slice(0, 7)}. Click to open.`, onClick: () => ci.url && (window.orca?.shell?.openExternal ? window.orca.shell.openExternal(ci.url) : window.open(ci.url)) }, ciIcon(ci.state), label)
+}
+let ciLoading = false
+async function loadCi() {
+  if (ciLoading || !state.repo || !state.status?.oid || !isShown()) return
+  if (state.ci?.sha === state.status.oid && Date.now() - state.ci.at < (state.ci.state === 'running' ? 30000 : 120000)) return
+  ciLoading = true
+  const repo = state.repo
+  try {
+    const r = await request('git', { op: 'ciStatus', repo, args: {} }, 40000)
+    if (repo !== state.repo) return
+    state.ci = { ...r, at: Date.now() }
+    renderHeader()
+  } catch {
+  } finally {
+    ciLoading = false
+  }
+}
+setInterval(loadCi, 15000)
+
+async function undoLast() {
+  let u
+  try {
+    u = await call('undoInfo')
+  } catch (e) {
+    return toast(e.message, 'error')
+  }
+  if (u.blocked) return toast(u.blocked, 'error')
+  const keep = u.mode === 'soft' ? 'Its changes stay staged, ready to commit again.' : 'Uncommitted changes are kept.'
+  if (!(await confirmBox('Undo the last action?', `${u.what}\n${ago(u.at)}\n\nThe branch goes back to ${u.to.slice(0, 7)}. ${keep}\nThe Reflog tab can take you forward again.`, 'Undo'))) return
+  state.history.stale = true
+  run('undoLast', {}, { success: `Undone: ${u.what.split(':')[0]}` })
+}
+
+async function cleanupBranches() {
+  let c
+  try {
+    c = await call('branchCleanup')
+  } catch (e) {
+    return toast(e.message, 'error')
+  }
+  const rows = [...c.gone.map((n) => ({ name: n, why: 'deleted on the server', force: true })), ...c.merged.filter((n) => !c.gone.includes(n)).map((n) => ({ name: n, why: `merged into ${c.base}` }))]
+  if (!rows.length) return toast(`No merged or gone branches (compared with ${c.base}).`)
+  closeOverlays()
+  const checks = rows.map((r) => ({ ...r, box: h('input', { type: 'checkbox', checked: true }) }))
+  const close = () => overlay.remove()
+  const box = h(
+    'div',
+    { class: 'dialog', role: 'dialog' },
+    h('h3', null, 'Clean up branches'),
+    h('p', null, `Local branches already merged into ${c.base}, or whose remote branch was deleted. Their commits stay reachable in the Reflog for a while.`),
+    h('div', { class: 'cleanup-list' }, checks.map((r) => h('label', { class: 'check cleanup-row' }, r.box, h('span', { class: 'mono grow ellipsis' }, r.name), h('span', { class: `pill ${r.force ? 'role-review' : ''}` }, r.why)))),
+    h(
+      'div',
+      { class: 'buttons' },
+      h('button', { type: 'button', class: 'btn', onClick: close }, 'Cancel'),
+      h(
+        'button',
+        {
+          type: 'button',
+          class: 'btn danger solid',
+          onClick: async () => {
+            const pick = checks.filter((r) => r.box.checked)
+            if (!pick.length) return close()
+            close()
+            const res = await run('branchDeleteMany', { names: pick.map((r) => r.name), force: pick.filter((r) => r.force).map((r) => r.name) }, { quiet: true })
+            if (res) {
+              const bad = res.filter((x) => !x.ok)
+              toast(bad.length ? `Deleted ${res.length - bad.length}; kept ${bad.map((b) => b.name).join(', ')}:\n${bad[0].error}` : `Deleted ${res.length} branch${res.length > 1 ? 'es' : ''}`, bad.length ? 'error' : 'ok')
+            }
+          }
+        },
+        icon('trash', 13),
+        'Delete selected'
+      )
+    )
+  )
+  const overlay = h('div', { class: 'overlay', onMousedown: (e) => e.target === overlay && close() }, box)
+  document.body.append(overlay)
+}
+
+/** Resolve a conflicted file block by block: ours, theirs or both, then save and mark resolved. */
+async function resolveConflict(file) {
+  let text
+  try {
+    text = await call('readWorkFile', { file })
+  } catch (e) {
+    return toast(e.message, 'error')
+  }
+  const eolStr = text.includes('\r\n') ? '\r\n' : '\n'
+  const lines = text.split(/\r?\n/)
+  const parts = [] // strings and conflict blocks
+  let buf = []
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].startsWith('<<<<<<<')) {
+      parts.push(buf.join(eolStr))
+      buf = []
+      const block = { ours: [], base: [], theirs: [], oursLabel: lines[i].slice(8).trim(), theirsLabel: '', choice: null }
+      let where = 'ours'
+      for (i++; i < lines.length; i++) {
+        const l = lines[i]
+        if (l.startsWith('|||||||')) where = 'base'
+        else if (l.startsWith('=======')) where = 'theirs'
+        else if (l.startsWith('>>>>>>>')) {
+          block.theirsLabel = l.slice(8).trim()
+          break
+        } else block[where].push(l)
+      }
+      parts.push(block)
+    } else buf.push(lines[i])
+  }
+  parts.push(buf.join(eolStr))
+  const blocks = parts.filter((x) => typeof x === 'object')
+  if (!blocks.length) {
+    if (await confirmBox('No conflict markers left', `${file} has no conflict markers. Mark it as resolved?`, 'Mark resolved')) run('stage', { files: [file] }, { success: 'Marked resolved' })
+    return
+  }
+  const body = h('div', { class: 'resolver' })
+  const saveBtn = h('button', { class: 'btn sm primary', disabled: true, onClick: save }, icon('check', 12), 'Save & mark resolved')
+  const progress = h('span', { class: 'dim' })
+  const update = () => {
+    const done = blocks.filter((b) => b.choice).length
+    progress.textContent = `${done} of ${blocks.length} resolved`
+    saveBtn.disabled = done !== blocks.length
+  }
+  blocks.forEach((b, n) => {
+    const code = (ls, cls) => h('pre', { class: `res-code ${cls}` }, ls.join('\n') || ' ')
+    const card = h('div', { class: 'res-block' })
+    const pick = (choice) => {
+      b.choice = choice
+      card.querySelectorAll('.res-actions .btn').forEach((x) => x.classList.toggle('primary', x.dataset.c === choice))
+      card.classList.add('done')
+      update()
+    }
+    card.append(
+      h('div', { class: 'res-head' }, h('strong', null, `Conflict ${n + 1}`), h('span', { class: 'grow' }), h('div', { class: 'res-actions' }, ...[['ours', 'Use mine'], ['theirs', 'Use theirs'], ['both', 'Use both']].map(([c, l]) => h('button', { class: 'btn sm', 'data-c': c, onClick: () => pick(c) }, l)))),
+      h('div', { class: 'res-sides' }, h('div', null, h('div', { class: 'res-label' }, `Mine · ${b.oursLabel || 'HEAD'}`), code(b.ours, 'ours')), h('div', null, h('div', { class: 'res-label' }, `Theirs · ${b.theirsLabel || 'incoming'}`), code(b.theirs, 'theirs')))
+    )
+    body.append(card)
+  })
+  update()
+  async function save() {
+    const out = parts.map((x) => (typeof x === 'string' ? x : (x.choice === 'ours' ? x.ours : x.choice === 'theirs' ? x.theirs : [...x.ours, ...x.theirs]).join(eolStr))).join(eolStr)
+    try {
+      await call('writeWorkFile', { file, text: out, stage: true })
+      toast(`${basename(file)} resolved`)
+      closeSheet()
+      refreshAll()
+    } catch (e) {
+      toast(e.message, 'error')
+    }
+  }
+  openSheet(`Resolve ${basename(file)}`, body, [progress, saveBtn])
+}
+
+/** A pull/merge request's diff; click a line to comment on it. */
+async function reviewDiffSheet(it) {
+  openSheet(`${it.repo} ${it.provider === 'github' ? '#' : '!'}${it.number} · ${it.title}`, h('div', { class: 'inline-skeleton', style: { margin: '12px' } }, h('span'), h('span'), h('span')), [
+    h('button', { class: 'btn sm', onClick: () => aiReviewModal(it) }, icon('sparkle', 12), 'AI review'),
+    h('button', { class: 'btn sm primary', onClick: () => reviewDialog(it) }, icon('edit', 12), 'Review…')
+  ])
+  const sheet = state.sheets[state.sheets.length - 1]
+  sheet.el.classList.add('wide-sheet')
+  let diff
+  try {
+    diff = (await request('reviews.diff', { provider: it.provider, host: it.host, url: it.url, projectId: it.projectId, number: it.number }, 90000)).diff
+  } catch (e) {
+    closeSheet()
+    return toast(e.message, 'error')
+  }
+  const wrap = h('div', { class: 'diff review-diff' })
+  let file = ''
+  let o = 0
+  let n = 0
+  const comment = async (side, line, text) => {
+    const r = await dialog({ title: `Comment on ${basename(file)}:${line}`, message: text.slice(0, 200), fields: [{ key: 'body', label: 'Comment', type: 'textarea' }], ok: 'Comment' })
+    if (!r?.body.trim()) return
+    try {
+      await request('reviews.lineComment', { item: it, path: file, line, side, body: r.body }, 90000)
+      toast('Comment posted')
+    } catch (e) {
+      toast(e.message, 'error')
+    }
+  }
+  for (const line of diff.split('\n')) {
+    if (line.startsWith('diff --git')) {
+      file = line.replace(/^diff --git a\/.* b\//, '')
+      wrap.append(h('div', { class: 'file-head' }, icon('file', 12), file))
+    } else if (line.startsWith('+++ ') || line.startsWith('--- ') || line.startsWith('index ') || /^(new|deleted) file|^similarity|^rename /.test(line)) continue
+    else if (line.startsWith('@@')) {
+      const m = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)/)
+      if (m) [o, n] = [+m[1], +m[2]]
+      wrap.append(h('div', { class: 'hunk' }, line))
+    } else {
+      const f = file
+      const kind = line[0] === '+' ? 'add' : line[0] === '-' ? 'del' : 'ctx'
+      const oldN = kind === 'add' ? '' : o++
+      const newN = kind === 'del' ? '' : n++
+      const side = kind === 'del' ? 'old' : 'new'
+      const ln = kind === 'del' ? oldN : newN
+      wrap.append(
+        h(
+          'div',
+          { class: `l ${kind} commentable`, title: 'Click to comment on this line', onClick: () => ((file = f), comment(side, ln, line.slice(1))) },
+          h('span', { class: 'n' }, oldN),
+          h('span', { class: 'n' }, newN),
+          h('span', { class: 'c' }, line.slice(1))
+        )
+      )
+    }
+  }
+  if (sheet.el.isConnected) clear(sheet.el.querySelector('.sheet-body')).append(wrap)
+}
+
+// the status bar "reviews" item opens this tab on Reviews
+if (hasOrca) {
+  try {
+    window.orca.plugin?.on?.('ui.show', ({ tab } = {}) => tab && isShown() && setTab(tab))
+  } catch {}
+  setTimeout(() => request('ui.pending', {}).then((p) => p?.tab && setTab(p.tab), () => {}), 800)
 }
 
 /* =========================================================================

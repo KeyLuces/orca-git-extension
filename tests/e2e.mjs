@@ -394,6 +394,61 @@ await step('AI commit dialog opens with agent, instructions and message', async 
   g('clean', '-fdq')
 })
 
+await step('Commit tab shows the diff beside the files; arrow keys move', async () => {
+  g('switch', '-q', 'main'); g('reset', '-q', '--hard', 'origin/main'); g('clean', '-fdq')
+  write('a.txt', 'one\nTWO\nthree\n'); write('b.txt', 'b\nnew line\n')
+  await refresh()
+  await tab('Commit')
+  await until(() => page.$('.changes-split .diff-pane'), 'split view')
+  await clickText('.changes-list .item', 'a.txt')
+  await until(() => page.$eval('.diff-pane', (p) => p.textContent.includes('TWO')), 'diff of a.txt in the pane')
+  await page.mouse.click(700, 600) // focus the page, not an input
+  await page.keyboard.press('ArrowDown')
+  await until(() => page.$eval('.diff-pane', (p) => p.textContent.includes('new line')), 'ArrowDown shows b.txt')
+  await shot('09-commit-split')
+  g('checkout', '--', 'a.txt', 'b.txt')
+})
+
+await step('cleans up merged and gone branches', async () => {
+  g('branch', '-q', 'done-1', 'main'); g('branch', '-q', 'done-2', 'main')
+  await refresh()
+  await clickSel('#side [title="Clean up merged and gone branches"]')
+  await until(() => page.evaluate(() => document.querySelector('.overlay .dialog')?.textContent.includes('done-1')), 'clean-up list')
+  await clickText('.overlay .btn', 'Delete selected')
+  await until(() => !g('branch', '--list', 'done-1', 'done-2'), 'branches deleted')
+})
+
+await step('undo takes back the last commit and keeps its changes', async () => {
+  write('undo.txt', 'u\n'); g('add', '.'); g('commit', '-qm', 'Commit to undo')
+  const before = g('rev-parse', 'HEAD~1')
+  await refresh()
+  await clickSel('[title^="Undo the last action"]')
+  await dialogOpen()
+  const t = await page.$eval('.overlay .dialog', (d) => d.textContent)
+  if (!t.includes('Commit to undo')) throw new Error('undo dialog: ' + t.slice(0, 120))
+  await submitDialog()
+  await until(() => g('rev-parse', 'HEAD') === before, 'HEAD moved back')
+  if (!g('status', '--porcelain').includes('undo.txt')) throw new Error('the undone commit lost its changes')
+  g('reset', '-q', '--hard'); g('clean', '-fdq')
+})
+
+await step('resolves a merge conflict block by block', async () => {
+  g('switch', '-q', '-c', 'conf-a'); write('c.txt', 'top\nA side\nbottom\n'); g('add', '.'); g('commit', '-qm', 'A')
+  g('switch', '-q', 'main'); g('switch', '-q', '-c', 'conf-b'); write('c.txt', 'top\nB side\nbottom\n'); g('add', '.'); g('commit', '-qm', 'B')
+  try { g('merge', 'conf-a') } catch {}
+  await refresh()
+  await tab('Commit')
+  await clickText('.changes-list .item', 'c.txt')
+  await until(() => page.$('.resolver .res-block'), 'resolver opens')
+  await clickText('.res-block .btn', 'Use both')
+  await shot('10-resolver')
+  await clickText('.sheet .btn.primary', 'Save & mark resolved')
+  await until(() => !g('diff', '--name-only', '--diff-filter=U'), 'no conflicts left')
+  const out = readFileSync(path.join(repo, 'c.txt'), 'utf8')
+  if (!out.includes('B side') || !out.includes('A side') || out.includes('<<<<<<<')) throw new Error('resolved file: ' + out)
+  g('commit', '-qm', 'merge resolved', '--no-edit')
+})
+
 await step('no stray "false", "null" or "[object" text anywhere', async () => {
   const bad = await page.evaluate(() => {
     const out = []

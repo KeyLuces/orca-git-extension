@@ -486,3 +486,47 @@ html.light .ref.current > span:first-child { background: color-mix(in srgb, var(
 .pill.verdict-changes { background: color-mix(in srgb, var(--del) 18%, transparent); color: var(--del); }
 .pill.verdict-comment { background: color-mix(in srgb, var(--ren) 18%, transparent); color: var(--ren); }
 .pill:empty { display: none; }
+
+/* ---------- CI badge ---------- */
+.ci { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 8px; border-radius: 999px; border: 0; font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.ci-passed { background: color-mix(in srgb, var(--add) 18%, transparent); color: var(--add); }
+.ci-failed { background: color-mix(in srgb, var(--del) 20%, transparent); color: var(--del); }
+.ci-running { background: color-mix(in srgb, var(--mod) 18%, transparent); color: var(--mod); }
+.ci-running svg { animation: spin 1.4s linear infinite; }
+.ci-canceled { background: var(--card-hi); color: var(--t2); }
+span.ci { cursor: default; height: 17px; padding: 0 7px; font-size: 10.5px; }
+
+/* ---------- Commit tab: files left, diff right ---------- */
+.changes-split { display: grid; grid-template-columns: minmax(320px, 420px) minmax(0, 1fr); align-items: start; padding: 0; min-height: 100%; }
+.changes-split > .changes-list { border-right: 1px solid var(--line); min-height: 100%; padding-bottom: 20px; }
+.changes-split .commit-box { max-width: none; }
+.diff-pane { position: sticky; top: 0; height: calc(100vh - 120px); display: flex; flex-direction: column; min-width: 0; }
+.diff-pane > .empty { margin: auto; }
+.diff-pane .sheet-body { flex: 1; overflow: auto; }
+.item.sel { background: var(--sel); }
+.item.sel .file-name { color: var(--fg); font-weight: 600; }
+@media (max-width: 900px) { .changes-split { grid-template-columns: 1fr; } .diff-pane { position: static; height: auto; } }
+
+/* ---------- branch clean-up ---------- */
+.cleanup-list { display: flex; flex-direction: column; gap: 2px; max-height: 46vh; overflow: auto; padding: 4px; border-radius: var(--radius); border: 1px solid var(--line); background: var(--raised); }
+.cleanup-row { display: flex; padding: 5px 6px; border-radius: var(--r-xs); color: var(--t1); }
+.cleanup-row:hover { background: var(--hover); }
+
+/* ---------- conflict resolver ---------- */
+.resolver { display: flex; flex-direction: column; gap: 12px; padding: 14px; }
+.res-block { border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; background: var(--card); }
+.res-block.done { border-color: color-mix(in srgb, var(--add) 45%, var(--line)); }
+.res-head { display: flex; align-items: center; gap: 8px; padding: 7px 10px; background: var(--raised); border-bottom: 1px solid var(--line); }
+.res-actions { display: flex; gap: 6px; }
+.res-sides { display: grid; grid-template-columns: 1fr 1fr; }
+.res-sides > div + div { border-left: 1px solid var(--line); }
+.res-label { padding: 4px 10px; font-size: 10.5px; font-weight: 650; text-transform: uppercase; letter-spacing: .04em; color: var(--t3); }
+.res-code { margin: 0; padding: 6px 10px 10px; font: 11.5px/1.55 var(--mono); white-space: pre; overflow: auto; max-height: 280px; }
+.res-code.ours { background: color-mix(in srgb, var(--ren) 7%, transparent); }
+.res-code.theirs { background: color-mix(in srgb, var(--info) 7%, transparent); }
+
+/* ---------- review diff ---------- */
+.wide-sheet { width: min(980px, 78%); }
+.review-diff .file-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 6px; padding: 6px 12px; margin-top: 10px; background: var(--card); border-block: 1px solid var(--line); font-family: system-ui, sans-serif; font-weight: 600; }
+.review-diff .commentable { cursor: pointer; }
+.review-diff .commentable:hover { outline: 1px solid color-mix(in srgb, var(--ren) 55%, transparent); outline-offset: -1px; }
