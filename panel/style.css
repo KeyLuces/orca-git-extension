@@ -793,3 +793,29 @@ span.ci { cursor: default; height: 17px; padding: 0 7px; font-size: 10.5px; }
 .ai-dots i:nth-child(3) { animation-delay: .3s; }
 @keyframes aiDot { 0%, 80%, 100% { opacity: .25; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-3px); } }
 @media (prefers-reduced-motion: reduce) { .ai-skel span, .ai-dots i { animation: none; } }
+
+/* Pipelines: room around everything */
+.pipes .history-bar { padding: 10px 16px; border-bottom: 1px solid var(--line); }
+.pipe-list { padding: 8px 12px 16px; }
+.pipe-stages { padding: 16px; gap: 16px; }
+.pipes > .empty { padding: 40px 24px; }
+.pipe-log { padding: 8px 4px 20px; }
+.pipe-note { padding: 8px 16px; }
+
+/* Identity profiles */
+.idp-section { padding: 0 0 4px; }
+.idp-now { padding: 2px 16px 10px; font-size: 12px; line-height: 1.6; }
+.idp-now b { color: var(--fg); font-weight: 600; }
+.idp-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 10px; padding: 0 16px 8px; }
+.idp { display: flex; align-items: center; gap: 12px; padding: 12px; border-radius: var(--radius); border: 1px solid var(--line); background: var(--card); }
+.idp.on { border-color: color-mix(in srgb, var(--add) 55%, var(--line)); }
+.idp-av { flex: none; width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; background: color-mix(in srgb, var(--ren) 25%, var(--card-hi)); }
+.idp-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.idp-title { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.idp-mail { font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.idp-actions { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
+.pill.idp-global { background: color-mix(in srgb, var(--ren) 18%, transparent); color: var(--ren); }
+.pill.idp-local { background: color-mix(in srgb, var(--mod) 18%, transparent); color: var(--mod); }
+.pill.idp-use { display: inline-flex; gap: 3px; align-items: center; background: color-mix(in srgb, var(--add) 18%, transparent); color: var(--add); }
+.idp-empty { padding: 4px 16px 12px; font-size: 12px; }
+@media (max-width: 620px) { .idp { flex-wrap: wrap; } .idp-actions { width: 100%; justify-content: flex-start; } }

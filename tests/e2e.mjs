@@ -692,11 +692,37 @@ await step('resolves a merge conflict block by block', async () => {
   g('commit', '-qm', 'merge resolved', '--no-edit')
 })
 
+await step('identity profiles: save once, use for this repo or set global with one click', async () => {
+  await tab('Settings')
+  await until(() => exists('.idp-section'), 'profiles section')
+  await page.click('.idp-section [title="New profile"]')
+  await until(() => exists('.overlay .dialog'), 'new profile dialog')
+  const fill = async (label, value) => {
+    const i = await page.evaluateHandle((l) => [...document.querySelectorAll('.overlay .field')].find((f) => f.querySelector('label')?.textContent.includes(l))?.querySelector('input'), label)
+    await i.click({ clickCount: 3 })
+    await i.type(value)
+  }
+  await fill('Profile name', 'Work')
+  await fill('Name (user.name)', 'Work Person')
+  await fill('Email (user.email)', 'work@company.test')
+  await submitDialog()
+  await until(() => page.$$eval('.idp', (c) => c.some((x) => x.textContent.includes('Work') && x.textContent.includes('work@company.test'))), 'Work profile listed')
+  const clickIn = (btn) => page.evaluate((b) => [...[...document.querySelectorAll('.idp')].find((x) => x.textContent.includes('work@company.test')).querySelectorAll('button')].find((x) => x.textContent === b).click(), btn)
+  await clickIn('Use for this repo')
+  await until(() => g('config', '--local', 'user.email') === 'work@company.test', 'repo email set')
+  if (g('config', '--local', 'user.name') !== 'Work Person') throw new Error('repo name not set')
+  await until(() => page.$$eval('.idp', (c) => c.some((x) => x.textContent.includes('work@company.test') && x.textContent.includes('This repo'))), 'marked "This repo"')
+  await clickIn('Set global')
+  await until(() => readFileSync(GLOBAL_CFG, 'utf8').includes('work@company.test'), 'global email set (test config only)')
+  await shot('13-identity-profiles')
+  g('config', '--local', '--unset', 'user.email'); g('config', '--local', '--unset', 'user.name')
+})
+
 await step('no stray "false", "null" or "[object" text anywhere', async () => {
   const bad = await page.evaluate(() => {
     const out = []
     const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT)
-    while (w.nextNode()) if (/^(false|null|undefined|\[object [A-Za-z]+\])$/.test(w.currentNode.textContent.trim())) out.push(w.currentNode.parentElement.className + ': ' + w.currentNode.textContent)
+    while (w.nextNode()) if (!w.currentNode.parentElement.closest('.cfg-val, .cfg-row, input, textarea') && /^(false|null|undefined|\[object [A-Za-z]+\])$/.test(w.currentNode.textContent.trim())) out.push(w.currentNode.parentElement.className + ': ' + w.currentNode.textContent)
     return out
   })
   if (bad.length) throw new Error(bad.join('; '))

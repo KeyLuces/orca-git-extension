@@ -1232,7 +1232,10 @@ async function jobLog(repo, { id }) {
   const apiPath = w.kind === 'github' ? `/repos/${w.path}/actions/jobs/${id}/logs` : `/projects/${projectPath(w.path)}/jobs/${id}/trace`
   let text
   if (via === 'cli') {
-    const r = await runProc(w.kind === 'github' ? 'gh' : 'glab', ['api', '--hostname', w.host, apiPath.slice(1)], { cwd: repo, timeout: 60_000 })
+    // logs are full of colour codes, which gh refuses to print unless told to (older gh lacks the flag)
+    const base = ['api', '--hostname', w.host, apiPath.slice(1)]
+    let r = await runProc(w.kind === 'github' ? 'gh' : 'glab', w.kind === 'github' ? [...base, '--allow-escape-sequences'] : base, { cwd: repo, timeout: 60_000 })
+    if (r.code !== 0 && w.kind === 'github' && /unknown flag/i.test(r.stderr)) r = await runProc('gh', base, { cwd: repo, timeout: 60_000 })
     if (r.code !== 0) throw new GitError((r.stderr || r.stdout).trim().split('\n').slice(-3).join('\n') || 'could not read the job log')
     text = r.stdout
   } else text = await forgeApi(w, 'GET', apiPath, { raw: true, accept: 'text/plain', cwd: repo })

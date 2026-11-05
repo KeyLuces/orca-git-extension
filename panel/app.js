@@ -2931,6 +2931,111 @@ const COMMON = [
   { key: 'http.postBuffer', label: 'Upload buffer (bytes, for large pushes)', placeholder: '524288000' }
 ]
 
+/**
+ * Saved identities (name + email, optionally a signing key): pick one for this repository or make
+ * it the global one, instead of typing them again. Kept in the plugin's own storage.
+ */
+const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
+async function identityProfiles() {
+  const [g, l] = await Promise.all([call('configList', { scope: 'global' }).catch(() => []), state.repo ? call('configList', { scope: 'local' }).catch(() => []) : []])
+  const get = (list, k) => list.find((e) => e.key.toLowerCase() === k)?.value || ''
+  const cur = {
+    global: { name: get(g, 'user.name'), email: get(g, 'user.email') },
+    local: { name: get(l, 'user.name'), email: get(l, 'user.email') }
+  }
+  let list = store.get('identityProfiles', [])
+  // first run: offer what is set already as profiles
+  if (!list.length) {
+    for (const c of [cur.global, cur.local]) if (c.name && c.email && !list.some((p) => p.email === c.email && p.name === c.name)) list.push({ id: newId(), label: '', ...c })
+    if (list.length) store.set('identityProfiles', list)
+  }
+  const save = (next) => (store.set('identityProfiles', next), renderView({ force: true }))
+  const same = (p, c) => p.name === c.name && p.email === c.email
+  const effective = cur.local.name || cur.local.email ? cur.local : cur.global
+
+  async function apply(p, scope) {
+    setBusy(1)
+    try {
+      await call('configSet', { scope, key: 'user.name', value: p.name })
+      await call('configSet', { scope, key: 'user.email', value: p.email })
+      if (p.signingKey) await call('configSet', { scope, key: 'user.signingkey', value: p.signingKey })
+      toast(scope === 'global' ? `${p.label || p.name} is now your global identity` : `This repository now commits as ${p.label || p.name}`)
+    } catch (e) {
+      toast(e.message, 'error')
+    } finally {
+      setBusy(-1)
+      renderView({ force: true })
+    }
+  }
+  async function useGlobalHere() {
+    setBusy(1)
+    try {
+      await call('configUnset', { scope: 'local', key: 'user.name' }).catch(() => {})
+      await call('configUnset', { scope: 'local', key: 'user.email' }).catch(() => {})
+      toast('This repository uses the global identity again')
+    } finally {
+      setBusy(-1)
+      renderView({ force: true })
+    }
+  }
+  async function edit(p) {
+    const r = await dialog({
+      title: p ? 'Edit profile' : 'New profile',
+      fields: [
+        { key: 'label', label: 'Profile name (optional)', value: p?.label || '', placeholder: 'Work, Personal, Client…' },
+        { key: 'name', label: 'Name (user.name)', value: p?.name || '' },
+        { key: 'email', label: 'Email (user.email)', value: p?.email || '' },
+        { key: 'signingKey', label: 'Signing key (optional, user.signingkey)', value: p?.signingKey || '' }
+      ],
+      ok: 'Save'
+    })
+    if (!r) return
+    if (!r.name.trim() || !/^[^\s@]+@[^\s@]+$/.test(r.email.trim())) return toast('A name and a valid email are needed', 'error')
+    const item = { id: p?.id || newId(), label: r.label.trim(), name: r.name.trim(), email: r.email.trim(), signingKey: r.signingKey.trim() || undefined }
+    save(p ? list.map((x) => (x.id === p.id ? item : x)) : [...list, item])
+  }
+
+  const card = (p) => {
+    const isGlobal = same(p, cur.global)
+    const isLocal = same(p, cur.local)
+    const inUse = same(p, effective)
+    return h(
+      'div',
+      { class: `idp ${inUse ? 'on' : ''}` },
+      h('span', { class: 'idp-av' }, (p.label || p.name || '?')[0].toUpperCase()),
+      h(
+        'div',
+        { class: 'idp-main' },
+        h('div', { class: 'idp-title' }, h('b', null, p.label || p.name), p.label && h('span', { class: 'dim' }, p.name), isGlobal && h('span', { class: 'pill idp-global' }, 'Global'), isLocal && h('span', { class: 'pill idp-local' }, 'This repo'), inUse && state.repo && h('span', { class: 'pill idp-use' }, icon('check', 10), 'Commits use this')),
+        h('div', { class: 'dim mono idp-mail' }, p.email)
+      ),
+      h(
+        'div',
+        { class: 'idp-actions' },
+        state.repo && !isLocal && h('button', { class: 'btn sm', title: 'Commit as this identity in this repository only', onClick: () => apply(p, 'local') }, 'Use for this repo'),
+        !isGlobal && h('button', { class: 'btn sm', title: 'Make this the identity for every repository', onClick: () => apply(p, 'global') }, 'Set global'),
+        iconBtn('edit', 'Edit profile', () => edit(p)),
+        iconBtn('trash', 'Delete profile (Git settings stay as they are)', async () => (await confirmBox(`Delete profile ${p.label || p.name}?`, 'Only the saved profile is removed; your Git settings stay as they are.', 'Delete', true)) && save(list.filter((x) => x.id !== p.id)))
+      )
+    )
+  }
+  return h(
+    'div',
+    { class: 'idp-section' },
+    h('div', { class: 'section-head' }, 'Identity profiles', h('span', { class: 'count' }, list.length), h('div', { class: 'actions' }, iconBtn('plus', 'New profile', () => edit(null)))),
+    h(
+      'div',
+      { class: 'idp-now dim' },
+      state.repo
+        ? cur.local.name || cur.local.email
+          ? ['This repository commits as ', h('b', null, `${cur.local.name} <${cur.local.email}>`), ' (its own setting). ', h('button', { class: 'link-btn', onClick: useGlobalHere }, 'Use the global identity instead')]
+          : ['This repository uses the global identity ', h('b', null, cur.global.name ? `${cur.global.name} <${cur.global.email}>` : '(not set)'), '.']
+        : ['Global identity: ', h('b', null, cur.global.name ? `${cur.global.name} <${cur.global.email}>` : '(not set)')]
+    ),
+    list.length ? h('div', { class: 'idp-list' }, list.map(card)) : h('div', { class: 'dim idp-empty' }, 'No profiles yet. Add one with +, then switch with one click.')
+  )
+}
+
 async function viewSettings() {
   const scope = state.configScope
   const [entries, globals] = await Promise.all([
@@ -2967,6 +3072,8 @@ async function viewSettings() {
       scope === 'global' ? 'Applies to every repository for your user (~/.gitconfig).' : 'Applies only to this repository (.git/config) and overrides global values.'
     )
   )
+
+  root.append(await identityProfiles())
 
   // identity + common options
   if (scope !== 'global') root.append(h('div', { class: 'dim', style: { padding: '6px 16px 0', fontSize: '11.5px' } }, 'Empty fields use the global value shown in grey.'))
@@ -4450,13 +4557,24 @@ async function openPipelines({ branch, sha, openId } = {}) {
       return append(clear(body), [h('div', { class: 'empty' }, icon('alert', 28), h('div', null, e.message))])
     }
     if (!alive()) return
-    const act = async (action, label, extra = {}) => {
+    // every action shows it is working on its own button, then reloads the pipeline
+    const act = async (action, label, extra = {}, btn) => {
+      const was = btn ? [...btn.childNodes] : null
+      if (btn) {
+        btn.disabled = true
+        append(clear(btn), [h('span', { class: 'spinner' }), 'Sending…'])
+      }
       try {
         await call('pipelineAct', { id: p.id, action, ...extra })
-        toast(label)
-        later(() => showPipeline(p, data), 1500)
+        toast(`${label}. The pipeline updates here as it runs.`)
+        p = { ...p, state: action === 'cancel' ? 'canceled' : 'pending' }
+        later(() => showPipeline(p, data), 1200)
       } catch (e) {
         toast(e.message, 'error')
+        if (btn) {
+          btn.disabled = false
+          append(clear(btn), was)
+        }
       }
     }
     const running = p.state === 'running' || p.state === 'pending'
@@ -4471,9 +4589,9 @@ async function openPipelines({ branch, sha, openId } = {}) {
         h('b', null, p.name),
         h('span', { class: 'dim' }, [p.sha?.slice(0, 7), dur(p.duration)].filter(Boolean).join(' · ')),
         h('span', { class: 'grow' }),
-        failed.length > 0 && h('button', { class: 'btn sm', onClick: () => act('retryFailed', 'Retrying the failed jobs') }, icon('refresh', 12), 'Retry failed'),
-        !running && h('button', { class: 'btn sm', onClick: () => act('retry', 'Pipeline restarted') }, icon('refresh', 12), 'Retry all'),
-        running && h('button', { class: 'btn sm danger', onClick: () => act('cancel', 'Pipeline canceled') }, icon('x', 12), 'Cancel'),
+        failed.length > 0 && h('button', { class: 'btn sm', onClick: (e) => act('retryFailed', 'Retrying the failed jobs', {}, e.currentTarget) }, icon('refresh', 12), 'Retry failed'),
+        !running && h('button', { class: 'btn sm', onClick: (e) => act('retry', 'Pipeline restarted', {}, e.currentTarget) }, icon('refresh', 12), 'Retry all'),
+        running && h('button', { class: 'btn sm danger', onClick: async (e) => (await confirmBox(`Cancel pipeline ${p.name}?`, 'Running jobs are stopped.', 'Cancel pipeline', true)) && act('cancel', 'Pipeline canceled', {}, e.currentTarget) }, icon('x', 12), 'Cancel'),
         h('button', { class: 'btn sm', onClick: () => openLink(p.url) }, icon('open', 12), 'Open')
       ),
       h(
@@ -4493,7 +4611,7 @@ async function openPipelines({ branch, sha, openId } = {}) {
                   h('span', { class: `ci ci-${j.state} pipe-dot`, title: PIPE_LABEL[j.state] || j.state }, ciIcon(j.state)),
                   h('span', { class: 'pipe-job-name' }, j.name, j.allowFailure && h('span', { class: 'dim' }, ' (allowed to fail)')),
                   h('span', { class: 'dim mono' }, dur(j.duration)),
-                  j.state === 'failed' && h('button', { class: 'icon-btn', title: 'Retry this job', onClick: (e) => (e.stopPropagation(), act('retryJob', `Retrying ${j.name}`, { job: j.id })) }, icon('refresh', 12))
+                  j.state === 'failed' && h('button', { class: 'icon-btn', title: 'Retry this job', onClick: (e) => (e.stopPropagation(), act('retryJob', `Retrying ${j.name}`, { job: j.id }, e.currentTarget)) }, icon('refresh', 12))
                 )
               )
           )
