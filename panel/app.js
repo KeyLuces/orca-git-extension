@@ -2593,7 +2593,7 @@ async function viewStash() {
   root.append(
     h(
       'div',
-      { class: 'form' },
+      { class: 'form stash-form' },
       msg,
       h('div', { class: 'row', style: { gap: '12px' } }, h('label', { class: 'check' }, untracked, 'Include untracked'), h('label', { class: 'check' }, keepIndex, 'Keep staged')),
       h(

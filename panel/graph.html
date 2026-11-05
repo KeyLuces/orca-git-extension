@@ -701,6 +701,13 @@ span.ci { cursor: default; height: 17px; padding: 0 7px; font-size: 10.5px; }
 .menu button.mr-item:hover { background: color-mix(in srgb, var(--info) 14%, transparent); }
 .menu-badge { flex: none; padding: 1px 6px; border-radius: 999px; font-size: 10px; font-weight: 650; letter-spacing: .03em; color: var(--info); background: color-mix(in srgb, var(--info) 16%, transparent); border: 1px solid color-mix(in srgb, var(--info) 35%, transparent); }
 
+/* full width: the stash form, worktree cards and search bars use the whole tab */
+.form.stash-form { display: flex; flex-direction: column; align-items: stretch; gap: 10px; max-width: none; padding: 12px 16px 6px; }
+.form.stash-form > input { width: 100%; }
+.form.stash-form > .btn { width: 100%; }
+.card { max-width: none; }
+.history-bar { max-width: none; }
+
 </style>
   </head>
   <body class="wide">
@@ -3321,7 +3328,7 @@ async function viewStash() {
   root.append(
     h(
       'div',
-      { class: 'form' },
+      { class: 'form stash-form' },
       msg,
       h('div', { class: 'row', style: { gap: '12px' } }, h('label', { class: 'check' }, untracked, 'Include untracked'), h('label', { class: 'check' }, keepIndex, 'Keep staged')),
       h(
