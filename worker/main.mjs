@@ -1,7 +1,7 @@
 // Git Control worker: runs git for the panel. No dependencies, plain Node.
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, readFileSync, writeFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -942,31 +942,55 @@ async function viaFor(where, cwd, prefer) {
  * branches, "Closes #12" for a branch named after an issue, and the repo's default merge
  * request / pull request template added when it has one.
  */
-async function mrDefaults(repo, branch, commits, kind) {
+async function mrDefaults(repo, branch, commits, kind, { targetRef, where } = {}) {
   const draft = /^(draft|wip)[/_-]/i.test(branch)
   const issue = branch.replace(/^[^/]+\//, '').match(/^(\d+)[-_]/)?.[1]
   const readable = branch.replace(/^(draft|wip)[/_-]/i, '').replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim().replace(/^./, (c) => c.toUpperCase())
+  // As GitLab/GitHub do: one commit gives its subject and body; several give the branch name.
   const title = commits.length === 1 ? commits[0].subject : readable
   const parts = []
-  if (commits.length === 1) commits[0].body && parts.push(commits[0].body)
+  if (commits.length === 1) parts.push(commits[0].body || `- ${commits[0].subject}`)
   else if (commits.length) parts.push(commits.map((c) => `- ${c.subject}`).join('\n'))
   if (issue) parts.push(`Closes #${issue}`)
-  const top = (await paths(repo).catch(() => ({ toplevel: '' }))).toplevel
-  const candidates =
-    kind === 'github'
-      ? ['.github/pull_request_template.md', '.github/PULL_REQUEST_TEMPLATE.md', 'pull_request_template.md', 'docs/pull_request_template.md']
-      : ['.gitlab/merge_request_templates/Default.md', '.gitlab/merge_request_templates/default.md']
-  for (const c of candidates) {
-    const f = path.join(top, c)
-    if (top && existsSync(f)) {
-      const t = readFileSync(f, 'utf8').trim()
-      if (t) {
-        parts.push(t)
-        break
-      }
+  const template = await mrTemplate(repo, kind, { targetRef, where }).catch(() => '')
+  if (template) parts.push(template)
+  return { title, body: parts.join('\n\n'), draft }
+}
+
+/**
+ * The description template the service would use: the project's own default (GitLab setting), else
+ * the Default template file on the target branch (as the service reads it), else in the working tree.
+ */
+async function mrTemplate(repo, kind, { targetRef, where } = {}) {
+  if (kind !== 'github' && where) {
+    const via = await viaFor(where, repo).catch(() => null)
+    if (via) {
+      const proj = await forgeCall(where, via, 'GET', `/projects/${projectPath(where.path)}`, null, repo).catch(() => null)
+      if (proj?.merge_requests_template?.trim()) return proj.merge_requests_template.trim()
     }
   }
-  return { title, body: parts.join('\n\n'), draft }
+  const dirs = kind === 'github' ? ['.github', '', 'docs'] : ['.gitlab/merge_request_templates']
+  const want = kind === 'github' ? /^pull_request_template\.md$/i : /^default\.md$/i
+  const readFrom = async (ref) => {
+    for (const d of dirs) {
+      const names = (await git(repo, ['ls-tree', '--name-only', `${ref}:${d}`], { okCodes: [0, 128] }).catch(() => '')).split('\n').filter(Boolean)
+      const hit = names.find((n) => want.test(n))
+      if (hit) return (await git(repo, ['show', `${ref}:${d ? d + '/' : ''}${hit}`]).catch(() => '')).trim()
+    }
+    return ''
+  }
+  if (targetRef) {
+    const t = await readFrom(targetRef)
+    if (t) return t
+  }
+  const top = (await paths(repo).catch(() => ({ toplevel: '' }))).toplevel
+  for (const d of dirs) {
+    const dir = path.join(top, d)
+    if (!top || !existsSync(dir)) continue
+    const hit = readdirSync(dir).find((n) => want.test(n))
+    if (hit) return readFileSync(path.join(dir, hit), 'utf8').trim()
+  }
+  return ''
 }
 
 const escRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -1001,7 +1025,7 @@ async function mrInfo(repo, target, source) {
       return { subject: subject.trim(), body: body.trim() }
     })
   const commits = full.map((c) => c.subject)
-  const defaults = await mrDefaults(repo, branch, full, where.kind)
+  const defaults = await mrDefaults(repo, branch, full, where.kind, { targetRef, where })
   const ahead = upstream ? +(await git(repo, ['rev-list', '--count', `${upstream}..${sourceRef}`]).catch(() => '0')).trim() : null
   // commits the other way round (target has, source lacks): the person likely meant the reverse
   const reverse = +(await git(repo, ['rev-list', '--count', `${sourceRef}..${targetRef}`], { okCodes: [0, 128] }).catch(() => '0')).trim() || 0

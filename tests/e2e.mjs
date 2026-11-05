@@ -423,7 +423,7 @@ const apiServer = http.createServer((req, res) => {
     if (req.method === 'POST' && /\/pulls$/.test(u.pathname)) return send(201, { number: 9, html_url: 'https://github.example.test/team/app/pull/9' })
     if (u.pathname.endsWith('/user')) return send(200, { username: 'me', login: 'me', id: 1, name: 'Me Myself' })
     if (u.pathname.endsWith('/members/all')) return send(200, [{ id: 1, username: 'me', name: 'Me Myself' }, { id: 2, username: 'dev1', name: 'Dev One' }, { id: 3, username: 'qa', name: 'Quality Person' }])
-    if (u.pathname === '/api/v4/projects/team%2Fapp') return send(200, { remove_source_branch_after_merge: true, squash_option: 'default_on' })
+    if (u.pathname === '/api/v4/projects/team%2Fapp') return send(200, { remove_source_branch_after_merge: true, squash_option: 'default_on', merge_requests_template: '## What does this MR do?' })
     if (u.pathname.endsWith('/assignees') && req.method === 'GET') return send(200, [{ id: 1, login: 'me' }, { id: 2, login: 'dev1' }])
     if (req.method === 'POST' && /\/(assignees|requested_reviewers)$/.test(u.pathname)) return send(201, {})
     if (req.method === 'GET' && /merge_requests$/.test(u.pathname)) {
@@ -483,6 +483,7 @@ await step('merge request (GitLab): Create now uses the saved Git login, no glab
   const post = api.calls.find((c) => c.method === 'POST')
   if (JSON.stringify(post?.body.assignee_ids) !== '[1]' || JSON.stringify(post?.body.reviewer_ids) !== '[2]') throw new Error('people ' + JSON.stringify(post?.body))
   if (post.body.remove_source_branch !== true || post.body.squash !== true) throw new Error('options ' + JSON.stringify(post.body))
+  if (!post.body.description.includes('- Add GitLab change') || !post.body.description.includes('## What does this MR do?')) throw new Error('default description ' + JSON.stringify(post.body.description))
   if (!post || post.path !== '/api/v4/projects/team%2Fapp/merge_requests') throw new Error('POST went to ' + post?.path)
   if (!/TESTTOKEN/.test(post.auth)) throw new Error('no token sent')
   if (post.body.source_branch !== 'mr-gl' || post.body.target_branch !== 'main' || post.body.title !== 'Add GitLab change') throw new Error('body ' + JSON.stringify(post.body))
