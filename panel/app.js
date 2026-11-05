@@ -1672,6 +1672,8 @@ function commitMenu(anchor, c) {
       ]
     },
     { label: 'Create branch here…', icon: 'plus', onClick: () => newBranch(c.hash) },
+    { label: 'Create tag here…', icon: 'tag', onClick: () => newTag(c.hash) },
+    { label: 'New worktree here…', icon: 'worktree', onClick: () => addWorktree({ base: c.hash }) },
     '-',
     !isHead && { label: `Merge into ${cur}…`, icon: 'merge', onClick: () => mergeRef(local[0] || c.hash) },
     !isHead && { label: `Rebase ${cur} onto this…`, icon: 'merge', onClick: () => rebaseOnto(local[0] || c.hash) },
@@ -1691,14 +1693,26 @@ function commitMenu(anchor, c) {
     branchItems.length && '-',
     branchItems.length === 1 ? branchItems[0] : branchItems.length && { label: 'Branches and tags here', icon: 'branch', items: branchItems },
     '-',
-    { label: 'Copy hash', icon: 'copy', hint: short, onClick: () => copy(c.hash) },
+    { label: 'Compare with HEAD', icon: 'compare', onClick: () => compareSheet(c.hash, 'HEAD') },
+    isMerge && { label: 'Compare with first parent', icon: 'compare', onClick: () => compareSheet(c.parents[0], c.hash) },
+    {
+      label: 'Copy',
+      icon: 'copy',
+      items: [
+        { label: 'Full hash', icon: 'copy', hint: short, onClick: () => copy(c.hash) },
+        { label: 'Short hash', icon: 'copy', onClick: () => copy(short) },
+        { label: 'Message', icon: 'copy', onClick: () => copy(c.message || c.subject || '') },
+        { label: 'Subject', icon: 'copy', onClick: () => copy((c.subject || c.message || '').split('\n')[0]) },
+        c.author && { label: 'Author', icon: 'copy', onClick: () => copy(c.email ? `${c.author} <${c.email}>` : c.author) },
+        date && { label: 'Date', icon: 'copy', onClick: () => copy(date) },
+        ...branches.map((b) => ({ label: `Branch name ${b}`, icon: 'copy', onClick: () => copy(b) })),
+        ...tags.map((t) => ({ label: `Tag name ${t}`, icon: 'copy', onClick: () => copy(t) }))
+      ]
+    },
     {
       label: 'More',
       icon: 'more',
       items: [
-        { label: 'Create tag here…', icon: 'tag', onClick: () => newTag(c.hash) },
-        { label: 'New worktree here…', icon: 'worktree', onClick: () => addWorktree({ base: c.hash }) },
-        '-',
         !isHead && { label: 'Interactive rebase from here…', icon: 'layers', onClick: () => interactiveRebase(c.hash) },
         isHead && { label: 'Reword message…', icon: 'edit', onClick: () => rewordLast(c) },
         !isHead && { label: 'Squash later commits into one…', icon: 'layers', onClick: () => squashSince(c.hash) },
@@ -1706,8 +1720,6 @@ function commitMenu(anchor, c) {
         !isHead && { label: 'Cherry-pick without committing', icon: 'commit', onClick: () => run('cherryPick', { hash: c.hash, mainline: isMerge, noCommit: true }, { success: 'Changes applied; review and commit' }) },
         { label: 'Revert without committing', icon: 'undo', onClick: () => run('revert', { hash: c.hash, mainline: isMerge, noCommit: true }, { success: 'Undo applied; review and commit' }) },
         '-',
-        { label: 'Compare with HEAD', icon: 'compare', onClick: () => compareSheet(c.hash, 'HEAD') },
-        isMerge && { label: 'Compare with first parent', icon: 'compare', onClick: () => compareSheet(c.parents[0], c.hash) },
         { label: 'Browse files at this commit', icon: 'folder', onClick: () => treeSheet(c.hash) },
         { label: 'Save as patch…', icon: 'download', onClick: () => savePatch(c) },
         bis
@@ -1717,10 +1729,7 @@ function commitMenu(anchor, c) {
               { label: 'Skip', icon: 'right', onClick: () => run('bisect', { action: 'skip', rev: c.hash }, { success: 'Skipped' }) },
               { label: 'Stop bisect', icon: 'x', onClick: () => run('bisect', { action: 'reset' }, { success: 'Bisect stopped' }) }
             ] }
-          : { label: 'Start bisect (this is good, HEAD is bad)', icon: 'search', onClick: () => startBisect(c.hash) },
-        '-',
-        { label: 'Copy message', icon: 'copy', onClick: () => copy(c.message || c.subject || '') },
-        c.author && { label: 'Copy author', icon: 'copy', onClick: () => copy(c.email ? `${c.author} <${c.email}>` : c.author) }
+          : { label: 'Start bisect (this is good, HEAD is bad)', icon: 'search', onClick: () => startBisect(c.hash) }
       ]
     }
   ])
