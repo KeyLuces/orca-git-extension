@@ -69,6 +69,8 @@ const ICONS = {
   compare: '<circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><path d="M11 18H8a2 2 0 0 1-2-2V9"/>',
   layers: '<path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/>',
   download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/>',
+  current: '<circle cx="12" cy="12" r="10" fill="currentColor" stroke="none"/><path d="m8 12.5 2.6 2.6L16.5 9" stroke="var(--ref-head-ink, #14161b)" stroke-width="2.6"/>',
+  link: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
   sparkle: '<path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/><path d="M20 3v4"/><path d="M22 5h-4"/>',
   expand: '<path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/>',
   edit: '<path d="M12 20h9"/><path d="M16.376 3.622a1 1 0 0 1 3.002 3.002L7.368 18.635a2 2 0 0 1-.855.506l-2.872.838a.5.5 0 0 1-.62-.62l.838-2.872a2 2 0 0 1 .506-.854z"/>'
@@ -1223,16 +1225,31 @@ function refPills(refs, lane) {
     }
     return el
   }
-  const push0 = out.push.bind(out)
-  out.push = (el) => push0(lanePill(el))
-  for (let r of refs) {
-    if (r.startsWith('HEAD -> ')) out.push(h('span', { class: 'ref head', title: `${r.slice(8)} (checked out)` }, icon('check', 10), h('span', { class: 'ref-t' }, r.slice(8))))
-    else if (r === 'HEAD') out.push(h('span', { class: 'ref head', title: 'HEAD (detached)' }, icon('commit', 10), h('span', { class: 'ref-t' }, 'HEAD')))
-    else if (r.startsWith('tag: ')) out.push(h('span', { class: 'ref tag', title: `Tag ${r.slice(5)}` }, icon('tag', 10), h('span', { class: 'ref-t' }, r.slice(5))))
-    else if (r.includes('/') && !state.localNames?.has(r)) out.push(h('span', { class: 'ref remote', title: `Remote branch ${r}` }, icon('globe', 10), h('span', { class: 'ref-t' }, r)))
-    else if (r.startsWith('refs/stash') || r === 'stash') out.push(h('span', { class: 'ref', title: 'Stash' }, icon('stash', 10), h('span', { class: 'ref-t' }, 'stash')))
-    else out.push(h('span', { class: 'ref', title: `Branch ${r}` }, icon('branch', 10), h('span', { class: 'ref-t' }, r)))
+  const pill = (cls, iconName, text, title) => lanePill(h('span', { class: `ref ${cls}`, title }, icon(iconName, 10), h('span', { class: 'ref-t' }, text)))
+
+  // What is checked out at this commit: a branch ("HEAD -> x") or the commit itself (detached "HEAD").
+  const headBranch = refs.find((r) => r.startsWith('HEAD -> '))?.slice(8) || null
+  const detached = refs.includes('HEAD')
+  const upstream = headBranch ? state.status?.upstream || null : null
+  const names = refs.filter((r) => r !== 'HEAD' && !r.startsWith('HEAD -> '))
+  if (headBranch) out.push(pill('head current', 'current', headBranch, `${headBranch} — checked out`))
+  let marked = false
+  for (const r of names) {
+    if (r.startsWith('tag: ')) out.push(pill('tag', 'tag', r.slice(5), `Tag ${r.slice(5)}`))
+    else if (r.startsWith('refs/stash') || r === 'stash') out.push(pill('', 'stash', 'stash', 'Stash'))
+    else if (r.includes('/') && !state.localNames?.has(r)) {
+      if (detached && !marked) {
+        // detached on a remote branch: that label is what is checked out
+        marked = true
+        out.push(pill('remote head current', 'current', r, `${r} — checked out (detached HEAD)`))
+      } else if (r === upstream) out.push(pill('remote tracking', 'link', r, `${r} — the remote branch ${headBranch} tracks, at the same commit`))
+      else out.push(pill('remote', 'globe', r, `Remote branch ${r}`))
+    } else if (detached && !marked) {
+      marked = true
+      out.push(pill('head current', 'current', r, `${r} — checked out (detached HEAD)`))
+    } else out.push(pill('', 'branch', r, `Branch ${r}`))
   }
+  if (detached && !marked) out.push(pill('head current', 'current', 'HEAD', 'Detached HEAD — checked out'))
   return out
 }
 
@@ -1265,6 +1282,24 @@ async function reloadHistoryQuietly() {
   } finally {
     reloadingHistory = false
   }
+}
+
+/** Scroll the graph to the checked-out commit, loading older pages until it is found. */
+async function goToHead() {
+  const H = state.history
+  const oid = state.status?.oid
+  if (!oid) return
+  if (state.tab !== 'history') setTab('history')
+  let row = document.querySelector(`.commit-row[data-hash="${oid}"]`)
+  for (let i = 0; !row && !H.done && i < 15; i++) {
+    await loadHistory(true)
+    await renderView()
+    row = document.querySelector(`.commit-row[data-hash="${oid}"]`)
+  }
+  if (!row) return toast('The checked-out commit is not in the loaded history (try All branches).', 'error')
+  row.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  row.classList.add('flash')
+  setTimeout(() => row.classList.remove('flash'), 1400)
 }
 
 /** Loads the next page when it scrolls into view (a button too, for keyboards). */
@@ -1345,7 +1380,8 @@ async function viewHistory() {
     H.done = false
     renderView()
   }
-  root.append(h('div', { class: 'history-bar' }, modeSel, search, seg))
+  const headBtn = h('button', { class: 'btn sm', title: 'Scroll to the checked-out commit', onClick: () => goToHead() }, icon('current', 12), 'HEAD')
+  root.append(h('div', { class: 'history-bar' }, modeSel, search, seg, headBtn))
 
   if (!H.commits.length) {
     root.append(h('div', { class: 'empty' }, icon('history', 28), h('div', null, H.search ? 'No matching commits' : 'No commits yet')))
@@ -1359,7 +1395,7 @@ async function viewHistory() {
   H.commits.forEach((c, i) => {
     const row = h(
         'div',
-        { class: `commit-row ${H.open === c.hash ? 'selected' : ''}`, onClick: () => toggleInline(c, row), onContextmenu: (e) => commitContextMenu(e, c) },
+        { class: `commit-row ${H.open === c.hash ? 'selected' : ''}`, 'data-hash': c.hash, onClick: () => toggleInline(c, row), onContextmenu: (e) => commitContextMenu(e, c) },
         rows ? graphSvg(rows[i], width, c.parents.length > 1, c.refs.some((r) => r === 'HEAD' || r.startsWith('HEAD -> '))) : h('span', { style: { width: '8px' } }),
         IN_TAB
           ? [
@@ -1751,6 +1787,8 @@ A branch can be checked out in only one worktree at a time.`,
     toast(`Local ${loc.name} and ${loc.remote} have diverged (${loc.ahead} ahead, ${loc.behind} behind). Merge or rebase when you are ready.`, 'ok', 8000)
   state.history.stale = true
   await refreshAll()
+  // show where you are now, even when that commit is far down the graph
+  if (state.tab === 'history') setTimeout(goToHead, 120)
 }
 async function checkoutCommit(hash) {
   if (!(await confirmBox('Checkout commit?', `HEAD will be detached at ${hash.slice(0, 7)}. Create a branch if you want to keep new commits.`, 'Checkout'))) return

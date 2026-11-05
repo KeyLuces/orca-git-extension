@@ -601,3 +601,19 @@ html.light .ref > span:first-child { background: var(--lane, var(--ren)); color:
 .ref > span:first-child, .ref.laned.remote > span:first-child, .ref.laned.head > span:first-child { background: var(--lane, var(--ren)); color: #14161b; }
 .ref.laned.head, .ref.head { background: color-mix(in srgb, var(--lane, var(--ren)) 26%, var(--bg)); box-shadow: inset 0 0 0 1.5px var(--lane, var(--ren)); }
 html.light .ref > span:first-child { color: #fff; }
+
+/* ---------- checked out vs everything else ---------- */
+.ref.current > span:first-child { --ref-head-ink: var(--lane, var(--ren)); }
+.ref.current > span:first-child svg { width: 12px; height: 12px; }
+.ref.current, .ref.laned.current, .ref.laned.remote.current {
+  font-weight: 700; color: var(--fg);
+  background: color-mix(in srgb, var(--lane, var(--ren)) 30%, var(--bg));
+  box-shadow: inset 0 0 0 1.5px var(--lane, var(--ren)), 0 0 0 3px color-mix(in srgb, var(--lane, var(--ren)) 22%, transparent);
+}
+.ref.current .ref-t { color: var(--fg) !important; }
+.ref.tracking, .ref.laned.tracking { background: transparent; box-shadow: none; outline: 1px dashed color-mix(in srgb, var(--lane, var(--ren)) 80%, var(--bg)); outline-offset: -1px; }
+.ref.tracking > span:first-child { background: color-mix(in srgb, var(--lane, var(--ren)) 45%, var(--bg)); color: var(--fg); }
+.commit-subject { gap: 6px; }
+.commit-row.flash { animation: flash 1.4s var(--ease); }
+@keyframes flash { 0%, 40% { background: color-mix(in srgb, var(--ren) 28%, transparent); } }
+.history-bar .btn.sm { height: 26px; }
