@@ -118,9 +118,28 @@ const ignoredGraphIn = new Set()
 async function request(name, input, timeoutMs = 30000) {
   if (!hasOrca) throw new Error('Open this panel inside Orca')
   input = JSON.parse(JSON.stringify(input ?? {})) // drop undefined values: Orca rejects them as invalid input
-  if (window.orca.plugin?.request) return window.orca.plugin.request(name, input, { timeoutMs })
-  const r = await window.orca.host.call('plugin.request', { name, input, timeoutMs })
-  return r.output
+  try {
+    if (window.orca.plugin?.request) return await window.orca.plugin.request(name, input, { timeoutMs })
+    const r = await window.orca.host.call('plugin.request', { name, input, timeoutMs })
+    return r.output
+  } catch (e) {
+    if (/changed or is no longer approved/i.test(e?.message || '')) pluginUpdated()
+    throw e
+  }
+}
+/** The plugin was updated (or needs approving again): this page is the old one. Offer to reload it. */
+let updateShown = false
+function pluginUpdated() {
+  if (updateShown) return
+  updateShown = true
+  const bar = h(
+    'div',
+    { class: 'update-bar' },
+    icon('refresh', 13),
+    h('span', { class: 'grow' }, 'Git Control was updated. Reload this tab to use the new version (approve it in Orca first if it asks).'),
+    h('button', { class: 'btn sm primary', onClick: () => location.reload() }, 'Reload')
+  )
+  document.body.prepend(bar)
 }
 const NET_OPS = new Set(['fetch', 'pull', 'push', 'remoteBranchDelete', 'tagPush', 'worktreeAdd', 'commit', 'pipelines', 'pipelineJobs', 'jobLog', 'pipelineAct'])
 const call = (op, args = {}) =>
@@ -3918,7 +3937,8 @@ function peoplePicker(placeholder, { me, meLabel = 'Assign to me' } = {}) {
     const q = input.value.trim().toLowerCase()
     return people.filter((p) => !chosen.some((c) => c.id === p.id) && (!q || p.username.toLowerCase().includes(q) || p.name.toLowerCase().includes(q))).slice(0, 30)
   }
-  const avatar = (p) => (p.avatar ? h('img', { class: 'pp-av', src: p.avatar, alt: '', referrerpolicy: 'no-referrer', onError: (e) => e.target.remove() }) : h('span', { class: 'pp-av pp-initial' }, (p.name || p.username)[0].toUpperCase()))
+  // plugin pages have no network, so avatar images cannot load: initials instead
+  const avatar = (p) => h('span', { class: 'pp-av pp-initial' }, (p.name || p.username || '?')[0].toUpperCase())
   function drawChips() {
     clear(chips)
     for (const c of chosen) chips.append(h('span', { class: 'pp-chip', title: `@${c.username}` }, avatar(c), h('span', null, c.name || c.username), h('button', { type: 'button', class: 'pp-x', title: `Remove ${c.username}`, onClick: () => remove(c) }, '×')))
