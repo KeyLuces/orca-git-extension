@@ -690,6 +690,11 @@ span.ci { cursor: default; height: 17px; padding: 0 7px; font-size: 10.5px; }
 .card .wt-path { padding: 2px 0 4px; }
 .card > .row:last-child { gap: 6px; flex-wrap: wrap; }
 
+/* Clean tree: the note sits under the composer, in the same column */
+.clean-note { max-width: 760px; padding: 40px 16px; }
+.commit-box:has(+ .clean-note) { border-bottom: 0; }
+.clean-note { border-top: 1px solid var(--line); margin: 0 16px; max-width: 728px; }
+
 </style>
   </head>
   <body class="wide">
@@ -1964,7 +1969,7 @@ async function viewChanges() {
   )
 
   if (!st.files.length) {
-    root.append(h('div', { class: 'empty' }, icon('check', 28), h('div', null, 'Working tree clean')))
+    root.append(h('div', { class: 'empty clean-note' }, icon('check', 28), h('div', null, 'Working tree clean'), h('div', { class: 'dim', style: { fontSize: '11.5px', marginTop: '4px' } }, 'Nothing to commit. Edits you make will show up here.')))
     return root
   }
 

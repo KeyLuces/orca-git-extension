@@ -1247,7 +1247,7 @@ async function viewChanges() {
   )
 
   if (!st.files.length) {
-    root.append(h('div', { class: 'empty' }, icon('check', 28), h('div', null, 'Working tree clean')))
+    root.append(h('div', { class: 'empty clean-note' }, icon('check', 28), h('div', null, 'Working tree clean'), h('div', { class: 'dim', style: { fontSize: '11.5px', marginTop: '4px' } }, 'Nothing to commit. Edits you make will show up here.')))
     return root
   }
 
