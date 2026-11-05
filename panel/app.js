@@ -1720,11 +1720,70 @@ async function copy(text) {
    Branches
    ========================================================================= */
 /**
+ * Check out origin/x when a local x already exists. Same commit: just switch. Only behind: switch
+ * and fast-forward, so you land on the remote's commit. Diverged or ahead: let the person choose.
+ */
+async function checkoutRemoteOverLocal(remote, local) {
+  let ab
+  try {
+    ab = await call('aheadBehind', { a: local, b: remote }) // ahead = only in local, behind = only in remote
+  } catch (e) {
+    return toast(e.message, 'error')
+  }
+  const afterSwitch = async (fn) => {
+    const ok = await checkout(local, { resolved: true, quietJump: true })
+    if (ok !== true) return // the switch failed or was cancelled: change nothing else
+    if (fn) await fn()
+    state.history.stale = true
+    await refreshAll()
+    if (state.tab === 'history') setTimeout(goToHead, 120)
+  }
+  if (!ab.behind) return afterSwitch() // local already has everything the remote has
+  if (!ab.ahead) return afterSwitch(() => run('merge', { ref: remote, ffOnly: true }, { success: `${local} is now at ${remote}`, refresh: false }))
+  const r = await dialog({
+    title: `Check out ${remote}`,
+    message: `Your local ${local} already exists and has gone its own way: ${ab.ahead} commit${ab.ahead > 1 ? 's' : ''} only on ${local}, ${ab.behind} only on ${remote}.`,
+    fields: [
+      {
+        key: 'how',
+        label: 'What should happen to your local branch?',
+        type: 'select',
+        value: 'merge',
+        options: [
+          ['merge', `Merge ${remote} into ${local} (keeps both)`],
+          ['rebase', `Rebase ${local} onto ${remote} (your ${ab.ahead} commits on top)`],
+          ['reset', `Reset ${local} to ${remote} (drops your ${ab.ahead} local commits)`],
+          ['detach', `Just look at ${remote} (detached, ${local} unchanged)`],
+          ['local', `Switch to ${local} as it is`]
+        ]
+      }
+    ],
+    ok: 'Check out'
+  })
+  if (!r) return
+  if (r.how === 'detach') return checkout(remote, { detach: true, resolved: true })
+  if (r.how === 'local') return checkout(local, { resolved: true })
+  if (r.how === 'reset' && !(await confirmBox(`Drop ${ab.ahead} local commit${ab.ahead > 1 ? 's' : ''}?`, `${local} will point at ${remote}. The dropped commits stay in the Reflog tab for a while if you need them back.`, 'Reset', true))) return
+  const after = {
+    merge: () => run('merge', { ref: remote }, { success: `Merged ${remote} into ${local}`, refresh: false }),
+    rebase: () => run('rebase', { onto: remote }, { success: `Rebased ${local} onto ${remote}`, refresh: false }),
+    reset: () => run('reset', { hash: remote, mode: 'keep' }, { success: `${local} now matches ${remote}`, refresh: false })
+  }[r.how]
+  return afterSwitch(after)
+}
+
+/**
  * Switch branch. The two usual failures get a choice instead of an error: changes in the way
  * (stash & switch, or discard & switch) and a branch already checked out in another worktree.
  */
 async function checkout(name, opts = {}) {
   closeOverlays()
+  // origin/x while a local x exists at another commit: ask what to do, as Git Extensions does.
+  if (opts.track && !opts.resolved) {
+    const local = name.replace(/^[^/]+\//, '')
+    const refs = state.refs || (await call('refs').catch(() => null))
+    if (refs?.local.some((b) => b.name === local)) return checkoutRemoteOverLocal(name, local)
+  }
   const label = opts.track ? name.replace(/^[^/]+\//, '') : name
   setBusy(1)
   let out
@@ -1772,7 +1831,8 @@ A branch can be checked out in only one worktree at a time.`,
       return checkout(name, { ...opts, stash: r.how === 'stash', discard: r.how === 'discard' })
     }
     toast(e.message, 'error')
-    return refreshAll()
+    await refreshAll()
+    return false
   }
   setBusy(-1)
   const loc = out?.local
@@ -1785,10 +1845,12 @@ A branch can be checked out in only one worktree at a time.`,
       await run('merge', { ref: loc.remote, ffOnly: true }, { success: `${loc.name} is up to date with ${loc.remote}` })
   } else if (loc && loc.behind > 0)
     toast(`Local ${loc.name} and ${loc.remote} have diverged (${loc.ahead} ahead, ${loc.behind} behind). Merge or rebase when you are ready.`, 'ok', 8000)
+  if (opts.quietJump) return true
   state.history.stale = true
   await refreshAll()
   // show where you are now, even when that commit is far down the graph
   if (state.tab === 'history') setTimeout(goToHead, 120)
+  return true
 }
 async function checkoutCommit(hash) {
   if (!(await confirmBox('Checkout commit?', `HEAD will be detached at ${hash.slice(0, 7)}. Create a branch if you want to keep new commits.`, 'Checkout'))) return

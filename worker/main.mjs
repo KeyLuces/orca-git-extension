@@ -806,6 +806,11 @@ const ops = {
     git(r, ['cherry-pick', ...(a.noCommit ? ['-n'] : []), ...(a.mainline ? ['-m', '1'] : []), req(a.hash, 'hash')]),
   revert: (r, a) =>
     git(r, ['revert', a.noCommit ? '-n' : '--no-edit', ...(a.mainline ? ['-m', '1'] : []), req(a.hash, 'hash')]),
+  /** How two refs compare: commits only in `a` (ahead) and only in `b` (behind). */
+  aheadBehind: async (r, a) => {
+    const [ahead, behind] = (await git(r, ['rev-list', '--left-right', '--count', `${req(a.a, 'first ref')}...${req(a.b, 'second ref')}`])).trim().split(/\s+/).map(Number)
+    return { ahead, behind }
+  },
   reset: (r, a) => {
     const mode = ['soft', 'mixed', 'hard', 'keep', 'merge'].includes(a.mode) ? a.mode : 'mixed'
     return git(r, ['reset', `--${mode}`, req(a.hash, 'commit')])
