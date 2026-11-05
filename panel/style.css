@@ -600,3 +600,67 @@ span.ci { cursor: default; height: 17px; padding: 0 7px; font-size: 10.5px; }
   .repo-line .toolbar { flex: 1 1 100%; width: 100%; }
 }
 @media (max-width: 820px) { .side-toggle { align-self: flex-start; margin-top: 2px; } }
+
+/* =====================================================================
+   Diff view
+   ===================================================================== */
+.sheet-sep { flex: none; width: 1px; height: 18px; background: var(--line); margin: 0 2px; }
+.sheet-close { color: var(--t1); }
+.dv { font-size: 12px; padding-bottom: 16px; min-width: 0; }
+.dv-bar { position: sticky; top: 0; z-index: 3; display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--bg); border-bottom: 1px solid var(--line); }
+.dv-wrap.on { background: var(--sel); border-color: color-mix(in srgb, var(--ren) 50%, var(--line)); }
+.dv-count { display: inline-flex; gap: 6px; font: 600 11.5px var(--mono); }
+.dv-count .a { color: var(--add); }
+.dv-count .d { color: var(--del); }
+.dv-file { position: sticky; top: 45px; z-index: 2; display: flex; align-items: center; gap: 8px; padding: 8px 12px; margin-top: 12px; background: var(--card); border-block: 1px solid var(--line); }
+.dv-file:first-child { margin-top: 0; }
+.dv-file > span:first-child svg { color: var(--t2); }
+.dv-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dv-path strong { color: var(--t1); font-weight: 650; }
+.pill.dv-new { background: color-mix(in srgb, var(--add) 18%, transparent); color: var(--add); }
+.pill.dv-deleted { background: color-mix(in srgb, var(--del) 18%, transparent); color: var(--del); }
+.pill.dv-renamed { background: color-mix(in srgb, var(--ren) 18%, transparent); color: var(--ren); }
+.dv-note { padding: 14px; color: var(--t2); }
+.dv-hunk { display: flex; align-items: center; gap: 10px; padding: 5px 12px; margin-top: 4px; background: color-mix(in srgb, var(--ren) 7%, var(--bg)); border-block: 1px solid color-mix(in srgb, var(--ren) 18%, var(--line)); }
+.dv-range { font-weight: 650; font-size: 11.5px; color: var(--ren); white-space: nowrap; }
+.dv-ctx { color: var(--t3); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+
+/* lines (unified) */
+.dv .l { display: flex; min-width: max-content; font: 12px/1.6 var(--mono); }
+.dv .l .n { width: 44px; flex: none; padding-right: 8px; text-align: right; color: var(--t3); user-select: none; }
+.dv .l .sg { width: 16px; flex: none; text-align: center; user-select: none; font-weight: 700; }
+.dv .l .c { flex: 1; padding-right: 16px; white-space: pre; tab-size: 4; }
+.dv .l.add { background: color-mix(in srgb, var(--add) 11%, transparent); }
+.dv .l.add .n { background: color-mix(in srgb, var(--add) 16%, transparent); color: color-mix(in srgb, var(--add) 80%, var(--fg)); }
+.dv .l.add .sg { color: var(--add); }
+.dv .l.del { background: color-mix(in srgb, var(--del) 11%, transparent); }
+.dv .l.del .n { background: color-mix(in srgb, var(--del) 16%, transparent); color: color-mix(in srgb, var(--del) 80%, var(--fg)); }
+.dv .l.del .sg { color: var(--del); }
+.dv .l.add mark { background: color-mix(in srgb, var(--add) 38%, transparent); color: inherit; border-radius: 2px; }
+.dv .l.del mark { background: color-mix(in srgb, var(--del) 38%, transparent); color: inherit; border-radius: 2px; }
+.dv .l .c::before { content: none !important; }
+
+/* side by side */
+.dv .ds { display: grid; grid-template-columns: 1fr 1fr; font: 12px/1.6 var(--mono); }
+.dv .ds-side { display: flex; min-width: 0; overflow: hidden; }
+.dv .ds-side + .ds-side { border-left: 1px solid var(--line); }
+.dv .ds-side .n { width: 44px; flex: none; padding-right: 8px; text-align: right; color: var(--t3); user-select: none; }
+.dv .ds-side .c { flex: 1; min-width: 0; padding: 0 12px 0 6px; white-space: pre; overflow-x: auto; scrollbar-width: none; tab-size: 4; }
+.dv .ds-side .c::-webkit-scrollbar { display: none; }
+.dv .ds-side.del { background: color-mix(in srgb, var(--del) 11%, transparent); }
+.dv .ds-side.add { background: color-mix(in srgb, var(--add) 11%, transparent); }
+.dv .ds-side.none { background: repeating-linear-gradient(135deg, transparent 0 6px, color-mix(in srgb, var(--fg) 3%, transparent) 6px 12px); }
+.dv .ds-side.del mark { background: color-mix(in srgb, var(--del) 38%, transparent); color: inherit; border-radius: 2px; }
+.dv .ds-side.add mark { background: color-mix(in srgb, var(--add) 38%, transparent); color: inherit; border-radius: 2px; }
+
+/* wrap long lines */
+.dv.dv-wrapped .l { min-width: 0; }
+.dv.dv-wrapped .l .c, .dv.dv-wrapped .ds-side .c { white-space: pre-wrap; word-break: break-word; overflow: visible; }
+
+/* review: click a line to comment */
+.dv .commentable { cursor: pointer; }
+.dv .commentable:hover { box-shadow: inset 2px 0 0 var(--ren); background-color: color-mix(in srgb, var(--ren) 8%, transparent); }
+
+/* the diff pane / sheet: no extra inner padding fights with the sticky bars */
+.diff-pane .sheet-body, .sheet .sheet-body { position: relative; }
+@media (max-width: 820px) { .dv .ds { grid-template-columns: 1fr; } .dv .ds-side + .ds-side { border-left: 0; } .dv-file { top: 45px; } }

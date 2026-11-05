@@ -824,7 +824,7 @@ function openSheet(title, body, actions = []) {
   const el = h(
     'div',
     { class: 'sheet' },
-    h('div', { class: 'sheet-head' }, iconBtn('left', 'Back', closeSheet), h('div', { class: 'sheet-title', title }, title), ...actions),
+    h('div', { class: 'sheet-head' }, h('div', { class: 'sheet-title', title }, title), ...actions, h('span', { class: 'sheet-sep' }), iconBtn('x', 'Close (Esc)', closeSheet, { class: 'icon-btn sheet-close' })),
     h('div', { class: 'sheet-body' }, body)
   )
   const main = $('#main')
@@ -861,46 +861,206 @@ function splitHunks(text) {
   return hunks.map((x) => [...x.header, ...x.lines].join('\n') + '\n')
 }
 
-/** hunkActions: [{ label, icon, run(patch) }] shown on every hunk header. */
-function renderDiff(text, hunkActions) {
-  const wrap = h('div', { class: 'diff' })
-  if (!text.trim()) return h('div', { class: 'empty' }, 'No changes to show (binary or identical file)')
-  const patches = hunkActions?.length ? splitHunks(text) : []
-  let hunkIdx = -1
+/** Parse a unified diff into files → hunks → lines. */
+function parseDiff(text) {
+  const files = []
+  let file = null
+  let hunk = null
   let o = 0
   let n = 0
-  const frag = document.createDocumentFragment()
+  let patch = -1
+  const newFile = () => {
+    file = { path: '', oldPath: '', badges: [], hunks: [], add: 0, del: 0, binary: false }
+    files.push(file)
+    hunk = null
+  }
   for (const line of text.split('\n')) {
-    if (line.startsWith('@@')) {
-      const m = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)/)
-      if (m) [o, n] = [+m[1], +m[2]]
-      hunkIdx++
-      const patch = patches[hunkIdx]
-      frag.append(
+    if (line.startsWith('diff --git')) {
+      newFile()
+      const m = line.match(/^diff --git a\/(.*) b\/(.*)$/)
+      if (m) [file.oldPath, file.path] = [m[1], m[2]]
+    } else if (!file && (line.startsWith('--- ') || line.startsWith('@@'))) newFile()
+    if (!file) continue
+    if (line.startsWith('diff --git') || line.startsWith('index ')) continue
+    if (line.startsWith('--- ')) {
+      const p = line.slice(4).replace(/^a\//, '')
+      if (p !== '/dev/null' && p !== 'NUL') file.oldPath = p
+    } else if (line.startsWith('+++ ')) {
+      const p = line.slice(4).replace(/^b\//, '')
+      if (p !== '/dev/null' && p !== 'NUL') file.path = p
+      else file.path = file.oldPath
+    } else if (line.startsWith('new file')) file.badges.push('new')
+    else if (line.startsWith('deleted file')) file.badges.push('deleted')
+    else if (line.startsWith('rename from') || line.startsWith('similarity')) !file.badges.includes('renamed') && file.badges.push('renamed')
+    else if (line.startsWith('Binary files')) file.binary = true
+    else if (line.startsWith('@@')) {
+      const m = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@ ?(.*)$/)
+      if (m) [o, n] = [+m[1], +m[3]]
+      hunk = { oldStart: o, newStart: n, newCount: m ? +(m[4] ?? 1) : 0, oldCount: m ? +(m[2] ?? 1) : 0, context: m ? m[5] : line, lines: [], patch: ++patch }
+      file.hunks.push(hunk)
+    } else if (hunk && line.startsWith('+')) {
+      hunk.lines.push({ k: 'add', n: n++, t: line.slice(1) })
+      file.add++
+    } else if (hunk && line.startsWith('-')) {
+      hunk.lines.push({ k: 'del', o: o++, t: line.slice(1) })
+      file.del++
+    } else if (hunk && line.startsWith(' ')) hunk.lines.push({ k: 'ctx', o: o++, n: n++, t: line.slice(1) })
+    else if (hunk && line.startsWith('\\')) hunk.lines.at(-1) && (hunk.lines.at(-1).noEol = true)
+  }
+  return files.filter((f) => f.hunks.length || f.binary || f.badges.length)
+}
+
+/** Text with the changed middle part marked, against its paired line (common prefix/suffix kept plain). */
+function markChange(text, other) {
+  if (other == null || text === other) return [text]
+  let p = 0
+  while (p < text.length && p < other.length && text[p] === other[p]) p++
+  let q = 0
+  while (q < text.length - p && q < other.length - p && text[text.length - 1 - q] === other[other.length - 1 - q]) q++
+  const mid = text.slice(p, text.length - q)
+  // a near-total rewrite reads better without marks
+  if (!mid || mid.length > text.length * 0.85) return [text]
+  return [text.slice(0, p), h('mark', null, mid), text.slice(text.length - q)]
+}
+
+/** Pair runs of removed and added lines, so each changed line can be shown against its counterpart. */
+function pairLines(lines) {
+  const out = []
+  for (let i = 0; i < lines.length; ) {
+    if (lines[i].k !== 'del') {
+      out.push({ left: lines[i].k === 'ctx' ? lines[i] : null, right: lines[i] })
+      i++
+      continue
+    }
+    const dels = []
+    while (i < lines.length && lines[i].k === 'del') dels.push(lines[i++])
+    const adds = []
+    while (i < lines.length && lines[i].k === 'add') adds.push(lines[i++])
+    for (let k = 0; k < Math.max(dels.length, adds.length); k++) out.push({ left: dels[k] || null, right: adds[k] || null, changed: true })
+  }
+  return out
+}
+
+/**
+ * A readable diff: per file a header (+added −removed), hunks labelled by their lines, unified or
+ * side by side (remembered), changed words marked, optional wrapping.
+ * hunkActions: [{ label, icon, run(patch) }] on every hunk; onLine({ path, side, line, text }) makes lines clickable.
+ */
+function renderDiff(text, hunkActions, { onLine } = {}) {
+  if (!text.trim()) return h('div', { class: 'empty' }, 'No changes to show (binary or identical file)')
+  const files = parseDiff(text)
+  const patches = hunkActions?.length ? splitHunks(text) : []
+  const root = h('div', { class: 'dv' })
+  const body = h('div')
+  let mode = store.get('diffMode', 'unified')
+  let wrapOn = store.get('diffWrap', false)
+  const seg = h('div', { class: 'segmented' })
+  const wrapBtn = h('button', { class: 'btn sm dv-wrap', title: 'Wrap long lines' }, icon('layers', 12), 'Wrap')
+  const drawBar = () => {
+    clear(seg).append(
+      h('button', { class: mode === 'unified' ? 'on' : '', onClick: () => ((mode = 'unified'), store.set('diffMode', mode), draw()) }, 'Unified'),
+      h('button', { class: mode === 'split' ? 'on' : '', onClick: () => ((mode = 'split'), store.set('diffMode', mode), draw()) }, 'Split')
+    )
+    wrapBtn.classList.toggle('on', wrapOn)
+  }
+  wrapBtn.addEventListener('click', () => ((wrapOn = !wrapOn), store.set('diffWrap', wrapOn), draw()))
+  const total = files.reduce((t, f) => [t[0] + f.add, t[1] + f.del], [0, 0])
+  root.append(
+    h(
+      'div',
+      { class: 'dv-bar' },
+      seg,
+      wrapBtn,
+      h('span', { class: 'grow' }),
+      files.length > 1 && h('span', { class: 'dim' }, `${files.length} files`),
+      h('span', { class: 'dv-count' }, h('span', { class: 'a' }, `+${total[0]}`), h('span', { class: 'd' }, `−${total[1]}`))
+    ),
+    body
+  )
+  const cell = (ln, side, f) => {
+    if (!ln) return [h('span', { class: 'n' }), h('span', { class: 'c empty-cell' })]
+    return [h('span', { class: 'n' }, side === 'old' ? ln.o : ln.n), h('span', { class: 'c' }, ...(ln.mark || [ln.t]))]
+  }
+  const clickable = (el, f, ln, side) => {
+    if (!onLine || !ln) return el
+    el.classList.add('commentable')
+    el.title = 'Click to comment on this line'
+    el.addEventListener('click', () => onLine({ path: f.path, side, line: side === 'old' ? ln.o : ln.n, text: ln.t }))
+    return el
+  }
+  function draw() {
+    drawBar()
+    root.classList.toggle('dv-wrapped', wrapOn)
+    root.classList.toggle('dv-split', mode === 'split')
+    const frag = document.createDocumentFragment()
+    for (const f of files) {
+      const showHead = files.length > 1 || !!onLine || f.badges.length > 0 // one plain file: the panel title names it
+      const dir = f.path.includes('/') ? f.path.slice(0, f.path.lastIndexOf('/') + 1) : ''
+      if (showHead) frag.append(
         h(
           'div',
-          { class: 'hunk' },
-          h('span', { class: 'grow' }, line),
-          patch && hunkActions.map((a) => h('button', { class: `hunk-btn ${a.danger ? 'danger' : ''}`, title: a.label, onClick: () => a.run(patch) }, icon(a.icon, 11), a.label))
+          { class: 'dv-file' },
+          icon('file', 13),
+          h('span', { class: 'dv-path' }, dir && h('span', { class: 'dim' }, dir), h('strong', null, f.path.slice(dir.length))),
+          ...f.badges.map((b) => h('span', { class: `pill dv-${b}` }, b)),
+          f.badges.includes('renamed') && f.oldPath !== f.path && h('span', { class: 'dim mono' }, `from ${f.oldPath}`),
+          h('span', { class: 'grow' }),
+          h('span', { class: 'dv-count' }, h('span', { class: 'a' }, `+${f.add}`), h('span', { class: 'd' }, `−${f.del}`))
         )
       )
-    } else if (/^(diff --git|index |--- |\+\+\+ |new file|deleted file|similarity|rename |old mode|new mode)/.test(line)) {
-      if (/^(diff --git|index |--- |\+\+\+ )/.test(line)) continue
-      frag.append(h('div', { class: 'meta' }, line))
-    } else if (line.startsWith('Binary files')) {
-      frag.append(h('div', { class: 'meta' }, line))
-    } else if (line.startsWith('+')) {
-      frag.append(h('div', { class: 'l add' }, h('span', { class: 'n' }, ''), h('span', { class: 'n' }, n++), h('span', { class: 'c' }, line.slice(1))))
-    } else if (line.startsWith('-')) {
-      frag.append(h('div', { class: 'l del' }, h('span', { class: 'n' }, o++), h('span', { class: 'n' }, ''), h('span', { class: 'c' }, line.slice(1))))
-    } else if (line.startsWith(' ')) {
-      frag.append(h('div', { class: 'l ctx' }, h('span', { class: 'n' }, o++), h('span', { class: 'n' }, n++), h('span', { class: 'c' }, line.slice(1))))
-    } else if (line.startsWith('\\')) {
-      frag.append(h('div', { class: 'meta' }, line))
+      if (f.binary) frag.append(h('div', { class: 'dv-note' }, 'Binary file: no text to compare'))
+      for (const hk of f.hunks) {
+        const patch = patches[hk.patch]
+        const last = hk.newStart + Math.max(0, hk.newCount - 1)
+        frag.append(
+          h(
+            'div',
+            { class: 'dv-hunk' },
+            h('span', { class: 'dv-range' }, hk.newCount ? `Lines ${hk.newStart}${last > hk.newStart ? `–${last}` : ''}` : `Removed at line ${hk.oldStart}`),
+            hk.context && h('span', { class: 'dv-ctx mono' }, hk.context),
+            h('span', { class: 'grow' }),
+            patch && hunkActions.map((a) => h('button', { class: `hunk-btn ${a.danger ? 'danger' : ''}`, title: `${a.label} this hunk`, onClick: () => a.run(patch) }, icon(a.icon, 11), a.label))
+          )
+        )
+        const pairs = pairLines(hk.lines)
+        for (const pr of pairs) {
+          if (pr.changed && pr.left && pr.right) {
+            pr.left.mark = markChange(pr.left.t, pr.right.t)
+            pr.right.mark = markChange(pr.right.t, pr.left.t)
+          }
+        }
+        if (mode === 'split') {
+          for (const pr of pairs) {
+            const lk = pr.left ? pr.left.k : 'none'
+            const rk = pr.right ? (pr.right.k === 'ctx' && pr.left ? 'ctx' : pr.right.k) : 'none'
+            frag.append(
+              h(
+                'div',
+                { class: 'ds' },
+                clickable(h('div', { class: `ds-side ${lk}` }, ...cell(pr.left, 'old', f)), f, pr.left, 'old'),
+                clickable(h('div', { class: `ds-side ${rk}` }, ...cell(pr.right, 'new', f)), f, pr.right, 'new')
+              )
+            )
+          }
+        } else {
+          for (const ln of hk.lines) {
+            const side = ln.k === 'del' ? 'old' : 'new'
+            frag.append(
+              clickable(
+                h('div', { class: `l ${ln.k}` }, h('span', { class: 'n' }, ln.k === 'add' ? '' : ln.o), h('span', { class: 'n' }, ln.k === 'del' ? '' : ln.n), h('span', { class: 'sg' }, ln.k === 'add' ? '+' : ln.k === 'del' ? '−' : ''), h('span', { class: 'c' }, ...(ln.mark || [ln.t]))),
+                f,
+                ln,
+                side
+              )
+            )
+          }
+        }
+      }
     }
+    clear(body).append(frag)
   }
-  wrap.append(frag)
-  return wrap
+  draw()
+  return root
 }
 
 async function showDiff(title, loader, actions = [], hunkActions) {
@@ -3943,47 +4103,18 @@ async function reviewDiffSheet(it) {
     closeSheet()
     return toast(e.message, 'error')
   }
-  const wrap = h('div', { class: 'diff review-diff' })
-  let file = ''
-  let o = 0
-  let n = 0
-  const comment = async (side, line, text) => {
-    const r = await dialog({ title: `Comment on ${basename(file)}:${line}`, message: text.slice(0, 200), fields: [{ key: 'body', label: 'Comment', type: 'textarea' }], ok: 'Comment' })
-    if (!r?.body.trim()) return
-    try {
-      await request('reviews.lineComment', { item: it, path: file, line, side, body: r.body }, 90000)
-      toast('Comment posted')
-    } catch (e) {
-      toast(e.message, 'error')
+  const wrap = renderDiff(diff, null, {
+    onLine: async ({ path: file, side, line, text }) => {
+      const r = await dialog({ title: `Comment on ${basename(file)}:${line}`, message: text.slice(0, 200), fields: [{ key: 'body', label: 'Comment', type: 'textarea' }], ok: 'Comment' })
+      if (!r?.body.trim()) return
+      try {
+        await request('reviews.lineComment', { item: it, path: file, line, side, body: r.body }, 90000)
+        toast('Comment posted')
+      } catch (e) {
+        toast(e.message, 'error')
+      }
     }
-  }
-  for (const line of diff.split('\n')) {
-    if (line.startsWith('diff --git')) {
-      file = line.replace(/^diff --git a\/.* b\//, '')
-      wrap.append(h('div', { class: 'file-head' }, icon('file', 12), file))
-    } else if (line.startsWith('+++ ') || line.startsWith('--- ') || line.startsWith('index ') || /^(new|deleted) file|^similarity|^rename /.test(line)) continue
-    else if (line.startsWith('@@')) {
-      const m = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)/)
-      if (m) [o, n] = [+m[1], +m[2]]
-      wrap.append(h('div', { class: 'hunk' }, line))
-    } else {
-      const f = file
-      const kind = line[0] === '+' ? 'add' : line[0] === '-' ? 'del' : 'ctx'
-      const oldN = kind === 'add' ? '' : o++
-      const newN = kind === 'del' ? '' : n++
-      const side = kind === 'del' ? 'old' : 'new'
-      const ln = kind === 'del' ? oldN : newN
-      wrap.append(
-        h(
-          'div',
-          { class: `l ${kind} commentable`, title: 'Click to comment on this line', onClick: () => ((file = f), comment(side, ln, line.slice(1))) },
-          h('span', { class: 'n' }, oldN),
-          h('span', { class: 'n' }, newN),
-          h('span', { class: 'c' }, line.slice(1))
-        )
-      )
-    }
-  }
+  })
   if (sheet.el.isConnected) clear(sheet.el.querySelector('.sheet-body')).append(wrap)
 }
 
