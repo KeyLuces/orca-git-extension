@@ -740,6 +740,9 @@ function renderTabs() {
       h('button', { class: `tab ${state.tab === id ? 'active' : ''}`, onClick: () => setTab(id) }, label, count ? h('span', { class: 'badge' }, count) : null)
     )
   }
+  // on a narrow screen the tabs scroll: keep the chosen one in view
+  const on = nav.querySelector('.tab.active')
+  if (on && nav.scrollWidth > nav.clientWidth) nav.scrollLeft = Math.max(0, on.offsetLeft - (nav.clientWidth - on.offsetWidth) / 2)
 }
 function setTab(id) {
   state.tab = id
@@ -4232,7 +4235,7 @@ async function viewReviews() {
   const data = state.reviews
   const filter = state.reviewFilter || 'all'
   const allRepos = !data.repoPath || store.get('reviewsAllRepos', false)
-  const where = h(
+  const where = data.repoPath && h(
     'div',
     { class: 'segmented' },
     data.repoPath && h('button', { class: allRepos ? '' : 'on', title: `${data.repoHost}/${data.repoPath}`, onClick: () => (store.set('reviewsAllRepos', false), renderView({ force: true })) }, icon('branch', 11), data.repoPath.split('/').pop()),
@@ -4710,6 +4713,20 @@ async function loadCi() {
   }
 }
 setInterval(loadCi, 15000)
+// The Review & MR count: fetched in the background (soon after opening, on a repo switch, then every
+// 3 minutes) so the tab shows how many wait for you without opening it.
+let reviewsPolledFor = null
+function pollReviews() {
+  if (!state.repo || !isShown() || reviewsLoading) return
+  const fresh = state.reviews && state.reviews.repo === state.repo && Date.now() - state.reviews.at < 170000
+  if (fresh && reviewsPolledFor === state.repo) return
+  reviewsPolledFor = state.repo
+  loadReviews(true)
+    .then(() => state.tab === 'reviews' && renderView({ force: true }))
+    .catch(() => {})
+}
+setTimeout(pollReviews, 4000)
+setInterval(() => ((reviewsPolledFor = state.reviews?.repo === state.repo && Date.now() - (state.reviews?.at || 0) < 170000 ? state.repo : null), pollReviews()), 15000)
 
 async function undoLast() {
   let u

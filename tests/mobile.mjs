@@ -3,7 +3,7 @@
 // fetched), at iPhone size with touch. Wired to the real worker on a throwaway repository.
 //   node mobile.mjs <plugin folder> <screenshot folder>
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -18,6 +18,8 @@ const root = mkdtempSync(path.join(tmpdir(), 'gitx-mobile-'))
 process.env.GIT_CONFIG_GLOBAL = path.join(root, 'global.gitconfig') // never the person's real config
 writeFileSync(process.env.GIT_CONFIG_GLOBAL, '[user]\n\tname = Phone Tester\n\temail = phone@e2e.test\n')
 process.env.GIT_CONFIG_NOSYSTEM = '1' // nor the machine's system config
+// Hide gh/glab: the test must never reach the person's real GitHub/GitLab accounts.
+process.env.PATH = process.env.PATH.split(path.delimiter).filter((d) => !['gh.exe', 'glab.exe', 'gh', 'glab'].some((b) => { try { return statSync(path.join(d, b)).isFile() } catch { return false } })).join(path.delimiter)
 process.env.GITX_NO_BROWSER = '1'
 let browser = null
 const results = []
@@ -160,6 +162,31 @@ await step('stage and commit a change from the phone', async () => {
   await shot('mobile-04-commit')
   await page.$eval('.commit-box .split .btn:first-child', (b) => b.click())
   await until(() => g('log', '-1', '--format=%s') === 'Commit from phone', 'committed')
+})
+
+await step('every tab fits the phone: no sideways scroll, nothing cut off', async () => {
+  const tabs = await page.$$eval('.tab', (t) => t.map((x) => x.textContent.replace(/\d+$/, '').trim()))
+  const problems = []
+  for (const name of tabs) {
+    await page.evaluate((n) => [...document.querySelectorAll('.tab')].find((t) => t.textContent.replace(/\d+$/, '').trim() === n).click(), name)
+    await sleep(500)
+    const r = await page.evaluate(() => {
+      const wide = document.documentElement.scrollWidth > window.innerWidth + 1
+      // past the edge is fine inside a strip that scrolls sideways (tabs, filters)
+      const inScroller = (e) => { for (let p = e.parentElement; p; p = p.parentElement) { const o = getComputedStyle(p).overflowX; if ((o === 'auto' || o === 'scroll') && p.scrollWidth > p.clientWidth) return true } return false }
+      // interactive things narrower than a finger, or pushed off the right edge
+      const small = [...document.querySelectorAll('#main button, #main select, #main input:not([type=checkbox]):not([type=radio])')]
+        .filter((e) => e.offsetParent && getComputedStyle(e).visibility !== 'hidden')
+        .map((e) => [e, e.getBoundingClientRect()])
+        .filter(([e, b]) => b.width > 0 && (b.height < 32 || (b.right > window.innerWidth + 1 && !inScroller(e))))
+        .map(([e, b]) => `${e.tagName.toLowerCase()}.${(e.className || '').toString().split(' ')[0]} "${(e.textContent || e.title || '').trim().slice(0, 18)}" ${Math.round(b.width)}x${Math.round(b.height)}${b.right > window.innerWidth + 1 ? ' OFF-SCREEN' : ''}`)
+      return { wide, small: [...new Set(small)].slice(0, 12) }
+    })
+    if (r.wide) problems.push(`${name}: page scrolls sideways`)
+    if (r.small.length) problems.push(`${name}: ${r.small.join(', ')}`)
+    await shot('mobile-tab-' + name.replace(/\W+/g, '_'))
+  }
+  if (problems.length) throw new Error(problems.join('\n      '))
 })
 
 await step('no other files requested (works as one document in the web client)', async () => {

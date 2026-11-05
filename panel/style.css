@@ -829,3 +829,44 @@ span.ci { cursor: default; height: 17px; padding: 0 7px; font-size: 10.5px; }
 .mr-people .link-btn { line-height: 20px; }
 .pp-me.hidden { display: inline !important; visibility: hidden; }
 .segmented button { display: inline-flex; align-items: center; gap: 5px; }
+
+/* ---------- phone polish ---------- */
+@media (max-width: 820px) {
+  /* header: the toolbar uses the whole width, buttons share it evenly */
+  .repo-line .toolbar { margin-left: -46px; width: calc(100% + 46px); flex-basis: calc(100% + 46px); display: flex; gap: 6px; }
+  .repo-line .toolbar > button { flex: 1 1 0; min-width: 0; justify-content: center; height: 40px; }
+  .repo-line .toolbar > .sep, .repo-line .toolbar > .tb-sep { display: none; }
+  #branchLine { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  /* tabs scroll sideways; a fade on the right says there is more */
+  nav.tabs { overflow-x: auto; scrollbar-width: none; -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent); mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent); scroll-padding: 0 28px; }
+  nav.tabs::-webkit-scrollbar { display: none; }
+  nav.tabs .tab { flex: none; min-height: 38px; }
+  /* finger-sized controls */
+  .segmented button { min-height: 36px; padding: 0 14px; }
+  .btn.sm, .icon-btn { min-height: 36px; min-width: 36px; }
+  .history-bar { gap: 8px; padding: 10px; }
+  .history-bar .segmented { flex: 1 1 auto; overflow-x: auto; scrollbar-width: none; }
+  /* same side margins on every tab */
+  .commit-box { margin: 0; padding: 12px 10px; }
+  .view > .section-head, .changes-list .section-head { padding-left: 10px; padding-right: 10px; }
+  /* Review & MR: actions wrap under the title as full-width rows */
+  .review-actions { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 6px; }
+  .review-actions .btn { justify-content: center; }
+  /* pipelines and MR dialog */
+  .mr-people { grid-template-columns: 1fr; }
+  .pipes .history-bar { padding: 10px; }
+  .pipe-row { padding: 12px 8px; }
+  .idp-list { grid-template-columns: 1fr; padding: 0 10px 8px; }
+}
+/* skeleton rows had no width, so the loading state looked blank */
+.skeleton-row .bar { flex: 1; }
+.skeleton-list .skeleton-row:nth-child(2) .bar { flex: 0 1 70%; }
+.skeleton-list .skeleton-row:nth-child(3) .bar { flex: 0 1 50%; }
+@media (max-width: 820px) { .history-bar select, .mode-select { min-height: 36px; } }
+@media (max-width: 820px) { select.mode-select, .history-bar select.mode-select { height: 36px; } }
+/* the skeleton rows start see-through for their fade-in; make sure they end visible */
+.skeleton-list .skeleton-row { opacity: 1; animation: skelIn .3s ease-out; }
+@keyframes skelIn { from { opacity: 0; } to { opacity: 1; } }
+/* segmented switches never wrap their words; on a phone they scroll sideways instead */
+.segmented button { white-space: nowrap; flex: none; }
+@media (max-width: 820px) { .segmented { max-width: 100%; overflow-x: auto; scrollbar-width: none; } .segmented::-webkit-scrollbar { display: none; } }
