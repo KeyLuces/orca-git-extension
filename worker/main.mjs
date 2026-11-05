@@ -874,6 +874,153 @@ async function mrSetup(orca, repo, { step }) {
   return { ran: true, command }
 }
 
+// ---------- review inbox: pull/merge requests waiting for you, across every repository ----------
+
+/** Every GitLab host the person's Orca workspaces push to (GitHub is always github.com). */
+async function gitlabHosts(orca) {
+  return memo('gitlabHosts', 60_000, async () => {
+    const hosts = new Set()
+    const ws = orca ? await listWorkspaces(orca) : []
+    await Promise.all(
+      ws.slice(0, 60).map(async (w) => {
+        const url = (await git(w.path, ['remote', 'get-url', 'origin']).catch(() => '')).trim()
+        const r = url && parseRemote(url)
+        if (r && r.kind === 'gitlab') hosts.add(r.host)
+      })
+    )
+    return [...hosts]
+  })
+}
+
+const jsonOf = (r) => {
+  try {
+    return JSON.parse(r.stdout)
+  } catch {
+    return null
+  }
+}
+
+async function githubInbox() {
+  const fields = 'number,title,url,repository,author,updatedAt,isDraft'
+  const [rev, asg] = await Promise.all([
+    runProc('gh', ['search', 'prs', '--review-requested=@me', '--state=open', '--json', fields, '--limit', '50'], { timeout: 30_000 }),
+    runProc('gh', ['search', 'prs', '--assignee=@me', '--state=open', '--json', fields, '--limit', '50'], { timeout: 30_000 })
+  ])
+  if (rev.code !== 0 && asg.code !== 0) throw new GitError((rev.stderr || asg.stderr).trim() || 'gh could not list pull requests')
+  const items = new Map()
+  const add = (list, role) => {
+    for (const p of list || []) {
+      const it = items.get(p.url) || {
+        provider: 'github',
+        host: 'github.com',
+        url: p.url,
+        number: p.number,
+        title: p.title,
+        repo: p.repository?.nameWithOwner || p.repository?.name || '',
+        author: p.author?.login || '',
+        updated: Date.parse(p.updatedAt) / 1000,
+        draft: !!p.isDraft,
+        roles: []
+      }
+      it.roles.push(role)
+      items.set(p.url, it)
+    }
+  }
+  add(jsonOf(rev), 'review')
+  add(jsonOf(asg), 'assigned')
+  return [...items.values()]
+}
+
+async function gitlabInbox(host) {
+  const api = (path, extra = []) => runProc('glab', ['api', '--hostname', host, ...extra, path], { timeout: 30_000 })
+  const me = jsonOf(await api('user'))
+  if (!me?.username) throw new GitError(`glab is not signed in to ${host}`)
+  const q = 'merge_requests?state=opened&scope=all&per_page=50'
+  const [rev, asg] = await Promise.all([api(`${q}&reviewer_username=${encodeURIComponent(me.username)}`), api(`${q}&assignee_username=${encodeURIComponent(me.username)}`)])
+  const items = new Map()
+  const add = (list, role) => {
+    for (const m of Array.isArray(list) ? list : []) {
+      const it = items.get(m.web_url) || {
+        provider: 'gitlab',
+        host,
+        url: m.web_url,
+        number: m.iid,
+        projectId: m.project_id,
+        title: m.title,
+        repo: m.references?.full?.replace(/!\d+$/, '') || '',
+        author: m.author?.username || '',
+        source: m.source_branch,
+        target: m.target_branch,
+        updated: Date.parse(m.updated_at) / 1000,
+        draft: !!(m.draft || m.work_in_progress),
+        roles: []
+      }
+      it.roles.push(role)
+      items.set(m.web_url, it)
+    }
+  }
+  add(jsonOf(rev), 'review')
+  add(jsonOf(asg), 'assigned')
+  return [...items.values()]
+}
+
+async function reviewsList(orca) {
+  const providers = []
+  const items = []
+  const errors = []
+  // GitHub
+  const ghInstalled = await toolOk('gh', ['--version'])
+  const ghIn = ghInstalled && (await toolOk('gh', ['auth', 'status', '--hostname', 'github.com']))
+  providers.push({ provider: 'github', host: 'github.com', cli: 'gh', installed: ghInstalled, signedIn: ghIn })
+  // GitLab hosts used by the person's projects
+  const glabInstalled = await toolOk('glab', ['--version'])
+  for (const host of await gitlabHosts(orca)) {
+    const signedIn = glabInstalled && (await toolOk('glab', ['auth', 'status', '--hostname', host]))
+    providers.push({ provider: 'gitlab', host, cli: 'glab', installed: glabInstalled, signedIn })
+  }
+  providers.forEach((p) => (p.canInstall = process.platform === 'win32'))
+  await Promise.all(
+    providers
+      .filter((p) => p.signedIn)
+      .map((p) =>
+        (p.provider === 'github' ? githubInbox() : gitlabInbox(p.host)).then(
+          (list) => items.push(...list),
+          (e) => errors.push(`${p.host}: ${e.message}`)
+        )
+      )
+  )
+  items.sort((a, b) => b.updated - a.updated)
+  return { items, providers, errors }
+}
+
+/** Approve, request changes or comment on a pull/merge request. */
+async function reviewAct({ provider, host, url, projectId, number, action, body }) {
+  const text = String(body || '').trim()
+  if (!['approve', 'changes', 'comment'].includes(action)) throw new GitError('unknown review action')
+  if (provider === 'github') {
+    if (!/^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+$/.test(String(url))) throw new GitError('not a GitHub pull request link')
+    if (action !== 'approve' && !text) throw new GitError('Write a comment first')
+    const flag = { approve: '--approve', changes: '--request-changes', comment: '--comment' }[action]
+    const r = await runProc('gh', ['pr', 'review', url, flag, ...(text ? ['--body', text] : [])], { timeout: 60_000 })
+    if (r.code !== 0) throw new GitError((r.stderr || r.stdout).trim() || 'gh could not submit the review')
+    return { ok: true }
+  }
+  if (!/^[\w.-]+$/.test(String(host)) || !Number.isInteger(+projectId) || !Number.isInteger(+number)) throw new GitError('bad merge request')
+  const base = `projects/${+projectId}/merge_requests/${+number}`
+  const api = (path, extra) => runProc('glab', ['api', '--hostname', host, '-X', 'POST', ...extra, path], { timeout: 60_000 })
+  if (text) {
+    const r = await api(`${base}/notes`, ['-f', `body=${action === 'changes' ? `**Changes requested**\n\n${text}` : text}`])
+    if (r.code !== 0) throw new GitError((r.stderr || r.stdout).trim() || 'could not post the comment')
+  }
+  if (action === 'approve') {
+    const r = await api(`${base}/approve`, [])
+    if (r.code !== 0) throw new GitError((r.stderr || r.stdout).trim() || 'could not approve')
+  } else if (action === 'changes') {
+    await api(`${base}/unapprove`, []) // takes back an earlier approval, if any
+  } else if (!text) throw new GitError('Write a comment first')
+  return { ok: true }
+}
+
 // ---------- operations exposed to the panel ----------
 
 const ops = {
@@ -1482,6 +1629,24 @@ Click to open Git Graph`
     return mrCreate(req(input.repo, 'repo'), input)
   })
   orca.panels.handle('mr.setup', async ({ repo, step } = {}) => mrSetup(orca, req(repo, 'repo'), { step }))
+  orca.panels.handle('reviews.list', () => reviewsList(orca))
+  orca.panels.handle('reviews.act', (input = {}) => reviewAct(input))
+  orca.panels.handle('reviews.setup', async ({ host, step } = {}) => {
+    // same terminal setup as the merge request dialog, for a host instead of a repository
+    if (!/^[\w.:-]+$/.test(String(host || ''))) throw new GitError('unexpected host name')
+    const commands = {
+      'glab-install': 'winget install --id GLab.GLab -e --accept-package-agreements --accept-source-agreements',
+      'glab-login': `glab auth login --hostname ${host}`,
+      'gh-install': 'winget install --id GitHub.cli -e --accept-package-agreements --accept-source-agreements',
+      'gh-login': 'gh auth login --hostname github.com --web --git-protocol https'
+    }
+    const command = commands[step]
+    if (!command) throw new GitError('unknown setup step')
+    const ws = (await listWorkspaces(orca))[0]
+    if (!ws || !orca.host.has('terminal.create')) return { ran: false, command }
+    await orca.host.call('terminal.create', { workspaceId: ws.id, title: 'Review inbox setup', command })
+    return { ran: true, command }
+  })
   orca.panels.handle('tab.open', async ({ repo } = {}) => openGraphTab(req(repo, 'repo')))
 
   orca.panels.handle('repo.check', async ({ path: p } = {}) => {

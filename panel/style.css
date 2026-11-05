@@ -466,3 +466,15 @@ html.light .overlay { background: rgba(20, 24, 32, .25); }
 .ref.current .ref-remote svg { color: var(--ink); }
 html.light .ref.current, html.light .ref.laned.current { --ink: #fff; }
 html.light .ref.current > span:first-child { background: color-mix(in srgb, var(--lane) 80%, #000); }
+
+/* ---------- Reviews tab ---------- */
+.reviews .history-bar { max-width: none; }
+.review-row { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--line); }
+.review-row:hover { background: var(--hover); }
+.review-icon { width: 30px; height: 30px; flex: none; display: inline-flex; align-items: center; justify-content: center; border-radius: 8px; background: color-mix(in srgb, var(--add) 16%, transparent); color: var(--add); }
+.review-title { display: flex; align-items: center; gap: 8px; min-width: 0; font-weight: 600; color: var(--t1); }
+.review-meta { margin-top: 2px; font-size: 11.5px; color: var(--t2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.review-actions { display: flex; gap: 6px; flex: none; }
+.pill.role-review { background: color-mix(in srgb, var(--mod) 18%, transparent); color: var(--mod); }
+.pill.role-assigned { background: color-mix(in srgb, var(--ren) 18%, transparent); color: var(--ren); }
+.setup-card { border-style: dashed; }

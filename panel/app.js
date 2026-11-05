@@ -635,6 +635,7 @@ function renderBanner() {
 const TABS = [
   ['history', IN_TAB ? 'Graph' : 'History', 'history'],
   ['changes', IN_TAB ? 'Commit' : 'Changes', 'file'],
+  ['reviews', 'Reviews', 'merge'],
   ['branches', 'Branches', 'branch'],
   ['worktrees', 'Worktrees', 'worktree'],
   ['stash', 'Stash', 'stash'],
@@ -645,7 +646,7 @@ function renderTabs() {
   const nav = clear($('#tabs'))
   const st = state.status
   for (const [id, label] of TABS) {
-    const count = id === 'changes' ? st?.files.length : id === 'stash' ? st?.stashCount : 0
+    const count = id === 'changes' ? st?.files.length : id === 'stash' ? st?.stashCount : id === 'reviews' ? state.reviews?.items.length : 0
     nav.append(
       h('button', { class: `tab ${state.tab === id ? 'active' : ''}`, onClick: () => setTab(id) }, label, count ? h('span', { class: 'badge' }, count) : null)
     )
@@ -762,7 +763,7 @@ async function renderView({ force = false } = {}) {
     )
     return
   }
-  const views = { changes: viewChanges, history: viewHistory, branches: viewBranches, worktrees: viewWorktrees, stash: viewStash, reflog: viewReflog, settings: viewSettings }
+  const views = { changes: viewChanges, history: viewHistory, branches: viewBranches, worktrees: viewWorktrees, stash: viewStash, reflog: viewReflog, reviews: viewReviews, settings: viewSettings }
   if (!views[state.tab]) state.tab = 'history'
   // Nothing on screen yet (first open, no snapshot): show placeholder rows instead of a blank area.
   if (!main.querySelector('.view')) {
@@ -3382,6 +3383,176 @@ async function mergeRequestDialog(target) {
   document.addEventListener('keydown', onKey)
   title.focus()
   title.select()
+}
+
+
+/* =========================================================================
+   Reviews: every open pull/merge request you are asked to review or assigned
+   ========================================================================= */
+async function loadReviews(force) {
+  if (!force && state.reviews && Date.now() - state.reviews.at < 120000) return state.reviews
+  const r = await request('reviews.list', {}, 90000)
+  state.reviews = { ...r, at: Date.now() }
+  renderTabs()
+  return state.reviews
+}
+
+async function viewReviews() {
+  const root = h('div', { class: 'view reviews' })
+  let data
+  try {
+    data = await loadReviews()
+  } catch (e) {
+    root.append(h('div', { class: 'empty' }, icon('alert', 28), h('div', null, e.message)))
+    return root
+  }
+  const filter = state.reviewFilter || 'all'
+  const seg = h(
+    'div',
+    { class: 'segmented' },
+    [
+      ['all', 'All'],
+      ['review', 'To review'],
+      ['assigned', 'Assigned']
+    ].map(([k, l]) => h('button', { class: filter === k ? 'on' : '', onClick: () => ((state.reviewFilter = k), renderView({ force: true })) }, l))
+  )
+  root.append(
+    h(
+      'div',
+      { class: 'history-bar' },
+      seg,
+      h('span', { class: 'grow' }),
+      h('span', { class: 'dim', style: { fontSize: '11.5px' } }, `Updated ${ago(data.at / 1000)}`),
+      h('button', { class: 'btn sm', onClick: async (e) => ((e.currentTarget.disabled = true), await loadReviews(true).catch((err) => toast(err.message, 'error')), renderView({ force: true })) }, icon('refresh', 12), 'Refresh')
+    )
+  )
+
+  // hosts that are not connected yet
+  for (const p of data.providers.filter((x) => !x.signedIn)) {
+    const step = (name) => () =>
+      request('reviews.setup', { host: p.host, step: name }, 30000).then(
+        (r) => toast(r.ran ? `Running in a new terminal: ${r.command}\nFollow it there, then press Refresh.` : `Run this in a terminal, then press Refresh:\n${r.command}`, 'ok', 10000),
+        (e) => toast(e.message, 'error')
+      )
+    root.append(
+      h(
+        'div',
+        { class: 'card setup-card' },
+        h('div', { class: 'row' }, icon('globe', 14), h('strong', null, `Connect ${p.host}`)),
+        h('div', { class: 'dim' }, `See and approve its ${p.provider === 'github' ? 'pull' : 'merge'} requests here. Needs ${p.cli}, set up once.`),
+        h(
+          'div',
+          { class: 'actions-wrap' },
+          !p.installed && p.canInstall && h('button', { class: 'btn sm', onClick: step(`${p.cli}-install`) }, icon('download', 12), `1. Install ${p.cli}`),
+          h('button', { class: 'btn sm', disabled: !p.installed, onClick: step(`${p.cli}-login`) }, icon('user', 12), `${p.installed ? '' : '2. '}Sign in`),
+          h('button', { class: 'btn sm', onClick: async () => (await loadReviews(true).catch((e) => toast(e.message, 'error')), renderView({ force: true })) }, icon('refresh', 12), 'Check again')
+        )
+      )
+    )
+  }
+  for (const e of data.errors || []) root.append(h('div', { class: 'banner' }, h('div', { class: 'row' }, icon('alert'), h('span', null, e))))
+
+  const items = data.items.filter((it) => filter === 'all' || it.roles.includes(filter))
+  root.append(h('div', { class: 'section-head' }, filter === 'assigned' ? 'Assigned to you' : filter === 'review' ? 'Waiting for your review' : 'Open for you', h('span', { class: 'count' }, items.length)))
+  if (!items.length) root.append(h('div', { class: 'empty' }, icon('check', 28), h('div', null, 'Nothing waiting for you')))
+  for (const it of items) root.append(reviewRow(it))
+  return root
+}
+
+function reviewRow(it) {
+  const open = () => (window.orca?.shell?.openExternal ? window.orca.shell.openExternal(it.url) : window.open(it.url))
+  const noun = it.provider === 'github' ? 'pull request' : 'merge request'
+  return h(
+    'div',
+    { class: 'review-row', onDblclick: open },
+    h('span', { class: 'review-icon' }, icon('merge', 15)),
+    h(
+      'div',
+      { class: 'grow', style: { minWidth: 0 } },
+      h(
+        'div',
+        { class: 'review-title' },
+        h('span', { class: 'ellipsis', title: it.title }, it.title),
+        it.draft && h('span', { class: 'pill' }, 'Draft'),
+        it.roles.includes('review') && h('span', { class: 'pill role-review' }, 'Review requested'),
+        it.roles.includes('assigned') && h('span', { class: 'pill role-assigned' }, 'Assigned')
+      ),
+      h(
+        'div',
+        { class: 'review-meta' },
+        h('span', { class: 'mono' }, `${it.repo} ${it.provider === 'github' ? '#' : '!'}${it.number}`),
+        ` · ${it.author} · ${ago(it.updated)}`,
+        it.source && [' · ', h('span', { class: 'mono' }, `${it.source} → ${it.target}`)]
+      )
+    ),
+    h(
+      'div',
+      { class: 'review-actions' },
+      h('button', { class: 'btn sm', title: `Open the ${noun} in the browser`, onClick: open }, icon('open', 12), 'Open'),
+      h('button', { class: 'btn sm', onClick: () => reviewDialog(it) }, icon('edit', 12), 'Review…'),
+      h(
+        'button',
+        {
+          class: 'btn sm primary',
+          onClick: async (e) => {
+            if (!(await confirmBox(`Approve this ${noun}?`, `${it.repo} ${it.provider === 'github' ? '#' : '!'}${it.number}\n${it.title}`, 'Approve'))) return
+            await actOnReview(it, 'approve', '', e.currentTarget)
+          }
+        },
+        icon('check', 12),
+        'Approve'
+      )
+    )
+  )
+}
+
+async function actOnReview(it, action, body, btn) {
+  if (btn) {
+    btn.disabled = true
+    clear(btn).append(h('span', { class: 'spinner' }), 'Sending…')
+  }
+  try {
+    await request('reviews.act', { provider: it.provider, host: it.host, url: it.url, projectId: it.projectId, number: it.number, action, body }, 90000)
+    toast({ approve: 'Approved', changes: 'Changes requested', comment: 'Comment posted' }[action] + `: ${it.title}`)
+    if (action === 'approve' || action === 'changes') {
+      await loadReviews(true).catch(() => {})
+      if (state.tab === 'reviews') renderView({ force: true })
+    }
+    return true
+  } catch (e) {
+    toast(e.message, 'error')
+    if (btn) {
+      btn.disabled = false
+      clear(btn).append(icon('check', 12), 'Approve')
+    }
+    return false
+  }
+}
+
+async function reviewDialog(it) {
+  const noun = it.provider === 'github' ? 'pull request' : 'merge request'
+  const r = await dialog({
+    title: `Review: ${it.title}`,
+    message: `${it.repo} ${it.provider === 'github' ? '#' : '!'}${it.number} by ${it.author}`,
+    fields: [
+      {
+        key: 'action',
+        label: 'Your review',
+        type: 'select',
+        value: 'approve',
+        options: [
+          ['approve', 'Approve'],
+          ['changes', 'Request changes'],
+          ['comment', 'Comment only']
+        ]
+      },
+      { key: 'body', label: 'Comment (needed for Request changes and Comment)', type: 'textarea', placeholder: `Feedback on this ${noun}` }
+    ],
+    ok: 'Submit review'
+  })
+  if (!r) return
+  if (r.action !== 'approve' && !r.body.trim()) return toast('Write a comment for this kind of review', 'error')
+  await actOnReview(it, r.action, r.body)
 }
 
 /* =========================================================================
