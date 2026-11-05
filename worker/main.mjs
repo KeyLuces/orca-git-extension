@@ -1,5 +1,6 @@
 // Git Extension worker: runs git for the panel. No dependencies, plain Node.
 import { spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -218,10 +219,69 @@ const devNull = () => (process.platform === 'win32' ? 'NUL' : '/dev/null')
 const SEP = '\x1f'
 const REC = '\x1e'
 
-async function log(repo, { all = false, limit = 200, skip = 0, search = '', mode = 'message', ref, file } = {}) {
+// ---------- shared cache: worktrees of one repository share history ----------
+// Every worktree of a repository has the same commits and refs, so their log and commit details
+// are cached once per repository (its common git dir). A cheap fingerprint of all refs tells when
+// the cache is stale; only "which commit is HEAD" differs per worktree and is applied afterwards.
+const commonDirs = new Map()
+async function commonDir(repo) {
+  const k = norm(repo)
+  if (!commonDirs.has(k)) {
+    const d = (await git(repo, ['rev-parse', '--git-common-dir'])).trim()
+    commonDirs.set(k, norm(path.resolve(repo, d)))
+  }
+  return commonDirs.get(k)
+}
+async function refsFingerprint(repo) {
+  const raw = await git(repo, ['for-each-ref', '--format=%(objectname) %(refname)'])
+  return createHash('sha1').update(raw).digest('hex')
+}
+const logCache = new Map() // key -> { sig, commits }
+const showCache = new Map() // common|hash -> details (commits never change)
+function remember(map, key, value, max) {
+  map.delete(key)
+  map.set(key, value)
+  if (map.size > max) map.delete(map.keys().next().value)
+  return value
+}
+
+/** Move the "HEAD" decoration onto this worktree's HEAD commit. */
+async function applyHead(repo, commits) {
+  let head = null
+  let branch = null
+  try {
+    head = (await git(repo, ['rev-parse', '--verify', '-q', 'HEAD'])).trim()
+    branch = (await git(repo, ['symbolic-ref', '-q', '--short', 'HEAD'], { okCodes: [0, 1] })).trim() || null
+  } catch {}
+  return commits.map((c) => {
+    let refs = c.refs.filter((r) => r !== 'HEAD').map((r) => (r.startsWith('HEAD -> ') ? r.slice(8) : r))
+    if (c.hash === head) {
+      if (branch) refs = [`HEAD -> ${branch}`, ...refs.filter((r) => r !== branch)]
+      else refs = ['HEAD', ...refs]
+    }
+    return refs === c.refs ? c : { ...c, refs }
+  })
+}
+
+async function log(repo, opts = {}) {
+  // Search results and single-file history are not shared; the plain graph is.
+  const shareable = !opts.search && !opts.file
+  if (!shareable) return logUncached(repo, opts)
+  const [common, sig] = await Promise.all([commonDir(repo), refsFingerprint(repo)])
+  // The current-branch view depends on this worktree's HEAD; the all-branches view does not.
+  const headKey = opts.all ? '' : (await git(repo, ['rev-parse', '-q', '--verify', 'HEAD'], { okCodes: [0, 1] })).trim()
+  const key = JSON.stringify([common, !!opts.all, opts.ref || '', headKey, +opts.limit || 200, +opts.skip || 0])
+  const hit = logCache.get(key)
+  let commits
+  if (hit && hit.sig === sig) commits = hit.commits
+  else commits = remember(logCache, key, { sig, commits: await logUncached(repo, opts) }, 60).commits
+  return applyHead(repo, commits)
+}
+
+async function logUncached(repo, { all = false, limit = 200, skip = 0, search = '', mode = 'message', ref, file } = {}) {
   const args = [
     'log',
-    '--topo-order',
+    '--date-order', // newest first across branches: a compact graph, as Git Extensions shows
     `--max-count=${Math.min(+limit || 200, 1000)}`,
     `--skip=${+skip || 0}`,
     `--format=%H${SEP}%P${SEP}%an${SEP}%ae${SEP}%at${SEP}%D${SEP}%s${REC}`
@@ -262,7 +322,15 @@ async function log(repo, { all = false, limit = 200, skip = 0, search = '', mode
     })
 }
 
-async function commitShow(repo, { hash }) {
+async function commitShow(repo, args) {
+  const key = (await commonDir(repo)) + '|' + req(args.hash, 'hash')
+  const hit = showCache.get(key)
+  if (hit && /^[0-9a-f]{40}$/.test(args.hash)) return hit
+  const out = await commitShowUncached(repo, args)
+  return /^[0-9a-f]{40}$/.test(args.hash) ? remember(showCache, key, out, 400) : out
+}
+
+async function commitShowUncached(repo, { hash }) {
   const h = req(hash, 'hash')
   const meta = await git(repo, [
     'show',
@@ -639,12 +707,40 @@ const ops = {
   commitFileDiff: (r, a) => commitFileDiff(r, a),
 
   refs: (r) => refs(r),
-  checkout: (r, a) => {
+  checkout: async (r, a) => {
     const ref = req(a.ref, 'ref')
+    const args = ['switch']
+    if (a.discard) args.push('--discard-changes')
     // A remote branch: create a local tracking branch with the same name.
-    if (a.track) return git(r, ['switch', '--track', ref])
-    if (a.detach) return git(r, ['switch', '--detach', ref])
-    return git(r, ['switch', ref])
+    if (a.track) args.push('--track')
+    else if (a.detach) args.push('--detach')
+    args.push(ref)
+    let stashed = false
+    if (a.stash) {
+      const dirty = (await git(r, ['status', '--porcelain'])).trim()
+      if (dirty) {
+        await git(r, ['stash', 'push', '--include-untracked', '-m', `Auto stash before switching to ${ref}`])
+        stashed = true
+      }
+    }
+    try {
+      await git(r, args)
+    } catch (e) {
+      if (stashed) await git(r, ['stash', 'pop']).catch(() => {})
+      const inUse = e.message.match(/(?:already (?:checked out|used by worktree) at|is already used by worktree at) '([^']+)'/)
+      if (inUse) throw Object.assign(new GitError(`${ref} is checked out in another worktree:\n${inUse[1]}`), { data: { kind: 'in-worktree', path: inUse[1] } })
+      if (/would be overwritten|Please commit your changes or stash them/i.test(e.message))
+        throw Object.assign(new GitError('You have changes that this checkout would overwrite.'), { data: { kind: 'dirty' } })
+      throw e
+    }
+    if (stashed) {
+      try {
+        await git(r, ['stash', 'pop'])
+      } catch {
+        return { switched: true, stashKept: true } // conflicts: the stash stays for the person to apply
+      }
+    }
+    return { switched: true, stashed }
   },
   branchCreate: (r, a) => {
     const name = req(a.name, 'branch name')
@@ -742,6 +838,24 @@ const ops = {
       return { pruned: true, leftover: existsSync(p) }
     }
     if (w?.prunable) return prune()
+    // A worktree Orca shows as a workspace: let Orca remove it. It stops the workspace's terminals
+    // first (on Windows git cannot delete a folder a terminal is still in) and drops it from the sidebar.
+    if (ORCA && (await listWorkspaces(ORCA)).some((x) => norm(x.path) === norm(p))) {
+      const cli = ['worktree', 'rm', '--worktree', `path:${p}`, '--json']
+      if (a.force) cli.push('--force')
+      if (a.deleteBranch) cli.push('--delete-branch')
+      const res = await runProc(ORCA_BIN, cli, { timeout: 60_000 })
+      let out = null
+      try {
+        out = JSON.parse(res.stdout)
+      } catch {}
+      if (out?.ok) return { removed: true, viaOrca: true, leftover: existsSync(p) }
+      const msg = out?.error?.message || res.stderr.trim()
+      if (!a.force && /modified|untracked|dirty|uncommitted|changes/i.test(msg || ''))
+        throw new GitError(`${msg}
+Tick "Force" to remove it anyway.`)
+      // otherwise fall through to git
+    }
     const args = ['worktree', 'remove']
     if (a.force) args.push('--force')
     if (a.force && w?.locked) args.push('--force') // a locked worktree needs it twice
@@ -751,7 +865,8 @@ const ops = {
       if (/validation failed|is not a working tree|does not exist/i.test(e.message)) return prune()
       throw e
     }
-    return { removed: true }
+    if (a.deleteBranch && w?.branch) await git(r, ['branch', a.force ? '-D' : '-d', w.branch]).catch(() => {})
+    return { removed: true, leftover: existsSync(p) }
   },
   worktreePrune: (r) => git(r, ['worktree', 'prune', '-v']),
   worktreeLock: (r, a) => git(r, ['worktree', a.unlock ? 'unlock' : 'lock', req(a.path, 'path')]),
@@ -934,7 +1049,9 @@ const ops = {
 
 const NO_REPO_OK = new Set(['configList', 'configSet', 'configUnset', 'init', 'clone'])
 
+let ORCA = null
 export default function activate(orca) {
+  ORCA = orca
   orca.panels.handle('git', async (input) => {
     const { op, repo, args = {} } = input || {}
     const fn = ops[op]

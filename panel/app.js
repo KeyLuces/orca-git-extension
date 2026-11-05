@@ -148,7 +148,7 @@ const state = {
   status: null,
   tab: IN_TAB ? 'history' : store.get('tab', 'changes'),
   busy: 0,
-  history: { all: store.get('historyAll', false), search: '', commits: [], done: false },
+  history: { all: store.get('historyAllV2', true), search: '', commits: [], done: false },
   configScope: store.get('configScope', 'global'),
   commitDraft: '',
   amend: false,
@@ -726,6 +726,11 @@ async function renderView() {
   }
   const views = { changes: viewChanges, history: viewHistory, branches: viewBranches, worktrees: viewWorktrees, stash: viewStash, reflog: viewReflog, settings: viewSettings }
   if (!views[state.tab]) state.tab = 'history'
+  // Nothing on screen yet (first open, no snapshot): show placeholder rows instead of a blank area.
+  if (!main.querySelector('.view')) {
+    clear(main).append(h('div', { class: 'view skeleton-list' }, Array.from({ length: 14 }, (_, i) => h('div', { class: 'skeleton-row', style: { animationDelay: `${i * 40}ms` } }, h('span', { class: 'dot' }), h('span', { class: 'bar', style: { width: `${35 + ((i * 37) % 45)}%` } })))))
+    if (loading) main.prepend(loading)
+  }
   let el
   try {
     el = await views[state.tab]()
@@ -1095,83 +1100,139 @@ async function discard(list, fromSheet) {
 /* =========================================================================
    History + graph
    ========================================================================= */
-const LANE_COLORS = ['#7aa2f7', '#9ece6a', '#e0af68', '#bb9af7', '#7dcfff', '#f7768e', '#73daca', '#ff9e64']
-const laneColor = (i) => LANE_COLORS[i % LANE_COLORS.length]
+// 8 clearly different hues, so two lines never look alike
+const LANE_COLORS = ['#6d9eeb', '#7cbf6a', '#d9a84e', '#b48be8', '#4fbfcf', '#e07a8b', '#e08f55', '#a8b85a']
+/** The graph colour each commit was drawn with, so its labels elsewhere (the details card) match. */
+const laneOfCommit = new Map()
 
+/**
+ * Lay out commits as lanes, the way Git Extensions draws its graph:
+ * - a branch keeps one colour from top to bottom;
+ * - when a commit's parent is already on screen, its line joins that lane instead of opening a new one;
+ * - gaps close by sliding lanes left, so the graph stays narrow.
+ * Each row lists the line segments to draw: [fromLane, fromY, toLane, toY, colour].
+ */
 function layoutGraph(commits) {
-  const lanes = []
+  let lanes = [] // [{ h: hash this lane is waiting for, c: colour index }]
+  let nextColor = 0
   const rows = []
   for (const c of commits) {
-    const before = lanes.slice()
-    let col = lanes.indexOf(c.hash)
+    const top = lanes
+    let col = top.findIndex((l) => l.h === c.hash)
     const hadTop = col !== -1
-    if (col === -1) {
-      col = lanes.indexOf(null)
-      if (col === -1) col = lanes.length
+    const work = top.slice()
+    if (!hadTop) {
+      col = work.length
+      work.push({ h: c.hash, c: nextColor++ })
     }
+    const color = work[col].c
+    const edges = []
     const merging = []
-    for (let i = 0; i < lanes.length; i++) if (i !== col && lanes[i] === c.hash) (merging.push(i), (lanes[i] = null))
-    const parentCols = []
+    top.forEach((l, i) => {
+      if (i !== col && l.h === c.hash) merging.push(i)
+    })
+    if (hadTop) edges.push([col, 0, col, 'mid', color])
+    for (const i of merging) edges.push([i, 0, col, 'mid', top[i].c])
+    for (const i of merging) work[i] = null
+
+    // parents
+    const targets = [] // [laneIndexInWork, colour]
     if (c.parents.length) {
-      lanes[col] = c.parents[0]
-      parentCols.push(col)
-      for (const p of c.parents.slice(1)) {
-        let j = lanes.indexOf(p)
-        if (j === -1) {
-          j = lanes.indexOf(null)
-          if (j === -1) j = lanes.length
-          lanes[j] = p
-        }
-        parentCols.push(j)
+      const p0 = c.parents[0]
+      const k = work.findIndex((l, i) => l && i !== col && l.h === p0)
+      if (k !== -1) {
+        work[col] = null
+        targets.push([k, work[k].c])
+      } else {
+        work[col] = { h: p0, c: color }
+        targets.push([col, color])
       }
-    } else lanes[col] = null
-    while (lanes.length && lanes[lanes.length - 1] == null) lanes.pop()
-    rows.push({ col, before, after: lanes.slice(), merging, parentCols, hadTop })
+      for (const p of c.parents.slice(1)) {
+        let j = work.findIndex((l) => l && l.h === p)
+        if (j === -1) {
+          j = work.length
+          work.push({ h: p, c: nextColor++ })
+        }
+        targets.push([j, work[j].c])
+      }
+    } else work[col] = null
+
+    // compact: lanes slide left over the gaps
+    const newIdx = []
+    const next = []
+    work.forEach((l, i) => {
+      if (l) {
+        newIdx[i] = next.length
+        next.push(l)
+      }
+    })
+    top.forEach((l, i) => {
+      if (i === col || merging.includes(i) || !work[i] || work[i] !== l) return
+      edges.push([i, 0, newIdx[i], 'bottom', l.c]) // a lane passing through (maybe shifting left)
+    })
+    for (const [t, tc] of targets) edges.push([col, 'mid', newIdx[t], 'bottom', t === col || tc === color ? color : tc])
+
+    rows.push({ col, color, edges, before: top.map((l) => l.h), after: next.map((l) => l.h), lanes: Math.max(top.length, next.length, col + 1) })
+    lanes = next
   }
   return rows
 }
 
 const ROW_H = IN_TAB ? 28 : 40
-const LANE_W = 12
-const MAX_LANES = 8
-function graphSvg(row, width, merge) {
-  const x = (i) => 9 + Math.min(i, MAX_LANES) * LANE_W
-  const mid = ROW_H / 2
-  const curve = (x1, y1, x2, y2) => (x1 === x2 ? `M${x1} ${y1}V${y2}` : `M${x1} ${y1}C${x1} ${(y1 + y2) / 2} ${x2} ${(y1 + y2) / 2} ${x2} ${y2}`)
+const LANE_W = IN_TAB ? 14 : 11
+const MAX_LANES = 40 // drawing width cap; lanes past it are clipped, never squashed together
+const laneColor = (i) => LANE_COLORS[i % LANE_COLORS.length]
+function graphSvg(row, width, merge, head) {
+  const x = (i) => 9 + i * LANE_W
+  const Y = { 0: 0, mid: ROW_H / 2, bottom: ROW_H }
+  const curve = (x1, y1, x2, y2) =>
+    x1 === x2 ? `M${x1} ${y1}V${y2}` : `M${x1} ${y1}C${x1} ${(y1 + y2) / 2} ${x2} ${(y1 + y2) / 2} ${x2} ${y2}`
   let paths = ''
-  const line = (d, color) => (paths += `<path d="${d}" stroke="${color}" stroke-width="1.6" fill="none"/>`)
-  row.before.forEach((h0, i) => {
-    if (!h0 || i === row.col || row.merging.includes(i)) return
-    if (row.after[i] === h0) line(curve(x(i), 0, x(i), ROW_H), laneColor(i))
-  })
-  row.merging.forEach((i) => line(curve(x(i), 0, x(row.col), mid), laneColor(i)))
-  if (row.hadTop) line(curve(x(row.col), 0, x(row.col), mid), laneColor(row.col))
-  row.parentCols.forEach((j) => line(curve(x(row.col), mid, x(j), ROW_H), laneColor(j === row.col ? row.col : j)))
-  const c = laneColor(row.col)
+  for (const [a, ya, b, yb, ci] of row.edges)
+    paths += `<path d="${curve(x(a), Y[ya], x(b), Y[yb])}" stroke="${laneColor(ci)}" stroke-width="2" stroke-opacity="1" fill="none" stroke-linecap="round"/>`
+  const c = laneColor(row.color)
+  const cx = x(row.col)
+  const cy = ROW_H / 2
   const dot = merge
-    ? `<circle cx="${x(row.col)}" cy="${mid}" r="3.6" fill="var(--bg)" stroke="${c}" stroke-width="2"/>`
-    : `<circle cx="${x(row.col)}" cy="${mid}" r="4" fill="${c}"/>`
+    ? `<circle cx="${cx}" cy="${cy}" r="4" fill="var(--bg)" stroke="${c}" stroke-width="2"/>`
+    : `<circle cx="${cx}" cy="${cy}" r="4.2" fill="${c}" stroke="var(--bg)" stroke-width="1.5"/>`
+  // the checked-out commit: a ring around its node, like Git Extensions' HEAD marker
+  const ring = head ? `<circle cx="${cx}" cy="${cy}" r="7.5" fill="none" stroke="${c}" stroke-width="1.5" opacity=".9"/>` : ''
   const wrap = document.createElement('span')
   wrap.style.display = 'flex'
-  wrap.innerHTML = `<svg class="graph" width="${width}" height="${ROW_H}">${paths}${dot}</svg>`
+  wrap.innerHTML = `<svg class="graph" width="${width}" height="${ROW_H}" style="overflow:hidden">${paths}${ring}${dot}</svg>`
   return wrap.firstChild
 }
+/** Graph column width for a set of rows. */
+const graphWidth = (rows) => 9 + Math.min(MAX_LANES, Math.max(1, ...rows.map((r) => r.lanes))) * LANE_W
 
-function refPills(refs) {
+/** Ref labels. With a lane, branch labels take that lane's colour, as in VS Code's Git Graph. */
+function refPills(refs, lane) {
   const out = []
+  const style = lane == null ? null : { '--lane': laneColor(lane) }
+  const lanePill = (el) => {
+    if (style && !el.classList.contains('tag')) {
+      el.classList.add('laned')
+      el.style.setProperty('--lane', style['--lane'])
+    }
+    return el
+  }
+  const push0 = out.push.bind(out)
+  out.push = (el) => push0(lanePill(el))
   for (let r of refs) {
-    if (r === 'HEAD') continue
-    if (r.startsWith('HEAD -> ')) out.push(h('span', { class: 'ref head', title: r.slice(8) }, r.slice(8)))
-    else if (r.startsWith('tag: ')) out.push(h('span', { class: 'ref tag', title: r.slice(5) }, r.slice(5)))
-    else if (r.includes('/') && !state.localNames?.has(r)) out.push(h('span', { class: 'ref remote', title: r }, r))
-    else out.push(h('span', { class: 'ref', title: r }, r))
+    if (r.startsWith('HEAD -> ')) out.push(h('span', { class: 'ref head', title: `${r.slice(8)} (checked out)` }, icon('check', 10), h('span', { class: 'ref-t' }, r.slice(8))))
+    else if (r === 'HEAD') out.push(h('span', { class: 'ref head', title: 'HEAD (detached)' }, icon('commit', 10), h('span', { class: 'ref-t' }, 'HEAD')))
+    else if (r.startsWith('tag: ')) out.push(h('span', { class: 'ref tag', title: `Tag ${r.slice(5)}` }, icon('tag', 10), h('span', { class: 'ref-t' }, r.slice(5))))
+    else if (r.includes('/') && !state.localNames?.has(r)) out.push(h('span', { class: 'ref remote', title: `Remote branch ${r}` }, icon('globe', 10), h('span', { class: 'ref-t' }, r)))
+    else if (r.startsWith('refs/stash') || r === 'stash') out.push(h('span', { class: 'ref', title: 'Stash' }, icon('stash', 10), h('span', { class: 'ref-t' }, 'stash')))
+    else out.push(h('span', { class: 'ref', title: `Branch ${r}` }, icon('branch', 10), h('span', { class: 'ref-t' }, r)))
   }
   return out
 }
 
 async function loadHistory(more = false) {
   const H = state.history
-  const page = 150
+  const page = 300
   const commits = await call('log', { all: H.all, limit: page, skip: more ? H.commits.length : 0, search: H.search, mode: H.mode || 'message' })
   H.commits = more ? H.commits.concat(commits) : commits
   H.done = commits.length < page
@@ -1198,6 +1259,26 @@ async function reloadHistoryQuietly() {
   } finally {
     reloadingHistory = false
   }
+}
+
+/** Loads the next page when it scrolls into view (a button too, for keyboards). */
+let loadingMore = false
+function loadMoreSentinel() {
+  const more = async () => {
+    if (loadingMore) return
+    loadingMore = true
+    clear(btn).append(h('span', { class: 'spinner' }), 'Loading…')
+    try {
+      await loadHistory(true)
+      await renderView()
+    } finally {
+      loadingMore = false
+    }
+  }
+  const btn = h('button', { class: 'btn sm load-more', onClick: more }, 'Load more')
+  const io = new IntersectionObserver((ents) => ents.some((e) => e.isIntersecting) && (io.disconnect(), more()), { root: $('#main'), rootMargin: '600px' })
+  requestAnimationFrame(() => btn.isConnected && io.observe(btn))
+  return btn
 }
 
 async function viewHistory() {
@@ -1253,7 +1334,7 @@ async function viewHistory() {
   )
   function setAll(v) {
     H.all = v
-    store.set('historyAll', v)
+    store.set('historyAllV2', v)
     H.commits = []
     H.done = false
     renderView()
@@ -1266,17 +1347,17 @@ async function viewHistory() {
   }
   // The graph is only meaningful for an unfiltered log.
   const rows = H.search ? null : layoutGraph(H.commits)
-  const maxLane = rows ? Math.min(MAX_LANES, Math.max(...rows.map((r) => Math.max(r.before.length, r.after.length, r.col + 1)))) : 0
-  const width = rows ? 9 + maxLane * LANE_W + 4 : 8
+  if (rows) rows.forEach((r, i) => laneOfCommit.set(H.commits[i].hash, r.color))
+  const width = rows ? graphWidth(rows) + 4 : 8
   const list = h('div')
   H.commits.forEach((c, i) => {
     const row = h(
         'div',
         { class: `commit-row ${H.open === c.hash ? 'selected' : ''}`, onClick: () => toggleInline(c, row), onContextmenu: (e) => commitContextMenu(e, c) },
-        rows ? graphSvg(rows[i], width, c.parents.length > 1) : h('span', { style: { width: '8px' } }),
+        rows ? graphSvg(rows[i], width, c.parents.length > 1, c.refs.some((r) => r === 'HEAD' || r.startsWith('HEAD -> '))) : h('span', { style: { width: '8px' } }),
         IN_TAB
           ? [
-              h('div', { class: 'commit-text' }, h('div', { class: 'commit-subject' }, refPills(c.refs), h('span', { class: 's', title: c.subject }, c.subject))),
+              h('div', { class: 'commit-text' }, h('div', { class: 'commit-subject' }, refPills(c.refs, rows && rows[i] ? rows[i].color : null), h('span', { class: 's', title: c.subject }, c.subject))),
               h('div', { class: 'col-author ellipsis', title: c.email }, c.author),
               h('div', { class: 'col-date', title: fullDate(c.time) }, new Date(c.time * 1000).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })),
               h('div', { class: 'col-hash mono' }, c.hash.slice(0, 7))
@@ -1284,7 +1365,7 @@ async function viewHistory() {
           : h(
               'div',
               { class: 'commit-text' },
-              h('div', { class: 'commit-subject' }, refPills(c.refs), h('span', { class: 's', title: c.subject }, c.subject)),
+              h('div', { class: 'commit-subject' }, refPills(c.refs, rows && rows[i] ? rows[i].color : null), h('span', { class: 's', title: c.subject }, c.subject)),
               h('div', { class: 'commit-meta', title: fullDate(c.time) }, `${c.author} · ${ago(c.time)} · `, h('span', { class: 'mono' }, c.hash.slice(0, 7)))
             )
       )
@@ -1297,7 +1378,7 @@ async function viewHistory() {
       h(
         'div',
         { style: { padding: '10px', textAlign: 'center' } },
-        h('button', { class: 'btn sm', onClick: async () => (await loadHistory(true), renderView()) }, 'Load more')
+        loadMoreSentinel()
       )
     )
   return root
@@ -1376,7 +1457,7 @@ function commitBody(c, { inline = false } = {}) {
       { class: 'detail' },
       !inline && h('div', { style: { fontWeight: 600 } }, subject),
       rest.join('\n').trim() && h('div', { class: 'msg dim' }, rest.join('\n').trim()),
-      c.refs.length ? h('div', { class: 'row', style: { flexWrap: 'wrap', gap: '4px' } }, refPills(c.refs)) : null,
+      c.refs.length ? h('div', { class: 'row', style: { flexWrap: 'wrap', gap: '4px' } }, refPills(c.refs, laneOfCommit.get(c.hash))) : null,
       h(
         'dl',
         { class: 'kv' },
@@ -1596,10 +1677,66 @@ async function copy(text) {
 /* =========================================================================
    Branches
    ========================================================================= */
+/**
+ * Switch branch. The two usual failures get a choice instead of an error: changes in the way
+ * (stash & switch, or discard & switch) and a branch already checked out in another worktree.
+ */
 async function checkout(name, opts = {}) {
   closeOverlays()
-  const out = await run('checkout', { ref: name, ...opts }, { success: `Switched to ${opts.track ? name.replace(/^[^/]+\//, '') : name}` })
-  if (out !== undefined) state.history.commits = []
+  const label = opts.track ? name.replace(/^[^/]+\//, '') : name
+  setBusy(1)
+  let out
+  try {
+    out = await call('checkout', { ref: name, ...opts })
+  } catch (e) {
+    setBusy(-1)
+    const inUse = e.message.match(/checked out in another worktree:\s*(.+)$/)
+    if (inUse) {
+      const where = inUse[1].trim()
+      const r = await dialog({
+        title: `${label} is open in another worktree`,
+        message: `${where}
+
+A branch can be checked out in only one worktree at a time.`,
+        ok: 'Open that worktree',
+        cancel: 'Cancel'
+      })
+      if (r) {
+        const opened = await request('worktree.open', { path: where }).catch(() => null)
+        if (!opened?.opened) pinRepo(where)
+      }
+      return
+    }
+    if (/changes that this checkout would overwrite/.test(e.message)) {
+      const r = await dialog({
+        title: `Switch to ${label}?`,
+        message: 'You have uncommitted changes that this checkout would overwrite.',
+        fields: [
+          {
+            key: 'how',
+            label: 'What to do with them',
+            type: 'select',
+            value: 'stash',
+            options: [
+              ['stash', 'Stash them, switch, then bring them back (recommended)'],
+              ['discard', 'Discard them and switch']
+            ]
+          }
+        ],
+        ok: 'Switch'
+      })
+      if (!r) return
+      if (r.how === 'discard' && !(await confirmBox('Discard your changes?', 'They cannot be recovered.', 'Discard & switch', true))) return
+      return checkout(name, { ...opts, stash: r.how === 'stash', discard: r.how === 'discard' })
+    }
+    toast(e.message, 'error')
+    return refreshAll()
+  }
+  setBusy(-1)
+  if (out?.stashKept) toast(`Switched to ${label}. Your changes did not apply cleanly, so they are kept in the stash.`, 'error', 9000)
+  else toast(out?.stashed ? `Switched to ${label} with your changes` : `Switched to ${label}`)
+  state.history.stale = true
+  await refreshAll()
 }
 async function checkoutCommit(hash) {
   if (!(await confirmBox('Checkout commit?', `HEAD will be detached at ${hash.slice(0, 7)}. Create a branch if you want to keep new commits.`, 'Checkout'))) return
@@ -1815,19 +1952,18 @@ async function showBranchLog(ref) {
     return toast(e.message, 'error')
   }
   const rows = layoutGraph(commits)
-  const maxLane = Math.min(MAX_LANES, Math.max(1, ...rows.map((r) => Math.max(r.before.length, r.after.length, r.col + 1))))
-  const width = 9 + maxLane * LANE_W + 4
+  const width = graphWidth(rows) + 4
   const list = h('div')
   commits.forEach((c, i) =>
     list.append(
       h(
         'div',
         { class: 'commit-row', onClick: () => openCommit(c.hash), onContextmenu: (e) => commitContextMenu(e, c) },
-        graphSvg(rows[i], width, c.parents.length > 1),
+        graphSvg(rows[i], width, c.parents.length > 1, c.refs.some((r) => r === 'HEAD' || r.startsWith('HEAD -> '))),
         h(
           'div',
           { class: 'commit-text' },
-          h('div', { class: 'commit-subject' }, refPills(c.refs), h('span', { class: 's' }, c.subject)),
+          h('div', { class: 'commit-subject' }, refPills(c.refs, rows && rows[i] ? rows[i].color : null), h('span', { class: 's' }, c.subject)),
           h('div', { class: 'commit-meta' }, `${c.author} · ${ago(c.time)} · ${c.hash.slice(0, 7)}`)
         )
       )
@@ -1971,16 +2107,37 @@ async function viewWorktrees() {
                       message: w.prunable ? `${w.path}
 
 Git no longer finds this worktree. Its record is removed; any files left in the folder stay on disk.` : w.path,
-                      fields: w.prunable ? [] : [{ key: 'force', label: w.locked ? 'Force (it is locked, and discard its uncommitted changes)' : 'Force (discard its uncommitted changes)', type: 'check', value: !!w.locked }],
+                      fields: w.prunable
+                        ? []
+                        : [
+                            { key: 'force', label: w.locked ? 'Force (it is locked, and discard its uncommitted changes)' : 'Force (discard its uncommitted changes)', type: 'check', value: !!w.locked },
+                            w.branch && { key: 'deleteBranch', label: `Also delete branch ${w.branch}`, type: 'check', value: false }
+                          ].filter(Boolean),
                       ok: 'Remove',
                       danger: true
                     })
                     if (!r) return
                     const card = document.querySelector(`[data-wt="${CSS.escape(w.path)}"]`)
                     card?.classList.add('leaving')
-                    const out = await run('worktreeRemove', { path: w.path, force: r.force }, { refresh: false })
+                    let out
+                    setBusy(1)
+                    try {
+                      out = await call('worktreeRemove', { path: w.path, force: r.force, deleteBranch: r.deleteBranch })
+                    } catch (err) {
+                      // Uncommitted or untracked files: say so plainly and offer to remove it anyway.
+                      if (!r.force && /--force|modified|untracked/i.test(err.message)) {
+                        setBusy(-1)
+                        const yes = await confirmBox('This worktree has uncommitted changes', `${w.path}
+
+Removing it deletes those changes. This cannot be undone.`, 'Remove anyway', true)
+                        setBusy(1) // balanced by finally
+                        if (yes) out = await call('worktreeRemove', { path: w.path, force: true, deleteBranch: r.deleteBranch }).catch((e2) => (toast(e2.message, 'error'), undefined))
+                      } else toast(err.message, 'error')
+                    } finally {
+                      setBusy(-1)
+                    }
                     if (out === undefined) card?.classList.remove('leaving')
-                    else if (out.pruned && out.leftover) toast(`Worktree removed from Git. The folder still exists:
+                    else if (out.leftover) toast(`Worktree removed from Git. Some files are left in the folder:
 ${w.path}`, 'ok', 7000)
                     else toast('Worktree removed')
                     if (out !== undefined) await new Promise((res) => setTimeout(res, 180)) // let the card fold away
@@ -2340,19 +2497,18 @@ function fileMenu(anchor, f) {
 
 function commitList(commits, { graph = true } = {}) {
   const rows = graph ? layoutGraph(commits) : null
-  const maxLane = rows ? Math.min(MAX_LANES, Math.max(1, ...rows.map((r) => Math.max(r.before.length, r.after.length, r.col + 1)))) : 0
-  const width = 9 + maxLane * LANE_W + 4
+  const width = rows ? graphWidth(rows) + 4 : 8
   const list = h('div')
   commits.forEach((c, i) =>
     list.append(
       h(
         'div',
         { class: 'commit-row', onClick: () => openCommit(c.hash), onContextmenu: (e) => commitContextMenu(e, c) },
-        rows ? graphSvg(rows[i], width, c.parents.length > 1) : h('span', { style: { width: '8px' } }),
+        rows ? graphSvg(rows[i], width, c.parents.length > 1, c.refs.some((r) => r === 'HEAD' || r.startsWith('HEAD -> '))) : h('span', { style: { width: '8px' } }),
         h(
           'div',
           { class: 'commit-text' },
-          h('div', { class: 'commit-subject' }, refPills(c.refs), h('span', { class: 's', title: c.subject }, c.subject)),
+          h('div', { class: 'commit-subject' }, refPills(c.refs, rows && rows[i] ? rows[i].color : null), h('span', { class: 's', title: c.subject }, c.subject)),
           h('div', { class: 'commit-meta' }, `${c.author} · ${ago(c.time)} · `, h('span', { class: 'mono' }, c.hash.slice(0, 7)))
         )
       )
