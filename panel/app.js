@@ -359,13 +359,17 @@ async function resolveRepo() {
       docRepo = JSON.parse(doc.content.text || '{}').repo || null
     } catch {}
   }
-  let res = { focused: null, workspaces: [] }
-  try {
-    res = await request('repo.resolve', {})
-  } catch (e) {
-    toast(e.message, 'error')
+  let res = { focused: null, workspaces: state.workspaces }
+  // A tab whose file names its project (or that the person pointed elsewhere) has nothing to look up:
+  // asking Orca which workspace is focused costs a process launch, so only follow focus otherwise.
+  if (!(IN_TAB && (state.pinned || docRepo))) {
+    try {
+      res = await request('repo.resolve', {})
+    } catch (e) {
+      toast(e.message, 'error')
+    }
+    state.workspaces = res.workspaces || []
   }
-  state.workspaces = res.workspaces || []
   // A Git Graph tab belongs to one project (its file lives there), so it shows that project.
   // The sidebar panel follows whatever is focused.
   const target = state.pinned || (IN_TAB ? docRepo || res.focused : res.focused)
@@ -419,7 +423,8 @@ const snap = {
   }
 }
 
-function repoMenu(anchor) {
+async function repoMenu(anchor) {
+  if (!state.workspaces.length) state.workspaces = (await request('repo.resolve', {}).catch(() => null))?.workspaces || []
   const ws = state.workspaces.filter((w) => w.kind === 'worktree' || w.kind === 'folder')
   menu(anchor, [
     { header: 'Repository' },
@@ -705,8 +710,10 @@ async function renderAll() {
 }
 
 /** Light status poll: only re-render when something changed. */
+/** Is this tab on screen? Orca hides other projects' tabs, sometimes only by shrinking them to nothing. */
+const isShown = () => document.visibilityState === 'visible' && window.innerWidth > 0 && window.innerHeight > 0
 async function pollStatus(force) {
-  if (!force && (document.hidden || !state.repo || state.busy || refreshing || document.querySelector('.overlay'))) return
+  if (!force && (!isShown() || !state.repo || state.busy || refreshing || document.querySelector('.overlay'))) return
   const repo = state.repo
   try {
     const st = await call('status')
@@ -3214,7 +3221,7 @@ let following = false
 async function followFocus() {
   // A confirm or menu is about this repository, and so is a running operation: switching now
   // would send the action to another one.
-  if (state.pinned || following || state.busy || document.querySelector('.overlay, .menu')) return
+  if (state.pinned || (IN_TAB && docRepo) || !isShown() || following || state.busy || document.querySelector('.overlay, .menu')) return
   following = true
   try {
     await followFocusOnce()
@@ -3235,8 +3242,11 @@ if (IN_TAB) {
   const report = () => {
     const now = document.visibilityState === 'visible' && window.innerWidth > 0 && window.innerHeight > 0
     if (now === shown) return
+    const wasHidden = shown === false
     shown = now
     request('graph.visible', { visible: now }).catch(() => {})
+    // back on screen after another project: one quiet check instead of polling while hidden
+    if (now && wasHidden) pollStatus(true)
   }
   document.addEventListener('visibilitychange', report)
   new ResizeObserver(report).observe(document.documentElement)
@@ -3245,7 +3255,7 @@ if (IN_TAB) {
 }
 window.addEventListener('focus', () => (state.pinned ? pollStatus() : followFocus().then(pollStatus)))
 // workspace.changed may not fire for every switch, so also re-check the focused worktree now and then.
-setInterval(() => !document.hidden && followFocus(), 3000)
+setInterval(() => followFocus(), 5000)
 setInterval(pollStatus, 4000)
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && state.sheets.length && !document.querySelector('.overlay, .menu')) closeSheet()

@@ -121,7 +121,14 @@ const norm = (p) => {
   return process.platform === 'win32' ? n.toLowerCase() : n
 }
 
+let wsCache = null
 async function listWorkspaces(orca) {
+  if (wsCache && Date.now() - wsCache.at < 10000) return wsCache.list
+  const list = await listWorkspacesUncached(orca)
+  wsCache = { at: Date.now(), list }
+  return list
+}
+async function listWorkspacesUncached(orca) {
   if (!orca.host.has('workspace.list')) return []
   try {
     const { workspaces } = await orca.host.call('workspace.list', {})
@@ -144,8 +151,20 @@ function orcaCli() {
 }
 const ORCA_BIN = orcaCli()
 
-/** Map terminal ids to their worktree paths with `orca terminal list --json`. */
+/** Map terminal ids to their worktree paths with `orca terminal list --json` (cached briefly). */
+let termCache = null
 function terminalWorktrees() {
+  if (termCache && Date.now() - termCache.at < 8000) return termCache.p
+  const p = terminalWorktreesUncached()
+  termCache = { at: Date.now(), p }
+  p.then((m) => Object.keys(m).length || (termCache = null))
+  return p
+}
+function forgetFocusCaches() {
+  termCache = null
+  wsCache = null
+}
+function terminalWorktreesUncached() {
   return new Promise((resolve) => {
     const child = spawn(ORCA_BIN, ['terminal', 'list', '--json'], { windowsHide: true, env: BASE_ENV })
     const out = []
@@ -1224,6 +1243,8 @@ Click to open Git Graph`
   let opening = Promise.resolve()
   // Older Orca builds have no worker events; the rest of the plugin works without them.
   orca.events?.on?.('workspace.changed', () => {
+    forgetFocusCaches() // a new focus: look it up again, and update the status bar now
+    updateStatusBar()
     // Read before awaiting anything: the new workspace's own tab may report itself shown meanwhile.
     const wasOnGraph = graphShown || Date.now() - graphHiddenAt < SWITCH_WINDOW
     opening = opening.then(async () => {
