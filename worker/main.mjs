@@ -1541,7 +1541,7 @@ async function reviewsList(orca, repo) {
   providers.forEach((p) => delete p._h)
   items.sort((a, b) => b.updated - a.updated)
   await Promise.all(items.slice(0, 25).map(async (it) => (it.ci = await reviewCi(it).catch(() => null))))
-  return { items, providers, errors, repoPath: where?.path || null }
+  return { items, providers, errors, repoPath: where?.path || null, repoHost: where?.host || null }
 }
 
 /** A review item as an API target, and how to reach it (gh/glab or the saved Git login). */

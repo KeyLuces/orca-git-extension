@@ -828,3 +828,4 @@ span.ci { cursor: default; height: 17px; padding: 0 7px; font-size: 10.5px; }
 .mr-people .field > label { height: 20px; min-height: 0; line-height: 20px; }
 .mr-people .link-btn { line-height: 20px; }
 .pp-me.hidden { display: inline !important; visibility: hidden; }
+.segmented button { display: inline-flex; align-items: center; gap: 5px; }

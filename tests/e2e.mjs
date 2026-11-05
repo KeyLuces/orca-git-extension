@@ -454,7 +454,9 @@ const apiServer = http.createServer((req, res) => {
           target_branch: 'main',
           updated_at: new Date().toISOString(),
           references: { full: `team/app!${n}` }
-        }
+        },
+        // one from another project: hidden unless "All repos"
+        ...(role === 'review' ? [{ iid: 99, project_id: 6, web_url: 'https://gitlab2.example.test/other/proj/-/merge_requests/99', title: 'MR other repo', author: { username: 'dev' }, source_branch: 'x', target_branch: 'main', updated_at: new Date().toISOString(), references: { full: 'other/proj!99' } }] : [])
       ])
     }
     send(200, [])
@@ -558,7 +560,7 @@ await step('Inbox (GitLab, saved Git login): to review, assigned, opened by me, 
   await tab('Review & MR')
   await clickText('.reviews .btn', 'Refresh').catch(() => {})
   const seg = async (label, want, not) => {
-    await clickText('.reviews .segmented button', label)
+    await page.evaluate((l) => [...document.querySelectorAll('.reviews .segmented button')].find((b) => b.textContent.trim() === l).click(), label)
     await until(() => page.$eval('.reviews', (r, w) => r.textContent.includes(w), want), `${label} lists ${want}`, 20000)
     if (not && (await page.$eval('.reviews', (r, n) => r.textContent.includes(n), not))) throw new Error(`${label} also lists ${not}`)
   }
@@ -567,6 +569,11 @@ await step('Inbox (GitLab, saved Git login): to review, assigned, opened by me, 
   await seg('Opened by me', 'MR mine', 'MR assigned')
   await seg('All open', 'MR repo', 'MR mine')
   await seg('All', 'MR mine', 'MR repo')
+  // follows the repository's remote: another project's MR shows only with "All repos"
+  if (await page.$eval('.reviews', (r) => r.textContent.includes('MR other repo'))) throw new Error('another repo listed by default')
+  await clickText('.reviews .segmented button', 'All repos')
+  await until(() => page.$eval('.reviews', (r) => r.textContent.includes('MR other repo')), 'All repos lists the other project', 20000)
+  await clickText('.reviews .segmented button', 'app')
   await shot('11-inbox')
 })
 await step('pipeline (GitLab): CI badge opens the pipeline, its jobs and the failed log; retry', async () => {

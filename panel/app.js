@@ -735,7 +735,7 @@ function renderTabs() {
   const nav = clear($('#tabs'))
   const st = state.status
   for (const [id, label] of TABS) {
-    const count = id === 'changes' ? st?.files.length : id === 'stash' ? st?.stashCount : id === 'reviews' ? state.reviews?.items.length : 0
+    const count = id === 'changes' ? st?.files.length : id === 'stash' ? st?.stashCount : id === 'reviews' ? reviewCount() : 0
     nav.append(
       h('button', { class: `tab ${state.tab === id ? 'active' : ''}`, onClick: () => setTab(id) }, label, count ? h('span', { class: 'badge' }, count) : null)
     )
@@ -4191,6 +4191,15 @@ async function mergeRequestDialog(target, source, swapped) {
    Reviews: every open pull/merge request you are asked to review or assigned
    ========================================================================= */
 let reviewsLoading = null
+/** Does a review item belong to the open repository (same host and project path as its remote)? */
+const inThisRepo = (it, data) => !!data.repoPath && it.repo?.toLowerCase() === data.repoPath.toLowerCase() && (!data.repoHost || !it.host || it.host.toLowerCase() === data.repoHost.toLowerCase())
+/** The tab's badge: waiting for me, in this repository unless "All repos" is chosen. */
+function reviewCount() {
+  const d = state.reviews
+  if (!d || d.repo !== state.repo) return 0
+  const all = !d.repoPath || store.get('reviewsAllRepos', false)
+  return d.items.filter((it) => it.roles.some((r) => r !== 'repo') && (all || inThisRepo(it, d))).length
+}
 async function loadReviews(force) {
   if (!force && state.reviews && state.reviews.repo === state.repo && Date.now() - state.reviews.at < 120000) return state.reviews
   const repo = state.repo
@@ -4221,6 +4230,13 @@ async function viewReviews() {
   }
   const data = state.reviews
   const filter = state.reviewFilter || 'all'
+  const allRepos = !data.repoPath || store.get('reviewsAllRepos', false)
+  const where = h(
+    'div',
+    { class: 'segmented' },
+    data.repoPath && h('button', { class: allRepos ? '' : 'on', title: `${data.repoHost}/${data.repoPath}`, onClick: () => (store.set('reviewsAllRepos', false), renderView({ force: true })) }, icon('branch', 11), data.repoPath.split('/').pop()),
+    h('button', { class: allRepos ? 'on' : '', title: 'Every repository on GitHub and GitLab you are signed in to', onClick: () => (store.set('reviewsAllRepos', true), renderView({ force: true })) }, 'All repos')
+  )
   const seg = h(
     'div',
     { class: 'segmented' },
@@ -4229,13 +4245,14 @@ async function viewReviews() {
       ['review', 'To review'],
       ['assigned', 'Assigned to me'],
       ['mine', 'Opened by me'],
-      ['repo', data.repoPath ? `All open · ${data.repoPath.split('/').pop()}` : 'All open in repo']
+      ['repo', 'All open']
     ].map(([k, l]) => h('button', { class: filter === k ? 'on' : '', onClick: () => ((state.reviewFilter = k), renderView({ force: true })) }, l))
   )
   root.append(
     h(
       'div',
       { class: 'history-bar' },
+      where,
       seg,
       h('span', { class: 'grow' }),
       h('span', { class: 'dim', style: { fontSize: '11.5px' } }, `Updated ${ago(data.at / 1000)}`),
@@ -4268,15 +4285,17 @@ async function viewReviews() {
   }
   for (const e of data.errors || []) root.append(h('div', { class: 'banner' }, h('div', { class: 'row' }, icon('alert'), h('span', null, e))))
 
-  // "All" = everything that involves me; "All open" = every open one in this repository
-  const items = data.items.filter((it) => (filter === 'all' ? it.roles.some((r) => r !== 'repo') : it.roles.includes(filter)))
+  // "All" = everything that involves me; "All open" = every open one in this repository.
+  // By default only this repository's (same host and project as its remote); "All repos" widens it.
+  const items = data.items.filter((it) => (filter === 'all' ? it.roles.some((r) => r !== 'repo') : it.roles.includes(filter)) && (allRepos || inThisRepo(it, data)))
   root.append(h('div', { class: 'section-head' }, filter === 'assigned' ? 'Assigned to you' : filter === 'review' ? 'Waiting for your review' : 'Open for you', h('span', { class: 'count' }, items.length)))
-  if (!items.length) root.append(h('div', { class: 'empty' }, icon('check', 28), h('div', null, 'Nothing waiting for you')))
+  if (!items.length) root.append(h('div', { class: 'empty' }, icon('check', 28), h('div', null, allRepos ? 'Nothing waiting for you' : `Nothing here for ${data.repoPath.split('/').pop()}`), !allRepos && h('button', { class: 'btn sm', style: { marginTop: '10px' }, onClick: () => (store.set('reviewsAllRepos', true), renderView({ force: true })) }, 'Show all repos')))
   for (const it of items) root.append(reviewRow(it))
   return root
 }
 
 function reviewRow(it) {
+  const own = it.roles.length > 0 && it.roles.every((r) => r === 'mine' || r === 'repo') && it.roles.includes('mine') // your own MR: nothing to approve
   const open = () => openLink(it.url)
   const noun = it.provider === 'github' ? 'pull request' : 'merge request'
   return h(
@@ -4310,8 +4329,8 @@ function reviewRow(it) {
       h('button', { class: 'btn sm', title: `Open the ${noun} in the browser`, onClick: open }, icon('open', 12), 'Open'),
       h('button', { class: 'btn sm', title: 'See the changes and comment on lines', onClick: () => reviewDiffSheet(it) }, icon('file', 12), 'Diff'),
       h('button', { class: 'btn sm', title: 'Review it with AI, then post', onClick: () => aiReviewModal(it) }, icon('sparkle', 12), 'AI review'),
-      h('button', { class: 'btn sm', onClick: () => reviewDialog(it) }, icon('edit', 12), 'Review…'),
-      h(
+      !own && h('button', { class: 'btn sm', onClick: () => reviewDialog(it) }, icon('edit', 12), 'Review…'),
+      !own && h(
         'button',
         {
           class: 'btn sm primary',
