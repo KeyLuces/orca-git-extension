@@ -572,6 +572,19 @@ function runProc(bin, args, { cwd, input, timeout = 60_000, shell = false } = {}
 const TAB_FILE = '.orca-git-graph.gitgraph'
 
 /**
+ * Keep Git Graph tab files (this one and the "untitled.gitgraph" the + menu creates) out of
+ * `git status` in every worktree of the repo, through .git/info/exclude: never committed or shared.
+ */
+async function ignoreGraphFiles(repo) {
+  const common = path.resolve(repo, (await git(repo, ['rev-parse', '--git-common-dir'])).trim())
+  const exclude = path.join(common, 'info', 'exclude')
+  mkdirSync(path.dirname(exclude), { recursive: true })
+  const cur = existsSync(exclude) ? readFileSync(exclude, 'utf8') : ''
+  if (!cur.split(/\r?\n/).includes('*.gitgraph'))
+    writeFileSync(exclude, cur + (cur && !cur.endsWith('\n') ? '\n' : '') + '# Orca Git Extension tabs\n*.gitgraph\n')
+}
+
+/**
  * Write the tab's marker file (ignored by git) and open it as an Orca editor tab. With `focus: false`
  * the tab opens in its worktree in the background, without changing what the person is looking at.
  */
@@ -579,13 +592,7 @@ async function openGraphTab(repo, { focus = true } = {}) {
   const top = (await git(repo, ['rev-parse', '--show-toplevel'])).trim()
   const file = path.join(top, TAB_FILE)
   writeFileSync(file, JSON.stringify({ repo: top }) + '\n')
-  // Keep it out of `git status` for every worktree of this repo.
-  const common = path.resolve(top, (await git(top, ['rev-parse', '--git-common-dir'])).trim())
-  const exclude = path.join(common, 'info', 'exclude')
-  mkdirSync(path.dirname(exclude), { recursive: true })
-  const cur = existsSync(exclude) ? readFileSync(exclude, 'utf8') : ''
-  if (!cur.split(/\r?\n/).includes(TAB_FILE))
-    writeFileSync(exclude, cur + (cur && !cur.endsWith('\n') ? '\n' : '') + TAB_FILE + '\n')
+  await ignoreGraphFiles(top)
   const r = await runProc(ORCA_BIN, ['file', 'open', file, '--worktree', `path:${top}`, ...(focus ? ['--focus'] : []), '--json'], {
     timeout: 15_000
   })
@@ -708,7 +715,20 @@ const ops = {
 
   refs: (r) => refs(r),
   checkout: async (r, a) => {
-    const ref = req(a.ref, 'ref')
+    let ref = req(a.ref, 'ref')
+    let local = null
+    if (a.track) {
+      // origin/x when a local x already exists: switch to the local branch (as Git Extensions does)
+      // and report how the two compare, so the panel can offer a fast-forward.
+      const name = ref.replace(/^[^/]+\//, '')
+      const exists = (await git(r, ['rev-parse', '--verify', '-q', `refs/heads/${name}`], { okCodes: [0, 1] })).trim()
+      if (exists) {
+        const [behind, ahead] = (await git(r, ['rev-list', '--left-right', '--count', `${ref}...${name}`])).trim().split(/\s+/).map(Number)
+        local = { name, remote: ref, ahead, behind }
+        ref = name
+        a = { ...a, track: false }
+      }
+    }
     const args = ['switch']
     if (a.discard) args.push('--discard-changes')
     // A remote branch: create a local tracking branch with the same name.
@@ -737,10 +757,10 @@ const ops = {
       try {
         await git(r, ['stash', 'pop'])
       } catch {
-        return { switched: true, stashKept: true } // conflicts: the stash stays for the person to apply
+        return { switched: true, stashKept: true, local } // conflicts: the stash stays for the person to apply
       }
     }
-    return { switched: true, stashed }
+    return { switched: true, stashed, local }
   },
   branchCreate: (r, a) => {
     const name = req(a.name, 'branch name')
@@ -1199,6 +1219,7 @@ Click to open Git Graph`
     return { agent: await agentSetting(), agents: Object.entries(AI).map(([id, v]) => ({ id, name: v.name, available: available[id] })) }
   })
   orca.panels.handle('ai.resolve', async ({ repo }) => aiResolve(orca, req(repo, 'repo'), await agentSetting()))
+  orca.panels.handle('repo.ignoreGraphFiles', async ({ repo }) => ignoreGraphFiles(req(repo, 'repo')).then(() => ({ ok: true })))
   orca.panels.handle('tab.open', async ({ repo }) => openGraphTab(req(repo, 'repo')))
 
   orca.panels.handle('repo.check', async ({ path: p }) => {

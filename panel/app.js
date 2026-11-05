@@ -111,6 +111,7 @@ const hasOrca = typeof window.orca !== 'undefined'
 // Opened as a full editor tab (custom editor for .gitgraph files) rather than the sidebar panel.
 const IN_TAB = hasOrca && !!window.orca.document
 let docRepo = null
+const ignoredGraphIn = new Set()
 
 async function request(name, input, timeoutMs = 30000) {
   if (!hasOrca) throw new Error('Open this panel inside Orca')
@@ -367,6 +368,11 @@ async function resolveRepo() {
   // The sidebar panel follows whatever is focused.
   const target = state.pinned || (IN_TAB ? docRepo || res.focused : res.focused)
   if (target !== state.repo) setRepo(target)
+  // A Git Graph tab file (untitled.gitgraph from the + menu) must never show up as a change.
+  if (IN_TAB && target && !ignoredGraphIn.has(target)) {
+    ignoredGraphIn.add(target)
+    request('repo.ignoreGraphFiles', { repo: target }).catch(() => {})
+  }
 }
 
 /** Point the view at another repository, showing its last snapshot right away when there is one. */
@@ -1733,8 +1739,16 @@ A branch can be checked out in only one worktree at a time.`,
     return refreshAll()
   }
   setBusy(-1)
-  if (out?.stashKept) toast(`Switched to ${label}. Your changes did not apply cleanly, so they are kept in the stash.`, 'error', 9000)
-  else toast(out?.stashed ? `Switched to ${label} with your changes` : `Switched to ${label}`)
+  const loc = out?.local
+  const shown = loc?.name || label
+  if (out?.stashKept) toast(`Switched to ${shown}. Your changes did not apply cleanly, so they are kept in the stash.`, 'error', 9000)
+  else toast(out?.stashed ? `Switched to ${shown} with your changes` : `Switched to ${shown}`)
+  // origin/x checked out while a local x exists: we switched to the local one; offer to catch it up.
+  if (loc && loc.behind > 0 && loc.ahead === 0) {
+    if (await confirmBox(`Update ${loc.name}?`, `Your local ${loc.name} is ${loc.behind} commit${loc.behind > 1 ? 's' : ''} behind ${loc.remote}. Fast-forward it?`, 'Fast-forward'))
+      await run('merge', { ref: loc.remote, ffOnly: true }, { success: `${loc.name} is up to date with ${loc.remote}` })
+  } else if (loc && loc.behind > 0)
+    toast(`Local ${loc.name} and ${loc.remote} have diverged (${loc.ahead} ahead, ${loc.behind} behind). Merge or rebase when you are ready.`, 'ok', 8000)
   state.history.stale = true
   await refreshAll()
 }
