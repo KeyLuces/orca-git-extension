@@ -1,4 +1,4 @@
-// Packs the Git Graph page into one self-contained HTML file (panel/graph.html).
+// Packs the Git Control page into one self-contained HTML file (panel/graph.html).
 // Orca's web client (orca serve in a browser, e.g. on a phone) loads a plugin frame as a single
 // sandboxed document that cannot fetch sibling files, so the styles and script are inlined here.
 // The desktop app loads the same file. Run after editing panel/tab.html, style.css or app.js:

@@ -1,4 +1,4 @@
-// Blackbox end-to-end test: the real Git Graph tab (panel/tab.html + app.js + style.css) in headless
+// Blackbox end-to-end test: the real Git Control tab (panel/tab.html + app.js + style.css) in headless
 // Chrome, wired to the real worker (worker/main.mjs) in this Node process. The test only clicks, types
 // and reads the page, then checks the repository from outside with plain git.
 import { execFileSync } from 'node:child_process'

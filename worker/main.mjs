@@ -1,4 +1,4 @@
-// Git Extension worker: runs git for the panel. No dependencies, plain Node.
+// Git Control worker: runs git for the panel. No dependencies, plain Node.
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
@@ -684,7 +684,7 @@ function runProc(bin, args, { cwd, input, timeout = 60_000, shell = false } = {}
 const TAB_FILE = '.orca-git-graph.gitgraph'
 
 /**
- * Keep Git Graph tab files (this one and the "untitled.gitgraph" the + menu creates) out of
+ * Keep Git Control tab files (this one and the "untitled.gitgraph" the + menu creates) out of
  * `git status` in every worktree of the repo, through .git/info/exclude: never committed or shared.
  */
 async function ignoreGraphFiles(repo) {
@@ -693,7 +693,7 @@ async function ignoreGraphFiles(repo) {
   mkdirSync(path.dirname(exclude), { recursive: true })
   const cur = existsSync(exclude) ? readFileSync(exclude, 'utf8') : ''
   if (!cur.split(/\r?\n/).includes('*.gitgraph'))
-    writeFileSync(exclude, cur + (cur && !cur.endsWith('\n') ? '\n' : '') + '# Orca Git Extension tabs\n*.gitgraph\n')
+    writeFileSync(exclude, cur + (cur && !cur.endsWith('\n') ? '\n' : '') + '# Git Control tabs\n*.gitgraph\n')
 }
 
 /**
@@ -1815,12 +1815,12 @@ export default function activate(orca) {
   }
   orca.panels.handle('repo.resolve', () => resolveFocused())
 
-  // Status bar: "⎇ branch ↑1 ↓2 • 3" for the focused worktree; pressing it opens Git Graph in a tab.
+  // Status bar: "⎇ branch ↑1 ↓2 • 3" for the focused worktree; pressing it opens Git Control in a tab.
   orca.commands.register('openGraph', async () => {
     const { focused } = await resolveFocused()
     if (!focused) return 'No Git repository for the focused workspace'
     await openGraphTab(focused)
-    return 'Opened Git Graph'
+    return 'Opened Git Control'
   })
   let lastBar = ''
   let barBusy = false // a slow git must not pile up overlapping polls
@@ -1834,7 +1834,7 @@ export default function activate(orca) {
     }
   }
   async function updateStatusBarOnce() {
-    let item = { id: 'branch', text: 'Git', tone: 'neutral', tooltip: 'Open Git Graph', visible: true }
+    let item = { id: 'branch', text: 'Git', tone: 'neutral', tooltip: 'Open Git Control', visible: true }
     try {
       const { focused } = await resolveFocused()
       if (!focused) item.visible = false
@@ -1850,7 +1850,7 @@ export default function activate(orca) {
           text: parts.join(' '),
           tone: conflicts || st.state ? 'warning' : 'neutral',
           tooltip: `${path.basename(st.toplevel)}${st.state ? ` · ${st.state} in progress` : ''}
-Click to open Git Graph`
+Click to open Git Control`
         }
       }
     } catch {
@@ -1866,9 +1866,9 @@ Click to open Git Graph`
   updateStatusBar()
   setInterval(updateStatusBar, 4000)
 
-  // Orca keeps editor tabs per workspace, so the Git Graph tab cannot follow the person from one
-  // workspace to the next. Instead, each workspace they switch to gets its own Git Graph tab:
-  // - they were looking at Git Graph when they switched: it opens and comes to the front;
+  // Orca keeps editor tabs per workspace, so the Git Control tab cannot follow the person from one
+  // workspace to the next. Instead, each workspace they switch to gets its own Git Control tab:
+  // - they were looking at Git Control when they switched: it opens and comes to the front;
   // - they were on anything else (a file, a terminal): it opens in the background once per Orca
   //   session, so their tab stays in front (closing it there is respected until Orca restarts).
   const keepOpen = async () => {
@@ -1878,8 +1878,8 @@ Click to open Git Graph`
       return false
     }
   }
-  // Each Git Graph tab reports when it is shown or hidden. Switching workspaces hides the old one a
-  // moment before Orca reports the switch, so "was on Git Graph" also covers a tab hidden just now.
+  // Each Git Control tab reports when it is shown or hidden. Switching workspaces hides the old one a
+  // moment before Orca reports the switch, so "was on Git Control" also covers a tab hidden just now.
   const SWITCH_WINDOW = 3000
   let graphShown = false
   let graphHiddenAt = 0
@@ -1908,9 +1908,9 @@ Click to open Git Graph`
       if (switched && wasOnGraph) {
         graphOpenedIn.add(key)
         graphHiddenAt = 0
-        return openGraphTab(focused, { focus: true }).catch((e) => orca.log(`Git Graph tab not focused: ${e.message}`))
+        return openGraphTab(focused, { focus: true }).catch((e) => orca.log(`Git Control tab not focused: ${e.message}`))
       }
-      // Not on Git Graph: leave the new project alone.
+      // Not on Git Control: leave the new project alone.
     })
     return opening
   })

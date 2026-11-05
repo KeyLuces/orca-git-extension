@@ -1,4 +1,4 @@
-// Git Extension panel. Plain JS, no dependencies. Talks to worker/main.mjs through orca.plugin.request.
+// Git Control panel. Plain JS, no dependencies. Talks to worker/main.mjs through orca.plugin.request.
 'use strict'
 
 /* =========================================================================
@@ -393,11 +393,11 @@ async function resolveRepo() {
     }
     state.workspaces = res.workspaces || []
   }
-  // A Git Graph tab belongs to one project (its file lives there), so it shows that project.
+  // A Git Control tab belongs to one project (its file lives there), so it shows that project.
   // The sidebar panel follows whatever is focused.
   const target = state.pinned || (IN_TAB ? docRepo || res.focused : res.focused)
   if (target !== state.repo) setRepo(target)
-  // A Git Graph tab file (untitled.gitgraph from the + menu) must never show up as a change.
+  // A Git Control tab file (untitled.gitgraph from the + menu) must never show up as a change.
   if (IN_TAB && target && !ignoredGraphIn.has(target)) {
     ignoredGraphIn.add(target)
     request('repo.ignoreGraphFiles', { repo: target }).catch(() => {})
@@ -541,7 +541,7 @@ function renderHeader() {
     iconBtn('refresh', 'Refresh', () => refreshAll(true), { disabled: !state.repo }),
     iconBtn('undo', 'Undo the last action (commit, reset, merge, rebase…)', undoLast, { disabled: dis }),
     iconBtn('settings', 'Git settings (identity, HTTPS, remotes)', () => setTab('settings'), { disabled: !state.repo }),
-    !IN_TAB && iconBtn('expand', 'Open Git Graph in a full tab', openTab, { disabled: dis })
+    !IN_TAB && iconBtn('expand', 'Open Git Control in a full tab', openTab, { disabled: dis })
   ])
 
   const bl = clear($('#branchLine'))
@@ -577,7 +577,7 @@ async function openTab() {
   }
 }
 
-/** Ask the AI agent (Settings → Plugins → Git Extension) to resolve the current conflicts in a terminal. */
+/** Ask the AI agent (Settings → Plugins → Git Control) to resolve the current conflicts in a terminal. */
 async function resolveWithAi() {
   setBusy(1)
   try {
@@ -1213,7 +1213,7 @@ async function viewChanges() {
     const args = { message: state.commitDraft, amend: state.amend, ...extra }
     if (!staged.length && !state.amend && !extra.allowEmpty) {
       if (!unstaged.length) return
-      // Nothing staged: stage everything first, like git-extension's "commit all".
+      // Nothing staged: stage everything first, the usual "commit all".
       if (!(await confirmBox('Nothing staged', 'Stage all changes and commit them?', 'Stage all & commit'))) return
       await call('stageAll').catch((e) => toast(e.message, 'error'))
     }
@@ -4367,8 +4367,8 @@ async function followFocusOnce() {
   await resolveRepo()
   if (state.repo !== before) refreshAll()
 }
-// The Git Graph tab tells the worker when it is shown or hidden, so switching to another workspace
-// while on Git Graph brings that workspace's Git Graph to the front. A hidden tab may only shrink
+// The Git Control tab tells the worker when it is shown or hidden, so switching to another workspace
+// while on Git Control brings that workspace's Git Control to the front. A hidden tab may only shrink
 // to nothing rather than become "hidden", so its size counts too.
 if (IN_TAB) {
   let shown = null

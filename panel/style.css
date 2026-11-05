@@ -1,5 +1,5 @@
 /* =========================================================================
-   Git Extension for Orca: one stylesheet, one set of tokens.
+   Git Control for Orca: one stylesheet, one set of tokens.
    Surfaces  --bg (page) → --raised (sidebar, inputs) → --card (boxes, menus)
    Text      --t1 main · --t2 secondary · --t3 hints
    Accents   --ren (blue, primary) · --add · --del · --mod · --info

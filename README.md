@@ -1,6 +1,6 @@
-# Git Extension for Orca
+# Git Control for Orca
 
-A lightweight Git client in a full Orca editor tab (Git Graph), modeled on Git Extensions. Open it from the **Git** item in the status bar or the command **Git: Open Git Graph**. No dependencies, no build step: a plain HTML/CSS/JS panel plus a small Node worker that runs your installed `git`.
+A lightweight Git client in a full Orca editor tab. Open it from the **Git** item in the status bar or the command **Git: Open Git Control**. No dependencies, no build step: a plain HTML/CSS/JS panel plus a small Node worker that runs your installed `git`.
 
 ## Features
 
@@ -12,10 +12,10 @@ A lightweight Git client in a full Orca editor tab (Git Graph), modeled on Git E
 - **Settings:** git config at **Global** or **This repository** scope (user.name/email, pull.rebase, autocrlf, and more), edit any entry, manage remotes
 - Merge/rebase/cherry-pick in progress → Continue / Skip / Abort banner
 - Fetch / Pull (merge, rebase, ff-only) / Push (force-with-lease) in the header
-- **Git Graph tab:** the whole client lives in one editor tab (VS Code Git Graph style); commit details slide in from the right
-- **Right-click menus:** right-click a commit, branch, remote, tag, changed file, stash or worktree for its actions, as in Git Extensions. On a commit: checkout (its branches or detached), create branch/tag/worktree here, merge, rebase, interactive rebase, cherry-pick and revert (with or without committing; merges against the first parent), reset (soft, mixed, keep, merge, hard), fixup!/squash! commits, the branches and tags at the commit, compare, browse files, patch, bisect and copy. Sub-menus open on hover
-- **Git Graph in every project:** switching projects opens that project's Git Graph tab in the background, or brings it to the front when you were on Git Graph (setting: Keep Git Graph open in every project)
-- **AI:** "AI message" writes the commit message from your changes; "Resolve with AI" (and the merge/rebase option) opens a terminal where the agent resolves conflicts and stages them for you to review. Choose Claude Code or Codex in Settings → Plugins → Git Extension
+- **Git Control tab:** the whole client lives in one editor tab (VS Code Git Control style); commit details slide in from the right
+- **Right-click menus:** right-click a commit, branch, remote, tag, changed file, stash or worktree for its actions. On a commit: checkout (its branches or detached), create branch/tag/worktree here, merge, rebase, interactive rebase, cherry-pick and revert (with or without committing; merges against the first parent), reset (soft, mixed, keep, merge, hard), fixup!/squash! commits, the branches and tags at the commit, compare, browse files, patch, bisect and copy. Sub-menus open on hover
+- **Git Control in every project:** switching projects opens that project's Git Control tab in the background, or brings it to the front when you were on Git Control (setting: Keep Git Control open in every project)
+- **AI:** "AI message" writes the commit message from your changes; "Resolve with AI" (and the merge/rebase option) opens a terminal where the agent resolves conflicts and stages them for you to review. Choose Claude Code or Codex in Settings → Plugins → Git Control
 - Follows the focused Orca workspace automatically; switch to another repository from the repository name in the header
 - Uses Orca theme colors (light and dark)
 
@@ -34,7 +34,7 @@ Requires Orca ≥ 1.4.246 and `git` on PATH.
 
 The Orca mobile app does not show plugins yet, but Orca's web client (`orca serve`, or a remote Orca
 server, opened in a phone's browser) does. It loads a plugin frame as one sandboxed document that
-cannot fetch other files, so the Git Graph tab is built into a single file:
+cannot fetch other files, so the Git Control tab is built into a single file:
 
 ```sh
 node tools/build.mjs   # panel/tab.html + style.css + app.js -> panel/graph.html (the editor entry)
@@ -46,7 +46,7 @@ row actions stay visible on touch screens, long-press works as right-click, and 
 
 ## End-to-end test
 
-`tests/e2e.mjs` opens the real Git Graph tab in headless Chrome, wires it to the real worker, and
+`tests/e2e.mjs` opens the real Git Control tab in headless Chrome, wires it to the real worker, and
 clicks through commit, branch, checkout (dirty and diverged remote), stash, discard, worktrees,
 settings, tags and the AI dialog on a throwaway repository, checking every result with plain git.
 It uses its own global git config, never yours.
@@ -61,5 +61,5 @@ npm run perf -- <path to a large repo>  # read-only timings: open, tab switch, l
 ```
 orca-plugin.json   manifest (trusted-worker: the worker runs git)
 worker/main.mjs    git operations, exposed to the panel via orca.panels.handle
-panel/             tab.html (the Git Graph editor), style.css, app.js
+panel/             tab.html (the Git Control editor), style.css, app.js
 ```
