@@ -119,6 +119,7 @@ const ignoredGraphIn = new Set()
 
 async function request(name, input, timeoutMs = 30000) {
   if (!hasOrca) throw new Error('Open this panel inside Orca')
+  input = JSON.parse(JSON.stringify(input ?? {})) // drop undefined values: Orca rejects them as invalid input
   if (window.orca.plugin?.request) return window.orca.plugin.request(name, input, { timeoutMs })
   const r = await window.orca.host.call('plugin.request', { name, input, timeoutMs })
   return r.output
@@ -3783,9 +3784,11 @@ async function mergeRequestDialog(target, source, swapped) {
 let reviewsLoading = null
 async function loadReviews(force) {
   if (!force && state.reviews && Date.now() - state.reviews.at < 120000) return state.reviews
-  reviewsLoading ||= request('reviews.list', {}, 90000)
+  if (!force && state.reviews && state.reviews.repo === state.repo && Date.now() - state.reviews.at < 120000) return state.reviews
+  const repo = state.repo
+  reviewsLoading ||= request('reviews.list', { repo }, 90000)
     .then((r) => {
-      state.reviews = { ...r, at: Date.now() }
+      state.reviews = { ...r, repo, at: Date.now() }
       try { store.set('reviewsCache', state.reviews) } catch {}
       renderTabs()
       return state.reviews
@@ -3798,7 +3801,7 @@ async function viewReviews() {
   const root = h('div', { class: 'view reviews' })
   // Show at once: the last list (even from an earlier session) while a fresh one loads behind it.
   if (!state.reviews) state.reviews = store.get('reviewsCache', null)
-  const stale = !state.reviews || Date.now() - state.reviews.at >= 120000
+  const stale = !state.reviews || state.reviews.repo !== state.repo || Date.now() - state.reviews.at >= 120000
   if (stale) {
     const p = loadReviews(true).then(() => state.tab === 'reviews' && renderView({ force: true }))
     if (!state.reviews) {
@@ -3822,7 +3825,9 @@ async function viewReviews() {
     [
       ['all', 'All'],
       ['review', 'To review'],
-      ['assigned', 'Assigned']
+      ['assigned', 'Assigned to me'],
+      ['mine', 'Opened by me'],
+      ['repo', data.repoPath ? `All open · ${data.repoPath.split('/').pop()}` : 'All open in repo']
     ].map(([k, l]) => h('button', { class: filter === k ? 'on' : '', onClick: () => ((state.reviewFilter = k), renderView({ force: true })) }, l))
   )
   root.append(
@@ -3861,7 +3866,8 @@ async function viewReviews() {
   }
   for (const e of data.errors || []) root.append(h('div', { class: 'banner' }, h('div', { class: 'row' }, icon('alert'), h('span', null, e))))
 
-  const items = data.items.filter((it) => filter === 'all' || it.roles.includes(filter))
+  // "All" = everything that involves me; "All open" = every open one in this repository
+  const items = data.items.filter((it) => (filter === 'all' ? it.roles.some((r) => r !== 'repo') : it.roles.includes(filter)))
   root.append(h('div', { class: 'section-head' }, filter === 'assigned' ? 'Assigned to you' : filter === 'review' ? 'Waiting for your review' : 'Open for you', h('span', { class: 'count' }, items.length)))
   if (!items.length) root.append(h('div', { class: 'empty' }, icon('check', 28), h('div', null, 'Nothing waiting for you')))
   for (const it of items) root.append(reviewRow(it))
@@ -3885,6 +3891,7 @@ function reviewRow(it) {
         it.draft && h('span', { class: 'pill' }, 'Draft'),
         it.roles.includes('review') && h('span', { class: 'pill role-review' }, 'Review requested'),
         it.roles.includes('assigned') && h('span', { class: 'pill role-assigned' }, 'Assigned'),
+        it.roles.includes('mine') && h('span', { class: 'pill role-mine' }, 'Mine'),
         it.ci && h('span', { class: `ci ci-${it.ci}`, title: `CI: ${it.ci}` }, ciIcon(it.ci), it.ci)
       ),
       h(

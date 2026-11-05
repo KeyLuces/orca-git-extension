@@ -972,11 +972,15 @@ const jsonOf = (r) => {
   }
 }
 
-async function githubInbox() {
+async function githubInbox(where) {
   const fields = 'number,title,url,repository,author,updatedAt,isDraft'
-  const [rev, asg] = await Promise.all([
-    runProc('gh', ['search', 'prs', '--review-requested=@me', '--state=open', '--json', fields, '--limit', '50'], { timeout: 30_000 }),
-    runProc('gh', ['search', 'prs', '--assignee=@me', '--state=open', '--json', fields, '--limit', '50'], { timeout: 30_000 })
+  const search = (...q) => runProc('gh', ['search', 'prs', ...q, '--state=open', '--json', fields, '--limit', '50'], { timeout: 30_000 })
+  const here = where?.kind === 'github' && /^[\w.-]+\/[\w.-]+$/.test(where.path) ? where.path : null
+  const [rev, asg, mine, repo] = await Promise.all([
+    search('--review-requested=@me'),
+    search('--assignee=@me'),
+    search('--author=@me'),
+    here ? search('--repo', here) : Promise.resolve({ code: 0, stdout: '[]' })
   ])
   if (rev.code !== 0 && asg.code !== 0) throw new GitError((rev.stderr || asg.stderr).trim() || 'gh could not list pull requests')
   const items = new Map()
@@ -1000,15 +1004,20 @@ async function githubInbox() {
   }
   add(jsonOf(rev), 'review')
   add(jsonOf(asg), 'assigned')
+  add(jsonOf(mine), 'mine')
+  add(jsonOf(repo), 'repo')
   return [...items.values()]
 }
 
-async function gitlabInbox(host) {
+async function gitlabInbox(host, where) {
   const api = (path, extra = []) => runProc('glab', ['api', '--hostname', host, ...extra, path], { timeout: 30_000 })
   const me = jsonOf(await api('user'))
   if (!me?.username) throw new GitError(`glab is not signed in to ${host}`)
   const q = 'merge_requests?state=opened&scope=all&per_page=50'
-  const [rev, asg] = await Promise.all([api(`${q}&reviewer_username=${encodeURIComponent(me.username)}`), api(`${q}&assignee_username=${encodeURIComponent(me.username)}`)])
+  const u = encodeURIComponent(me.username)
+  const here = where?.kind === 'gitlab' && where.host === host ? `projects/${encodeURIComponent(where.path)}/merge_requests?state=opened&per_page=50` : null
+  const none = Promise.resolve({ code: 0, stdout: '[]' })
+  const [rev, asg, mine, repo] = await Promise.all([api(`${q}&reviewer_username=${u}`), api(`${q}&assignee_username=${u}`), api(`${q}&author_username=${u}`), here ? api(here) : none])
   const items = new Map()
   const add = (list, role) => {
     for (const m of Array.isArray(list) ? list : []) {
@@ -1033,10 +1042,25 @@ async function gitlabInbox(host) {
   }
   add(jsonOf(rev), 'review')
   add(jsonOf(asg), 'assigned')
+  add(jsonOf(mine), 'mine')
+  add(jsonOf(repo), 'repo')
   return [...items.values()]
 }
 
-async function reviewsList(orca) {
+/** Where the open repository's main remote lives, or null. */
+async function repoWhere(repo) {
+  if (!repo) return null
+  try {
+    const remotes = (await git(repo, ['remote'])).split(/\s+/).filter(Boolean)
+    const r = remotes.includes('origin') ? 'origin' : remotes[0]
+    return r ? parseRemote((await git(repo, ['remote', 'get-url', r])).trim()) : null
+  } catch {
+    return null
+  }
+}
+
+async function reviewsList(orca, repo) {
+  const where = await repoWhere(repo)
   const providers = []
   const items = []
   const errors = []
@@ -1046,7 +1070,9 @@ async function reviewsList(orca) {
   providers.push({ provider: 'github', host: 'github.com', cli: 'gh', installed: ghInstalled, signedIn: ghIn })
   // GitLab hosts used by the person's projects
   const glabInstalled = await toolOk('glab', ['--version'])
-  for (const host of await gitlabHosts(orca)) {
+  const glHosts = new Set(await gitlabHosts(orca))
+  if (where?.kind === 'gitlab') glHosts.add(where.host)
+  for (const host of glHosts) {
     const signedIn = glabInstalled && (await toolOk('glab', ['auth', 'status', '--hostname', host]))
     providers.push({ provider: 'gitlab', host, cli: 'glab', installed: glabInstalled, signedIn })
   }
@@ -1055,7 +1081,7 @@ async function reviewsList(orca) {
     providers
       .filter((p) => p.signedIn)
       .map((p) =>
-        (p.provider === 'github' ? githubInbox() : gitlabInbox(p.host)).then(
+        (p.provider === 'github' ? githubInbox(where) : gitlabInbox(p.host, where)).then(
           (list) => items.push(...list),
           (e) => errors.push(`${p.host}: ${e.message}`)
         )
@@ -1063,7 +1089,7 @@ async function reviewsList(orca) {
   )
   items.sort((a, b) => b.updated - a.updated)
   await Promise.all(items.slice(0, 25).map(async (it) => (it.ci = await reviewCi(it).catch(() => null))))
-  return { items, providers, errors }
+  return { items, providers, errors, repoPath: where?.path || null }
 }
 
 /** Approve, request changes or comment on a pull/merge request. */
@@ -1919,7 +1945,7 @@ Click to open Git Graph`
     return mrCreate(req(input.repo, 'repo'), input)
   })
   orca.panels.handle('mr.setup', async ({ repo, step } = {}) => mrSetup(orca, req(repo, 'repo'), { step }))
-  orca.panels.handle('reviews.list', () => reviewsList(orca))
+  orca.panels.handle('reviews.list', ({ repo } = {}) => reviewsList(orca, repo))
   orca.panels.handle('ai.review', async (input = {}) => aiReview(input, AI[input.agent] ? input.agent : await agentSetting()))
   orca.panels.handle('reviews.act', (input = {}) => reviewAct(input))
   orca.panels.handle('reviews.setup', async ({ host, step } = {}) => {
