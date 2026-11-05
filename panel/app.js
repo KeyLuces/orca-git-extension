@@ -3270,61 +3270,112 @@ async function mergeRequestDialog(target) {
   title.value = info.commits.length === 1 ? info.commits[0] : humanize(info.source)
   const body = h('textarea', { rows: 5, placeholder: 'What changed and why' })
   body.value = info.commits.map((c) => `- ${c}`).join('\n')
-  const go = h('button', { type: 'button', class: 'btn primary' }, icon('open', 13), info.needsPush ? `Push & open ${service}` : `Open ${service}`)
+  const draft = h('input', { type: 'checkbox' })
+  const note = h('div', { class: 'mr-status' })
+  const linkBtn = h('button', { type: 'button', class: 'btn' })
+  const createBtn = h('button', { type: 'button', class: 'btn primary' })
+
+  const drawButtons = () => {
+    clear(linkBtn).append(icon('open', 13), 'Open link')
+    linkBtn.title = `Push, then open ${service} with this filled in; press Create there. Nothing to install.`
+    clear(createBtn).append(icon('merge', 13), info.tools.signedIn ? 'Create now' : `Set up & create`)
+    createBtn.title = info.tools.signedIn ? `Push and create the ${noun} on ${service} right here` : `Needs ${info.tools.cli}, set up once`
+    clear(note)
+    if (info.tools.signedIn) note.append(icon('check', 13), h('span', null, h('b', null, 'Create now'), ` makes the ${noun} on ${service} directly. `, h('b', null, 'Open link'), ' opens it in your browser instead.'))
+    else
+      note.append(
+        icon('open', 13),
+        h(
+          'div',
+          { class: 'grow' },
+          h('div', null, h('b', null, 'Open link'), ` works right away: ${service} opens with this filled in, press Create there.`),
+          h('div', { class: 'dim' }, h('b', null, 'Create now'), ` needs ${info.tools.cli}${info.tools.installed ? ' signed in' : ''}. Set it up once:`),
+          h(
+            'div',
+            { class: 'mr-steps' },
+            !info.tools.installed && info.tools.canInstall && h('button', { type: 'button', class: 'btn sm', onClick: () => setup(isGh ? 'gh-install' : 'glab-install') }, icon('download', 12), `1. Install ${info.tools.cli}`),
+            h('button', { type: 'button', class: 'btn sm', disabled: !info.tools.installed, onClick: () => setup(isGh ? 'gh-login' : 'glab-login') }, icon('user', 12), `${info.tools.installed ? '' : '2. '}Sign in to ${service}`),
+            h('button', { type: 'button', class: 'btn sm', onClick: recheck }, icon('refresh', 12), 'Check again')
+          )
+        )
+      )
+  }
+  async function setup(step) {
+    try {
+      const r = await request('mr.setup', { repo, step }, 30000)
+      toast(r.ran ? `Running in a new terminal: ${r.command}\nFollow it there, then press "Check again".` : `Run this in a terminal, then press "Check again":\n${r.command}`, 'ok', 10000)
+    } catch (e) {
+      toast(e.message, 'error')
+    }
+  }
+  async function recheck() {
+    try {
+      info = await request('mr.info', { repo, target }, 30000)
+      drawButtons()
+      if (info.tools.signedIn) toast(`${info.tools.cli} is ready: Create now makes it in one click.`)
+    } catch (e) {
+      toast(e.message, 'error')
+    }
+  }
 
   const close = () => {
     overlay.remove()
     document.removeEventListener('keydown', onKey)
   }
-  const onKey = (e) => {
-    if (e.key === 'Escape') close()
-    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) go.click()
-  }
-  go.addEventListener('click', async () => {
-    go.disabled = true
-    clear(go).append(h('span', { class: 'spinner' }), info.needsPush ? 'Pushing…' : 'Opening…')
+  const onKey = (e) => e.key === 'Escape' && close()
+  const finished = (headline, url, sub, openLabel) =>
+    clear(form).append(
+      h('div', { class: 'mr-done' }, icon('check', 22), h('div', null, h('div', { class: 'mr-done-title' }, headline), sub && h('div', { class: 'dim' }, sub))),
+      h(
+        'div',
+        { class: 'buttons' },
+        h('button', { type: 'button', class: 'btn', onClick: () => copy(url) }, icon('copy', 13), 'Copy link'),
+        h('span', { class: 'grow' }),
+        h('button', { type: 'button', class: 'btn', onClick: close }, 'Close'),
+        h('button', { type: 'button', class: 'btn primary', onClick: () => (window.orca?.shell?.openExternal ? window.orca.shell.openExternal(url) : window.open(url)) }, icon('open', 13), openLabel)
+      )
+    )
+  async function submit(web) {
+    if (!web && !info.tools.signedIn) {
+      // first time: set the CLI up (or just sign in) in a terminal; "Check again" enables one click
+      return setup(info.tools.installed ? (isGh ? 'gh-login' : 'glab-login') : isGh ? 'gh-install' : 'glab-install')
+    }
+    if (!web && !title.value.trim()) return title.focus()
+    const btn = web ? linkBtn : createBtn
+    linkBtn.disabled = createBtn.disabled = true
+    clear(btn).append(h('span', { class: 'spinner' }), info.needsPush ? 'Pushing…' : web ? 'Opening…' : 'Creating…')
     try {
-      const r = await request('mr.create', { repo, target: info.target, title: title.value, body: body.value }, 120000)
-      const pushed = r.pushed ? `${info.source} pushed. ` : ''
-      if (r.opened) {
+      const r = await request('mr.create', { repo, target: info.target, title: title.value, body: body.value, draft: draft.checked, web }, 120000)
+      const pushed = r.pushed ? `${info.source} pushed to ${info.remote}. ` : ''
+      if (web && r.opened) {
         close()
         toast(`${pushed}${service} is open in your browser: check the ${noun} and press Create.`, 'ok', 6000)
-      } else {
-        // the browser could not be started from here: a click opens it
-        clear(form).append(
-          h('div', { class: 'mr-done' }, icon('check', 22), h('div', null, h('div', { class: 'mr-done-title' }, `Ready on ${service}`), h('div', { class: 'dim' }, `${pushed}Open the page and press Create.`))),
-          h(
-            'div',
-            { class: 'buttons' },
-            h('button', { type: 'button', class: 'btn', onClick: () => copy(r.url) }, icon('copy', 13), 'Copy link'),
-            h('span', { class: 'grow' }),
-            h('button', { type: 'button', class: 'btn primary', onClick: () => (window.orca?.shell?.openExternal ? window.orca.shell.openExternal(r.url) : window.open(r.url)) }, icon('open', 13), `Open ${service}`)
-          )
-        )
-      }
+      } else if (web) finished(`Ready on ${service}`, r.url, `${pushed}Open the page and press Create.`, `Open ${service}`)
+      else if (r.created) finished(`${noun[0].toUpperCase() + noun.slice(1)} created`, r.url, `${pushed}${info.source} → ${info.target}`, `Open ${noun}`)
+      else finished(`A ${noun} for ${info.source} already exists`, r.url, pushed, `Open ${noun}`)
       state.history.stale = true
       refreshAll()
     } catch (e) {
       toast(e.message, 'error')
-      go.disabled = false
-      clear(go).append(icon('open', 13), info.needsPush ? `Push & open ${service}` : `Open ${service}`)
+      linkBtn.disabled = createBtn.disabled = false
+      drawButtons()
     }
-  })
+  }
+  linkBtn.addEventListener('click', () => submit(true))
+  createBtn.addEventListener('click', () => submit(false))
 
   const form = h(
     'div',
     { class: 'mr-form' },
     h('div', { class: 'mr-route' }, h('span', { class: 'ref' }, icon('branch', 10), h('span', { class: 'ref-t' }, info.source)), icon('right', 14), h('span', { class: 'ref' }, icon('branch', 10), h('span', { class: 'ref-t' }, info.target))),
+    info.needsPush && h('div', { class: 'dim mr-note' }, icon('push', 12), `${info.source} ${info.upstream ? 'has commits not on' : 'is not on'} ${info.remote} yet; it is pushed first.`),
     h('div', { class: 'field' }, h('label', null, 'Title'), title),
     h('div', { class: 'field' }, h('label', null, 'Description'), body),
-    h(
-      'div',
-      { class: 'dim mr-note' },
-      icon('open', 12),
-      `${info.needsPush ? `${info.source} is pushed to ${info.remote} first, then ` : ''}${service} opens in your browser with this filled in. Press Create there.`
-    ),
-    h('div', { class: 'buttons' }, h('button', { type: 'button', class: 'btn', onClick: close }, 'Cancel'), h('span', { class: 'grow' }), go)
+    h('label', { class: 'check' }, draft, 'Draft (Create now only)'),
+    note,
+    h('div', { class: 'buttons' }, h('button', { type: 'button', class: 'btn', onClick: close }, 'Cancel'), h('span', { class: 'grow' }), linkBtn, createBtn)
   )
+  drawButtons()
   const box = h('div', { class: 'dialog mr-dialog', role: 'dialog' }, h('h3', null, `New ${noun}`), form)
   const overlay = h('div', { class: 'overlay', onMousedown: (e) => e.target === overlay && close() }, box)
   document.body.append(overlay)

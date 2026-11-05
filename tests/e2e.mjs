@@ -371,7 +371,7 @@ await step('merge request: one button pushes the branch and hands over to GitLab
   const t = await page.$eval('.mr-dialog input[type=text]', (i) => i.value)
   if (t !== 'Add MR change') throw new Error('title prefilled as ' + t)
   await shot('07-mr-dialog')
-  await clickText('.mr-dialog .btn.primary', 'Push & open')
+  await clickText('.mr-dialog .btn', 'Open link')
   await until(() => page.evaluate(() => document.querySelector('.mr-dialog')?.textContent.includes('Ready on')), 'finish step', 20000)
   if (!execFileSync('git', ['ls-remote', origin, 'mr-branch'], { encoding: 'utf8' }).trim()) throw new Error('branch was not pushed')
   await shot('08-mr-done')
