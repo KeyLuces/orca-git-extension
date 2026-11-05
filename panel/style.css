@@ -686,3 +686,9 @@ span.ci { cursor: default; height: 17px; padding: 0 7px; font-size: 10.5px; }
 .clean-note { padding: 40px 16px; }
 .commit-box:has(+ .clean-note) { border-bottom: 0; }
 .clean-note { border-top: 1px solid var(--line); margin: 0 16px; }
+
+/* Merge request entries: a remote action, so they look different from a local merge */
+.menu button.mr-item { color: var(--info); }
+.menu button.mr-item svg { color: var(--info); }
+.menu button.mr-item:hover { background: color-mix(in srgb, var(--info) 14%, transparent); }
+.menu-badge { flex: none; padding: 1px 6px; border-radius: 999px; font-size: 10px; font-weight: 650; letter-spacing: .03em; color: var(--info); background: color-mix(in srgb, var(--info) 16%, transparent); border: 1px solid color-mix(in srgb, var(--info) 35%, transparent); }
