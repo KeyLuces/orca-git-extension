@@ -336,6 +336,8 @@ await step('tags a commit from its right-click menu', async () => {
   })
   await page.mouse.click(box.x, box.y, { button: 'right' })
   await until(() => exists('.menu'), 'context menu')
+  await clickText('.menu button', 'More')
+  await until(() => page.$$eval('.menu', (m) => m.length > 1), 'More submenu')
   await clickText('.menu button', 'Create tag here')
   await dialogOpen()
   await fill('.overlay .dialog input[type=text]', 'v-e2e')

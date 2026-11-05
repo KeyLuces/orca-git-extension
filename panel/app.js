@@ -1638,67 +1638,8 @@ function commitMenu(anchor, c) {
   const tags = refs.filter((r) => r.startsWith('tag: ')).map((r) => r.slice(5))
   const staged = state.status?.files?.some((f) => f.staged)
   const date = c.time ? new Date(c.time * 1000).toISOString() : ''
-  menu(anchor, [
-    { header: `${short} · ${(c.subject || c.message || '').split('\n')[0].slice(0, 48)}` },
-    {
-      label: 'Checkout',
-      icon: 'right',
-      items: [
-        ...local.filter((b) => b !== cur).map((b) => ({ label: `Branch ${b}`, icon: 'branch', onClick: () => checkout(b) })),
-        ...remote.map((b) => ({ label: state.localNames?.has(b.replace(/^[^/]+\//, '')) ? `Remote ${b}…` : `Remote ${b} (new local branch)`, icon: 'globe', onClick: () => checkout(b, { track: true }) })),
-        { label: 'This commit (detached HEAD)', icon: 'commit', onClick: () => checkoutCommit(c.hash) }
-      ]
-    },
-    { label: 'Create branch here…', icon: 'plus', onClick: () => newBranch(c.hash) },
-    { label: 'Create tag here…', icon: 'tag', onClick: () => newTag(c.hash) },
-    { label: 'New worktree here…', icon: 'worktree', onClick: () => addWorktree({ base: c.hash }) },
-    '-',
-    { header: `On ${cur}` },
-    !isHead && { label: `Merge into ${cur}…`, icon: 'merge', onClick: () => mergeRef(local[0] || c.hash) },
-    !isHead && { label: `Rebase ${cur} onto this…`, icon: 'merge', onClick: () => rebaseOnto(local[0] || c.hash) },
-    !isHead && { label: 'Interactive rebase from here…', icon: 'layers', onClick: () => interactiveRebase(c.hash) },
-    {
-      label: 'Cherry-pick',
-      icon: 'commit',
-      disabled: isHead,
-      items: [
-        { label: 'Cherry-pick', icon: 'commit', onClick: () => run('cherryPick', { hash: c.hash, mainline: isMerge }, { success: 'Cherry-picked' }) },
-        { label: 'Cherry-pick without committing', icon: 'commit', onClick: () => run('cherryPick', { hash: c.hash, mainline: isMerge, noCommit: true }, { success: 'Changes applied; review and commit' }) }
-      ]
-    },
-    {
-      label: 'Revert',
-      icon: 'undo',
-      items: [
-        { label: 'Revert (new commit)', icon: 'undo', onClick: async () => (await confirmBox(`Revert ${short}?`, 'A new commit that undoes it will be created.', 'Revert')) && run('revert', { hash: c.hash, mainline: isMerge }, { success: 'Reverted' }) },
-        { label: 'Revert without committing', icon: 'undo', onClick: () => run('revert', { hash: c.hash, mainline: isMerge, noCommit: true }, { success: 'Undo applied; review and commit' }) }
-      ]
-    },
-    {
-      label: `Reset ${cur} to here`,
-      icon: 'undo',
-      disabled: isHead,
-      items: [
-        { label: 'Soft: keep changes staged', icon: 'undo', onClick: () => resetTo(c.hash, 'soft') },
-        { label: 'Mixed: keep changes unstaged', icon: 'undo', onClick: () => resetTo(c.hash, 'mixed') },
-        { label: 'Keep: keep uncommitted changes', icon: 'undo', onClick: () => resetTo(c.hash, 'keep') },
-        { label: 'Merge: keep changes not in conflict', icon: 'undo', onClick: () => resetTo(c.hash, 'merge') },
-        '-',
-        { label: 'Hard: discard all changes…', icon: 'alert', danger: true, onClick: () => resetTo(c.hash, 'hard') }
-      ]
-    },
-    {
-      label: 'Rewrite history',
-      icon: 'edit',
-      items: [
-        isHead && { label: 'Reword message…', icon: 'edit', onClick: () => rewordLast(c) },
-        !isHead && { label: 'Squash later commits into one…', icon: 'layers', onClick: () => squashSince(c.hash) },
-        { label: 'Create fixup! commit of staged changes', icon: 'commit', disabled: !staged, onClick: () => run('fixupCommit', { hash: c.hash, kind: 'fixup' }, { success: `fixup! commit for ${short}` }) },
-        { label: 'Create squash! commit of staged changes', icon: 'commit', disabled: !staged, onClick: () => run('fixupCommit', { hash: c.hash, kind: 'squash' }, { success: `squash! commit for ${short}` }) }
-      ]
-    },
-    (local.length || tags.length) && '-',
-    (local.length || tags.length) && { header: 'Branches and tags here' },
+  // Everyday actions on top; everything else in one "More" submenu, so the menu reads at a glance.
+  const branchItems = [
     ...local.map((b) => ({
       label: `Branch ${b}`,
       icon: 'branch',
@@ -1717,37 +1658,69 @@ function commitMenu(anchor, c) {
         { label: 'Push tag', icon: 'push', onClick: () => run('tagPush', { name: t }, { success: `Pushed ${t}` }) },
         { label: 'Delete (local)…', icon: 'trash', danger: true, onClick: async () => (await confirmBox(`Delete tag ${t}?`, 'Only the local tag is deleted.', 'Delete', true)) && run('tagDelete', { name: t }) }
       ]
-    })),
-    '-',
-    { label: 'Show commit details', icon: 'commit', onClick: () => openCommit(c.hash) },
-    { label: 'Compare with HEAD', icon: 'compare', onClick: () => compareSheet(c.hash, 'HEAD') },
-    isMerge && { label: 'Compare with first parent', icon: 'compare', onClick: () => compareSheet(c.parents[0], c.hash) },
-    { label: 'Browse files at this commit', icon: 'folder', onClick: () => treeSheet(c.hash) },
-    { label: 'Save as patch…', icon: 'download', onClick: () => savePatch(c) },
+    }))
+  ]
+  menu(anchor, [
+    { header: `${short} · ${(c.subject || c.message || '').split('\n')[0].slice(0, 48)}` },
     {
-      label: 'Bisect',
-      icon: 'search',
-      items: bis
-        ? [
-            { label: 'Mark good', icon: 'check', onClick: () => run('bisect', { action: 'good', rev: c.hash }, { success: 'Marked good' }) },
-            { label: 'Mark bad', icon: 'x', onClick: () => run('bisect', { action: 'bad', rev: c.hash }, { success: 'Marked bad' }) },
-            { label: 'Skip', icon: 'right', onClick: () => run('bisect', { action: 'skip', rev: c.hash }, { success: 'Skipped' }) },
-            { label: 'Stop bisect', icon: 'x', onClick: () => run('bisect', { action: 'reset' }, { success: 'Bisect stopped' }) }
-          ]
-        : [{ label: 'Start (this is good, HEAD is bad)', icon: 'search', onClick: () => startBisect(c.hash) }]
-    },
-    {
-      label: 'Copy',
-      icon: 'copy',
+      label: 'Checkout',
+      icon: 'right',
       items: [
-        { label: 'Full hash', icon: 'copy', hint: short, onClick: () => copy(c.hash) },
-        { label: 'Short hash', icon: 'copy', onClick: () => copy(short) },
-        { label: 'Message', icon: 'copy', onClick: () => copy(c.message || c.subject || '') },
-        { label: 'Subject', icon: 'copy', onClick: () => copy((c.subject || c.message || '').split('\n')[0]) },
-        c.author && { label: 'Author', icon: 'copy', onClick: () => copy(c.email ? `${c.author} <${c.email}>` : c.author) },
-        date && { label: 'Date', icon: 'copy', onClick: () => copy(date) },
-        ...branches.map((b) => ({ label: `Branch name ${b}`, icon: 'copy', onClick: () => copy(b) })),
-        ...tags.map((t) => ({ label: `Tag name ${t}`, icon: 'copy', onClick: () => copy(t) }))
+        ...local.filter((b) => b !== cur).map((b) => ({ label: `Branch ${b}`, icon: 'branch', onClick: () => checkout(b) })),
+        ...remote.map((b) => ({ label: state.localNames?.has(b.replace(/^[^/]+\//, '')) ? `Remote ${b}…` : `Remote ${b} (new local branch)`, icon: 'globe', onClick: () => checkout(b, { track: true }) })),
+        { label: 'This commit (detached HEAD)', icon: 'commit', onClick: () => checkoutCommit(c.hash) }
+      ]
+    },
+    { label: 'Create branch here…', icon: 'plus', onClick: () => newBranch(c.hash) },
+    '-',
+    !isHead && { label: `Merge into ${cur}…`, icon: 'merge', onClick: () => mergeRef(local[0] || c.hash) },
+    !isHead && { label: `Rebase ${cur} onto this…`, icon: 'merge', onClick: () => rebaseOnto(local[0] || c.hash) },
+    !isHead && { label: 'Cherry-pick', icon: 'commit', onClick: () => run('cherryPick', { hash: c.hash, mainline: isMerge }, { success: 'Cherry-picked' }) },
+    { label: 'Revert…', icon: 'undo', onClick: async () => (await confirmBox(`Revert ${short}?`, 'A new commit that undoes it will be created.', 'Revert')) && run('revert', { hash: c.hash, mainline: isMerge }, { success: 'Reverted' }) },
+    !isHead && {
+      label: `Reset ${cur} to here`,
+      icon: 'undo',
+      items: [
+        { label: 'Soft: keep changes staged', icon: 'undo', onClick: () => resetTo(c.hash, 'soft') },
+        { label: 'Mixed: keep changes unstaged', icon: 'undo', onClick: () => resetTo(c.hash, 'mixed') },
+        { label: 'Keep: keep uncommitted changes', icon: 'undo', onClick: () => resetTo(c.hash, 'keep') },
+        '-',
+        { label: 'Hard: discard all changes…', icon: 'alert', danger: true, onClick: () => resetTo(c.hash, 'hard') }
+      ]
+    },
+    branchItems.length && '-',
+    branchItems.length === 1 ? branchItems[0] : branchItems.length && { label: 'Branches and tags here', icon: 'branch', items: branchItems },
+    '-',
+    { label: 'Copy hash', icon: 'copy', hint: short, onClick: () => copy(c.hash) },
+    {
+      label: 'More',
+      icon: 'more',
+      items: [
+        { label: 'Create tag here…', icon: 'tag', onClick: () => newTag(c.hash) },
+        { label: 'New worktree here…', icon: 'worktree', onClick: () => addWorktree({ base: c.hash }) },
+        '-',
+        !isHead && { label: 'Interactive rebase from here…', icon: 'layers', onClick: () => interactiveRebase(c.hash) },
+        isHead && { label: 'Reword message…', icon: 'edit', onClick: () => rewordLast(c) },
+        !isHead && { label: 'Squash later commits into one…', icon: 'layers', onClick: () => squashSince(c.hash) },
+        { label: 'Create fixup! commit of staged changes', icon: 'commit', disabled: !staged, onClick: () => run('fixupCommit', { hash: c.hash, kind: 'fixup' }, { success: `fixup! commit for ${short}` }) },
+        !isHead && { label: 'Cherry-pick without committing', icon: 'commit', onClick: () => run('cherryPick', { hash: c.hash, mainline: isMerge, noCommit: true }, { success: 'Changes applied; review and commit' }) },
+        { label: 'Revert without committing', icon: 'undo', onClick: () => run('revert', { hash: c.hash, mainline: isMerge, noCommit: true }, { success: 'Undo applied; review and commit' }) },
+        '-',
+        { label: 'Compare with HEAD', icon: 'compare', onClick: () => compareSheet(c.hash, 'HEAD') },
+        isMerge && { label: 'Compare with first parent', icon: 'compare', onClick: () => compareSheet(c.parents[0], c.hash) },
+        { label: 'Browse files at this commit', icon: 'folder', onClick: () => treeSheet(c.hash) },
+        { label: 'Save as patch…', icon: 'download', onClick: () => savePatch(c) },
+        bis
+          ? { label: 'Bisect', icon: 'search', items: [
+              { label: 'Mark good', icon: 'check', onClick: () => run('bisect', { action: 'good', rev: c.hash }, { success: 'Marked good' }) },
+              { label: 'Mark bad', icon: 'x', onClick: () => run('bisect', { action: 'bad', rev: c.hash }, { success: 'Marked bad' }) },
+              { label: 'Skip', icon: 'right', onClick: () => run('bisect', { action: 'skip', rev: c.hash }, { success: 'Skipped' }) },
+              { label: 'Stop bisect', icon: 'x', onClick: () => run('bisect', { action: 'reset' }, { success: 'Bisect stopped' }) }
+            ] }
+          : { label: 'Start bisect (this is good, HEAD is bad)', icon: 'search', onClick: () => startBisect(c.hash) },
+        '-',
+        { label: 'Copy message', icon: 'copy', onClick: () => copy(c.message || c.subject || '') },
+        c.author && { label: 'Copy author', icon: 'copy', onClick: () => copy(c.email ? `${c.author} <${c.email}>` : c.author) }
       ]
     }
   ])

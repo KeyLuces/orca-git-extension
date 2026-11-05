@@ -360,7 +360,8 @@ async function logUncached(repo, { all = false, limit = 200, skip = 0, search = 
   else if (q && mode === 'hash') args.push('--no-walk', req(q, 'hash'))
   else if (q && mode !== 'file') args.push(`--grep=${q}`, '-i', '--fixed-strings')
   if (file) args.push('--follow')
-  if (all && mode !== 'hash') args.push('--all')
+  // Stashes are listed in the Stash tab; in the graph their internal commits are only noise.
+  if (all && mode !== 'hash') args.push('--exclude=refs/stash', '--all')
   else if (ref) args.push(req(ref, 'ref'))
   args.push('--')
   if (file) args.push(String(file))
