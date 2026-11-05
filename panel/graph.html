@@ -699,7 +699,7 @@ span.ci { cursor: default; height: 17px; padding: 0 7px; font-size: 10.5px; }
 .menu button.mr-item { color: var(--info); }
 .menu button.mr-item svg { color: var(--info); }
 .menu button.mr-item:hover { background: color-mix(in srgb, var(--info) 14%, transparent); }
-.menu-badge { flex: none; padding: 1px 6px; border-radius: 999px; font-size: 10px; font-weight: 650; letter-spacing: .03em; color: var(--info); background: color-mix(in srgb, var(--info) 16%, transparent); border: 1px solid color-mix(in srgb, var(--info) 35%, transparent); }
+.menu-badge { flex: none; margin-left: auto; height: 16px; padding: 0 5px; border-radius: 4px; font: 700 9.5px/16px var(--mono); letter-spacing: .04em; color: var(--info); background: color-mix(in srgb, var(--info) 14%, transparent); }
 
 /* full width: the stash form, worktree cards and search bars use the whole tab */
 .form.stash-form { display: flex; flex-direction: column; align-items: stretch; gap: 10px; max-width: none; padding: 12px 16px 6px; }
@@ -2736,7 +2736,7 @@ function commitMenu(anchor, c) {
     { label: 'Create tag here…', icon: 'tag', onClick: () => newTag(c.hash) },
     { label: 'New worktree here…', icon: 'worktree', onClick: () => addWorktree({ base: c.hash }) },
     '-',
-    !isHead && { label: `Merge into ${cur}…`, icon: 'merge', hint: 'local', onClick: () => mergeRef(local[0] || c.hash) },
+    !isHead && { label: `Merge into ${cur}…`, icon: 'merge', onClick: () => mergeRef(local[0] || c.hash) },
     mrItem(local, remote, cur),
     !isHead && { label: `Rebase ${cur} onto this…`, icon: 'merge', onClick: () => rebaseOnto(local[0] || c.hash) },
     !isHead && { label: 'Cherry-pick', icon: 'commit', onClick: () => run('cherryPick', { hash: c.hash, mainline: isMerge }, { success: 'Cherry-picked' }) },
@@ -3146,7 +3146,7 @@ function localBranchRow(b) {
     const b = { ...b0, current: b0.name === cur }
     return menu(anchor, [
           !b.current && { label: 'Checkout', icon: 'right', onClick: () => checkout(b.name) },
-          !b.current && cur && { label: `Merge into ${cur}`, icon: 'merge', hint: 'local', onClick: () => mergeRef(b.name) },
+          !b.current && cur && { label: `Merge into ${cur}`, icon: 'merge', onClick: () => mergeRef(b.name) },
           !b.current && cur && { label: `Merge request → ${b.name}…`, icon: 'pr', cls: 'mr-item', badge: 'MR', onClick: () => mergeRequestDialog(b.name) },
           !b.current && cur && { label: `Rebase ${cur} onto this`, icon: 'merge', onClick: () => rebaseOnto(b.name) },
           { label: 'New branch from here…', icon: 'plus', onClick: () => newBranch(b.name) },
@@ -3183,7 +3183,7 @@ function remoteBranchRow(b, local) {
         return menu(e.currentTarget, [
           // Always go through the remote: when a local branch exists, checkout() asks how to bring it up to date.
           { label: hasLocal ? `Checkout ${b.name}…` : `Checkout as ${short}`, icon: 'right', onClick: () => checkout(b.name, { track: true }) },
-          cur && { label: `Merge into ${cur}`, icon: 'merge', hint: 'local', onClick: () => mergeRef(b.name) },
+          cur && { label: `Merge into ${cur}`, icon: 'merge', onClick: () => mergeRef(b.name) },
           cur && b.name.replace(/^[^/]+\//, '') !== cur && { label: `Merge request → ${b.name.replace(/^[^/]+\//, '')}…`, icon: 'pr', cls: 'mr-item', badge: 'MR', onClick: () => mergeRequestDialog(b.name) },
           cur && { label: `Rebase ${cur} onto this`, icon: 'merge', onClick: () => rebaseOnto(b.name) },
           { label: 'New branch from here…', icon: 'plus', onClick: () => newBranch(b.name) },

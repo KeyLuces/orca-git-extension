@@ -1966,7 +1966,7 @@ function commitMenu(anchor, c) {
     { label: 'Create tag here…', icon: 'tag', onClick: () => newTag(c.hash) },
     { label: 'New worktree here…', icon: 'worktree', onClick: () => addWorktree({ base: c.hash }) },
     '-',
-    !isHead && { label: `Merge into ${cur}…`, icon: 'merge', hint: 'local', onClick: () => mergeRef(local[0] || c.hash) },
+    !isHead && { label: `Merge into ${cur}…`, icon: 'merge', onClick: () => mergeRef(local[0] || c.hash) },
     mrItem(local, remote, cur),
     !isHead && { label: `Rebase ${cur} onto this…`, icon: 'merge', onClick: () => rebaseOnto(local[0] || c.hash) },
     !isHead && { label: 'Cherry-pick', icon: 'commit', onClick: () => run('cherryPick', { hash: c.hash, mainline: isMerge }, { success: 'Cherry-picked' }) },
@@ -2376,7 +2376,7 @@ function localBranchRow(b) {
     const b = { ...b0, current: b0.name === cur }
     return menu(anchor, [
           !b.current && { label: 'Checkout', icon: 'right', onClick: () => checkout(b.name) },
-          !b.current && cur && { label: `Merge into ${cur}`, icon: 'merge', hint: 'local', onClick: () => mergeRef(b.name) },
+          !b.current && cur && { label: `Merge into ${cur}`, icon: 'merge', onClick: () => mergeRef(b.name) },
           !b.current && cur && { label: `Merge request → ${b.name}…`, icon: 'pr', cls: 'mr-item', badge: 'MR', onClick: () => mergeRequestDialog(b.name) },
           !b.current && cur && { label: `Rebase ${cur} onto this`, icon: 'merge', onClick: () => rebaseOnto(b.name) },
           { label: 'New branch from here…', icon: 'plus', onClick: () => newBranch(b.name) },
@@ -2413,7 +2413,7 @@ function remoteBranchRow(b, local) {
         return menu(e.currentTarget, [
           // Always go through the remote: when a local branch exists, checkout() asks how to bring it up to date.
           { label: hasLocal ? `Checkout ${b.name}…` : `Checkout as ${short}`, icon: 'right', onClick: () => checkout(b.name, { track: true }) },
-          cur && { label: `Merge into ${cur}`, icon: 'merge', hint: 'local', onClick: () => mergeRef(b.name) },
+          cur && { label: `Merge into ${cur}`, icon: 'merge', onClick: () => mergeRef(b.name) },
           cur && b.name.replace(/^[^/]+\//, '') !== cur && { label: `Merge request → ${b.name.replace(/^[^/]+\//, '')}…`, icon: 'pr', cls: 'mr-item', badge: 'MR', onClick: () => mergeRequestDialog(b.name) },
           cur && { label: `Rebase ${cur} onto this`, icon: 'merge', onClick: () => rebaseOnto(b.name) },
           { label: 'New branch from here…', icon: 'plus', onClick: () => newBranch(b.name) },
