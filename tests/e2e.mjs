@@ -575,6 +575,12 @@ await step('Inbox (GitLab, saved Git login): to review, assigned, opened by me, 
   await until(() => page.$eval('.reviews', (r) => r.textContent.includes('MR other repo')), 'All repos lists the other project', 20000)
   await clickText('.reviews .segmented button', 'app')
   await shot('11-inbox')
+  // AI review waits for Start review, so the agent and instructions can be chosen first
+  await clickText('.review-actions .btn', 'AI review')
+  await until(() => exists('.ai-review-dialog'), 'AI review dialog')
+  if (await exists('.ai-review-dialog .ai-result.generating')) throw new Error('AI review started without pressing Start review')
+  if (!(await page.$$eval('.ai-review-dialog .btn', (b) => b.some((x) => x.textContent.includes('Start review'))))) throw new Error('no Start review button')
+  await clickText('.ai-review-dialog .btn', 'Cancel')
 })
 await step('pipeline (GitLab): CI badge opens the pipeline, its jobs and the failed log; retry', async () => {
   g('remote', 'set-url', 'origin', 'https://gitlab2.example.test/team/app.git')

@@ -3841,7 +3841,8 @@ async function aiCommitModal({ staged, total, onUse, onCommit }) {
   const overlay = h('div', { class: 'overlay', onMousedown: (e) => e.target === overlay && !busy && close() }, box)
   mountOverlay(overlay, close)
   document.addEventListener('keydown', onKey)
-  generate() // start right away, like Orca's one-click generate
+  status.textContent = 'Choose the agent, add instructions if you like, then press Generate.'
+  genBtn.focus() // pick the agent and instructions first; Generate (or Ctrl+Enter) starts it
 }
 
 
@@ -4414,7 +4415,8 @@ async function aiReviewModal(it) {
     stopTick()
     if (on) stopTick = aiTicker(status, agents.find((a) => a.id === agentSel.value)?.name || 'AI', `the ${noun}`)
     else append(clear(status), [text || ''])
-    append(clear(genBtn), [on ? [icon('x', 13), 'Stop'] : [icon('sparkle', 13), result.value.trim() ? 'Regenerate' : 'Generate']])
+    append(clear(genBtn), [on ? [icon('x', 13), 'Stop'] : [icon('sparkle', 13), result.value.trim() ? 'Review again' : 'Start review']])
+    genBtn.className = `btn ${!on && !result.value.trim() ? 'primary' : ''}`
     const has = !on && !!result.value.trim()
     for (const [k, b] of Object.entries(postBtns)) {
       b.disabled = !has
@@ -4477,7 +4479,8 @@ async function aiReviewModal(it) {
   const overlay = h('div', { class: 'overlay', onMousedown: (e) => e.target === overlay && !busy && close() }, box)
   mountOverlay(overlay, close)
   document.addEventListener('keydown', onKey)
-  generate()
+  sync(false, 'Choose the agent, add instructions if you like, then press Start review.')
+  genBtn.focus() // choose the agent and add instructions first, then Start review
 }
 
 async function reviewDialog(it) {
