@@ -1854,8 +1854,11 @@ function commitBody(c, { inline = false } = {}) {
       )
     )
   )
-  const filesBox = h('div', { class: inline ? 'inline-files' : '' })
-  body.append(filesBox)
+  // inline: the outer box takes the row's height, the inner one scrolls inside it
+  const outer = h('div', { class: inline ? 'inline-files' : '' })
+  const filesBox = inline ? h('div', { class: 'if-scroll' }) : outer
+  if (inline) outer.append(filesBox)
+  body.append(outer)
   filesBox.append(h('div', { class: 'section-head' }, 'Files', h('span', { class: 'count' }, c.files.length), c.parents.length > 1 && h('span', { class: 'dim', style: { textTransform: 'none', fontWeight: 400 } }, `vs first parent ${c.parents[0].slice(0, 7)}`)))
   for (const f of c.files) {
     filesBox.append(
@@ -2093,6 +2096,70 @@ async function checkoutRemoteOverLocal(remote, local) {
  * Switch branch. The two usual failures get a choice instead of an error: changes in the way
  * (stash & switch, or discard & switch) and a branch already checked out in another worktree.
  */
+/**
+ * Git Extensions' "local changes" choice before a checkout: keep, stash, merge or reset.
+ * Resolves { mode, clean } or null (cancelled). "Remember" stores the choice (never for reset).
+ */
+function checkoutChangesDialog(label, count, { collided = false } = {}) {
+  closeOverlays()
+  return new Promise((resolve) => {
+    const options = [
+      ['keep', "Don't change", 'Take the changes along. If they collide with the other branch you are asked again.'],
+      ['stash', 'Stash', 'Put them aside, switch, then bring them back.'],
+      ['merge', 'Merge', 'Merge them into the other branch (may leave conflicts to resolve).'],
+      ['reset', 'Reset', 'Discard them. This cannot be undone.']
+    ]
+    if (collided) options.shift() // "Don't change" is what just failed
+    let mode = collided ? 'stash' : 'keep'
+    const clean = h('input', { type: 'checkbox' })
+    const remember = h('input', { type: 'checkbox' })
+    const cleanRow = h('label', { class: 'check co-clean hidden' }, clean, 'Also delete untracked files')
+    const rows = options.map(([v, title, desc]) => {
+      const radio = h('input', { type: 'radio', name: 'co-mode', value: v, checked: v === mode, onChange: () => pick(v) })
+      return h('label', { class: `co-option ${v === 'reset' ? 'danger' : ''}`, 'data-mode': v }, radio, h('div', null, h('div', { class: 'co-title' }, title), h('div', { class: 'dim' }, desc)))
+    })
+    const ok = h('button', { type: 'submit', class: 'btn primary' }, `Checkout ${label}`)
+    function pick(v) {
+      mode = v
+      rows.forEach((r) => r.classList.toggle('on', r.dataset.mode === v))
+      cleanRow.classList.toggle('hidden', v !== 'reset')
+      remember.disabled = v === 'reset'
+      if (v === 'reset') remember.checked = false
+      ok.className = `btn ${v === 'reset' ? 'danger solid' : 'primary'}`
+      ok.textContent = v === 'reset' ? `Reset & checkout ${label}` : `Checkout ${label}`
+    }
+    const done = (val) => {
+      overlay.remove()
+      document.removeEventListener('keydown', onKey)
+      resolve(val)
+    }
+    const onKey = (e) => e.key === 'Escape' && done(null)
+    const form = h(
+      'form',
+      {
+        class: 'dialog co-dialog',
+        onSubmit: (e) => {
+          e.preventDefault()
+          const val = { mode, clean: clean.checked }
+          if (remember.checked && mode !== 'reset') store.set('checkoutChanges', val)
+          done(val)
+        }
+      },
+      h('h3', null, `Checkout ${label}`),
+      h('p', null, collided ? `Your uncommitted changes would be overwritten by ${label}. What should happen to them?` : `You have ${count} uncommitted change${count > 1 ? 's' : ''}. What should happen to ${count > 1 ? 'them' : 'it'}?`),
+      h('div', { class: 'co-options' }, rows),
+      cleanRow,
+      h('label', { class: 'check' }, remember, "Remember my choice (change it in Settings)"),
+      h('div', { class: 'buttons' }, h('button', { type: 'button', class: 'btn', onClick: () => done(null) }, 'Cancel'), ok)
+    )
+    pick(mode)
+    const overlay = h('div', { class: 'overlay', onMousedown: (e) => e.target === overlay && done(null) }, form)
+    document.body.append(overlay)
+    document.addEventListener('keydown', onKey)
+    ok.focus()
+  })
+}
+
 async function checkout(name, opts = {}) {
   closeOverlays()
   // origin/x while a local x exists at another commit: ask what to do, as Git Extensions does.
@@ -2102,10 +2169,19 @@ async function checkout(name, opts = {}) {
     if (refs?.local.some((b) => b.name === local)) return checkoutRemoteOverLocal(name, local)
   }
   const label = opts.track ? name.replace(/^[^/]+\//, '') : name
+  // Uncommitted changes: ask first what to do with them, as Git Extensions does.
+  const dirty = state.status?.files?.length || 0
+  if (dirty && !opts.stash && !opts.merge && !opts.discard && !opts.keep) {
+    const how = store.get('checkoutChanges', null) || (await checkoutChangesDialog(label, dirty))
+    if (!how) return
+    const flags = { keep: how.mode === 'keep', stash: how.mode === 'stash', merge: how.mode === 'merge', discard: how.mode === 'reset', clean: how.mode === 'reset' && how.clean }
+    return checkout(name, { ...opts, ...flags })
+  }
   setBusy(1)
   let out
   try {
-    out = await call('checkout', { ref: name, ...opts })
+    const { keep, ...rest } = opts
+    out = await call('checkout', { ref: name, ...rest })
   } catch (e) {
     setBusy(-1)
     const inUse = e.message.match(/checked out in another worktree:\s*(.+)$/)
@@ -2126,27 +2202,10 @@ A branch can be checked out in only one worktree at a time.`,
       return
     }
     if (/changes that this checkout would overwrite/.test(e.message)) {
-      const r = await dialog({
-        title: `Switch to ${label}?`,
-        message: 'You have uncommitted changes that this checkout would overwrite.',
-        fields: [
-          {
-            key: 'how',
-            label: 'What to do with them',
-            type: 'select',
-            value: 'stash',
-            options: [
-              ['stash', 'Stash them, switch, then bring them back (recommended)'],
-              ['merge', 'Merge them into the other branch (may leave conflicts to resolve)'],
-              ['discard', 'Discard them and switch']
-            ]
-          }
-        ],
-        ok: 'Switch'
-      })
+      // "Don't change" collided with the other branch: ask again, without that option
+      const r = await checkoutChangesDialog(label, state.status?.files?.length || 1, { collided: true })
       if (!r) return
-      if (r.how === 'discard' && !(await confirmBox('Discard your changes?', 'They cannot be recovered.', 'Discard & switch', true))) return
-      return checkout(name, { ...opts, stash: r.how === 'stash', merge: r.how === 'merge', discard: r.how === 'discard' })
+      return checkout(name, { ...opts, keep: false, stash: r.mode === 'stash', merge: r.mode === 'merge', discard: r.mode === 'reset', clean: r.mode === 'reset' && r.clean })
     }
     toast(e.message, 'error')
     await refreshAll()
@@ -2229,13 +2288,17 @@ async function newTag(hash) {
     title: 'Create tag',
     fields: [
       { key: 'name', label: 'Tag name', placeholder: 'v1.0.0' },
-      { key: 'message', label: 'Message (optional, makes an annotated tag)', type: 'textarea' }
+      { key: 'message', label: 'Message (optional, makes an annotated tag)', type: 'textarea' },
+      { key: 'push', label: 'Push the tag to the remote', type: 'check', value: store.get('tagPush', false) }
     ],
     ok: 'Create'
   })
   if (!r?.name.trim()) return
+  const name = r.name.trim()
+  store.set('tagPush', !!r.push)
   state.history.commits = []
-  run('tagCreate', { name: r.name.trim(), message: r.message.trim() || undefined, hash }, { success: `Tagged ${r.name.trim()}` })
+  const made = await run('tagCreate', { name, message: r.message.trim() || undefined, hash }, { success: r.push ? undefined : `Tagged ${name}`, refresh: !r.push })
+  if (made !== undefined && r.push) run('tagPush', { name }, { success: `Tagged and pushed ${name}` })
 }
 
 async function viewBranches() {
@@ -2873,6 +2936,17 @@ async function viewSettings() {
       )
   }
 
+  const remembered = store.get('checkoutChanges', null)
+  if (remembered)
+    root.append(
+      h('div', { class: 'section-head' }, 'Checkout'),
+      h(
+        'div',
+        { class: 'cfg-row' },
+        h('div', null, h('div', null, `With uncommitted changes, checkout always does: `, h('strong', null, { keep: "Don't change", stash: 'Stash', merge: 'Merge' }[remembered.mode] || remembered.mode)), h('div', { class: 'cfg-key' }, 'Saved from the checkout dialog')),
+        h('button', { class: 'btn sm', onClick: () => (store.set('checkoutChanges', null), toast('Checkout will ask again'), renderView({ force: true })) }, 'Ask every time')
+      )
+    )
   if (scope === 'local') root.append(await maintenanceSection())
 
   // every entry
@@ -3512,18 +3586,25 @@ function mrItem(local, remote, cur) {
   if (targets.length === 1) return { label: `Merge request → ${targets[0]}…`, icon: 'pr', cls: 'mr-item', badge: 'MR', onClick: () => mergeRequestDialog(targets[0]) }
   return { label: 'Merge request', icon: 'pr', cls: 'mr-item', badge: 'MR', items: targets.map((b) => ({ label: `→ ${b}…`, icon: 'pr', onClick: () => mergeRequestDialog(b) })) }
 }
-async function mergeRequestDialog(target) {
+async function mergeRequestDialog(target, source, swapped) {
   closeOverlays()
   let info
   setBusy(1)
   try {
-    info = await request('mr.info', { repo: state.repo, target }, 30000)
+    info = await request('mr.info', { repo: state.repo, target, source }, 30000)
   } catch (e) {
     return toast(e.message, 'error')
   } finally {
     setBusy(-1)
   }
   if (info.source === info.target) return toast(`You are on ${info.target}. Check out the branch you want to merge, then try again.`, 'error')
+  // Nothing to merge this way but commits the other way: the person meant the reverse (e.g. on main,
+  // right-clicking a feature branch). Flip once, and say so.
+  if (!info.commits.length && info.reverse > 0 && !swapped) {
+    toast(`${info.source} has nothing new for ${info.target}, so this is ${info.target} → ${info.source} instead.`, 'ok', 5000)
+    return mergeRequestDialog(info.source, info.target, true)
+  }
+  if (!info.commits.length) return toast(`${info.source} and ${info.target} have the same commits: there is nothing to merge.`, 'error')
   const isGh = info.kind === 'github'
   const noun = isGh ? 'pull request' : 'merge request'
   const service = isGh ? 'GitHub' : info.host
@@ -3575,7 +3656,7 @@ async function mergeRequestDialog(target) {
   }
   async function recheck() {
     try {
-      info = await request('mr.info', { repo, target }, 30000)
+      info = await request('mr.info', { repo, target, source: info.source }, 30000)
       drawButtons()
       if (info.tools.signedIn) toast(`${info.tools.cli} is ready: Create now makes it in one click.`)
     } catch (e) {
@@ -3610,7 +3691,7 @@ async function mergeRequestDialog(target) {
     linkBtn.disabled = createBtn.disabled = true
     clear(btn).append(h('span', { class: 'spinner' }), info.needsPush ? 'Pushing…' : web ? 'Opening…' : 'Creating…')
     try {
-      const r = await request('mr.create', { repo, target: info.target, title: title.value, body: body.value, draft: draft.checked, web }, 120000)
+      const r = await request('mr.create', { repo, target: info.target, source: info.source, title: title.value, body: body.value, draft: draft.checked, web }, 120000)
       const pushed = r.pushed ? `${info.source} pushed to ${info.remote}. ` : ''
       if (web && r.opened) {
         close()
@@ -3632,7 +3713,7 @@ async function mergeRequestDialog(target) {
   const form = h(
     'div',
     { class: 'mr-form' },
-    h('div', { class: 'mr-route' }, h('span', { class: 'ref' }, icon('branch', 10), h('span', { class: 'ref-t' }, info.source)), icon('right', 14), h('span', { class: 'ref' }, icon('branch', 10), h('span', { class: 'ref-t' }, info.target))),
+    h('div', { class: 'mr-route' }, h('span', { class: 'ref' }, icon('branch', 10), h('span', { class: 'ref-t' }, info.source)), icon('right', 14), h('span', { class: 'ref' }, icon('branch', 10), h('span', { class: 'ref-t' }, info.target)), h('button', { type: 'button', class: 'icon-btn', title: `Swap: ${info.target} → ${info.source}`, onClick: () => (close(), mergeRequestDialog(info.source, info.target, true)) }, '⇄')),
     info.needsPush && h('div', { class: 'dim mr-note' }, icon('push', 12), `${info.source} ${info.upstream ? 'has commits not on' : 'is not on'} ${info.remote} yet; it is pushed first.`),
     h(
       'div',
@@ -3653,7 +3734,7 @@ async function mergeRequestDialog(target) {
               b.disabled = true
               append(clear(b), [h('span', { class: 'spinner' }), 'Writing…'])
               try {
-                const r = await request('ai.mrDescription', { repo, target: info.target, instructions: store.get('aiPrefs', {}).instructions || '' }, 118000)
+                const r = await request('ai.mrDescription', { repo, target: info.target, source: info.source, instructions: store.get('aiPrefs', {}).instructions || '' }, 118000)
                 if (r.title) title.value = r.title
                 if (r.body) body.value = r.body
               } catch (err) {

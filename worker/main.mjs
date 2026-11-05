@@ -816,9 +816,13 @@ async function mrDefaults(repo, branch, commits, kind) {
   return { title, body: parts.join('\n\n'), draft }
 }
 
-async function mrInfo(repo, target) {
-  const { oid, branch } = await headInfo(repo)
+async function mrInfo(repo, target, source) {
+  const head = await headInfo(repo)
+  // the branch to merge: the given one, else the checked-out one
+  const branch = source ? String(source).replace(/^(refs\/heads\/)/, '') : head.branch
+  const oid = head.oid
   if (!branch) throw new GitError('Check out the branch you want to merge first (HEAD is detached)')
+  if (/^-/.test(branch)) throw new GitError('bad branch name')
   const remotes = (await git(repo, ['remote'])).split(/\s+/).filter(Boolean)
   const upstream = (await git(repo, ['rev-parse', '--abbrev-ref', `${branch}@{upstream}`], { okCodes: [0, 128] }).catch(() => '')).trim()
   const remote = upstream.split('/')[0] || (remotes.includes('origin') ? 'origin' : remotes[0])
@@ -829,7 +833,10 @@ async function mrInfo(repo, target) {
   const targetRef = (await git(repo, ['rev-parse', '--verify', '-q', `refs/remotes/${remote}/${targetName}`], { okCodes: [0, 1] })).trim()
     ? `${remote}/${targetName}`
     : targetName
-  const full = (await git(repo, ['log', '--format=%s%x1f%b%x1e', '-50', `${targetRef}..HEAD`], { okCodes: [0, 128] }).catch(() => ''))
+  // the source as git knows it: the local branch, or only its remote copy
+  const hasLocal = !!(await git(repo, ['rev-parse', '--verify', '-q', `refs/heads/${branch}`], { okCodes: [0, 1] })).trim()
+  const sourceRef = hasLocal ? branch : `${remote}/${branch}`
+  const full = (await git(repo, ['log', '--format=%s%x1f%b%x1e', '-50', `${targetRef}..${sourceRef}`], { okCodes: [0, 128] }).catch(() => ''))
     .split('\x1e')
     .map((r) => r.trim())
     .filter(Boolean)
@@ -839,7 +846,9 @@ async function mrInfo(repo, target) {
     })
   const commits = full.map((c) => c.subject)
   const defaults = await mrDefaults(repo, branch, full, where.kind)
-  const ahead = upstream ? +(await git(repo, ['rev-list', '--count', `${upstream}..HEAD`]).catch(() => '0')).trim() : null
+  const ahead = upstream ? +(await git(repo, ['rev-list', '--count', `${upstream}..${sourceRef}`]).catch(() => '0')).trim() : null
+  // commits the other way round (target has, source lacks): the person likely meant the reverse
+  const reverse = +(await git(repo, ['rev-list', '--count', `${sourceRef}..${targetRef}`], { okCodes: [0, 128] }).catch(() => '0')).trim() || 0
   const tools = {}
   if (where.kind === 'github') {
     tools.cli = 'gh'
@@ -851,7 +860,7 @@ async function mrInfo(repo, target) {
     tools.signedIn = tools.installed && (await toolOk('glab', ['auth', 'status', '--hostname', where.host]))
   }
   tools.canInstall = process.platform === 'win32' && (await toolOk('winget', ['--version']))
-  return { source: branch, oid, target: targetName, remote, upstream: upstream || null, needsPush: !upstream || ahead > 0, ...where, commits, defaults, tools }
+  return { source: branch, sourceRef, oid, target: targetName, remote, upstream: upstream || null, needsPush: hasLocal && (!upstream || ahead > 0), reverse, ...where, commits, defaults, tools }
 }
 
 /** The service's own "new merge request" page, prefilled: works with nothing installed. */
@@ -885,8 +894,8 @@ function openInBrowser(url) {
  * - web: open the service's prefilled "new merge request" page in the browser, or
  * - direct: create it with the service's CLI (gh / glab), signed in once.
  */
-async function mrCreate(repo, { target, title, body, draft, web }) {
-  const info = await mrInfo(repo, req(target, 'target branch'))
+async function mrCreate(repo, { target, source, title, body, draft, web }) {
+  const info = await mrInfo(repo, req(target, 'target branch'), source)
   if (info.source === info.target) throw new GitError('Pick a different branch to merge into')
   title = String(title || '').trim()
   body = String(body || '')
@@ -1132,12 +1141,12 @@ async function aiReview(input, agent) {
 }
 
 // ---------- AI: merge request title and description ----------
-async function aiMrDescription(repo, { target, instructions }, agent) {
+async function aiMrDescription(repo, { target, source, instructions }, agent) {
   const a = AI[agent] || AI.claude
-  const info = await mrInfo(repo, req(target, 'target branch'))
+  const info = await mrInfo(repo, req(target, 'target branch'), source)
   const remoteTarget = `${info.remote}/${info.target}`
   const base = (await git(repo, ['rev-parse', '--verify', '-q', `refs/remotes/${remoteTarget}`], { okCodes: [0, 1] })).trim() ? remoteTarget : info.target
-  let diff = await git(repo, ['diff', '--no-color', '-U2', `${base}...HEAD`]).catch(() => '')
+  let diff = await git(repo, ['diff', '--no-color', '-U2', `${base}...${info.sourceRef}`]).catch(() => '')
   if (!diff.trim() && !info.commits.length) throw new GitError(`${info.source} has no changes compared with ${info.target}`)
   if (diff.length > 80_000) diff = diff.slice(0, 80_000) + '\n… (diff truncated)'
   const prompt = [
@@ -1302,6 +1311,7 @@ const ops = {
         a = { ...a, track: false }
       }
     }
+    if (a.discard && a.clean) await git(r, ['clean', '-f', '-d']) // Reset with "also delete untracked files"
     const args = ['switch']
     if (a.discard) args.push('--discard-changes')
     else if (a.merge) args.push('--merge')
@@ -1893,7 +1903,7 @@ Click to open Git Graph`
   })
   orca.panels.handle('ai.resolve', async ({ repo } = {}) => aiResolve(orca, req(repo, 'repo'), await agentSetting()))
   orca.panels.handle('repo.ignoreGraphFiles', async ({ repo } = {}) => ignoreGraphFiles(req(repo, 'repo')).then(() => ({ ok: true })))
-  orca.panels.handle('mr.info', async ({ repo, target } = {}) => mrInfo(req(repo, 'repo'), target || 'HEAD'))
+  orca.panels.handle('mr.info', async ({ repo, target, source } = {}) => mrInfo(req(repo, 'repo'), target || 'HEAD', source))
   orca.panels.handle('mr.create', async (input = {}) => {
     shortMemo.clear()
     return mrCreate(req(input.repo, 'repo'), input)

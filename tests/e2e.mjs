@@ -199,6 +199,10 @@ await step('opens commit details inline and closes them', async () => {
   await clickText('.commit-row', 'Add b')
   await until(() => page.$eval('.commit-inline .inline-files', (e) => e.textContent.includes('b.txt')), 'inline files list b.txt')
   await shot('02-inline-details')
+  await page.$$eval('.commit-inline .inline-files .item', (r) => r.find((x) => x.textContent.includes('b.txt')).click())
+  await until(() => page.$('.sheet .dv .l').then(Boolean), 'file diff sheet')
+  await shot('02b-file-diff')
+  await clickSel('.sheet .sheet-close')
   await clickSel('.commit-inline [title="Close"]')
   await until(() => page.$('.commit-inline').then((x) => !x), 'inline details close')
 })
@@ -232,15 +236,35 @@ await step('checkout with changes in the way offers stash & switch', async () =>
   await refresh()
   await until(() => page.$$eval('#side .item', (r) => r.some((x) => x.textContent.includes('main'))), 'main in sidebar')
   await clickInRow('#side .item', 'main', 'Checkout')
-  await dialogOpen()
-  const text = await page.$eval('.overlay .dialog', (d) => d.textContent)
-  if (!/uncommitted changes/i.test(text)) throw new Error('dialog does not explain the changes: ' + text.slice(0, 120))
-  if (!/Merge them/.test(text)) throw new Error('no Merge option in dialog')
-  await submitDialog() // default: stash, switch, bring back
+  // Git Extensions style: asked first, because there are uncommitted changes
+  await until(() => page.$('.co-dialog'), 'local-changes dialog')
+  const text = await page.$eval('.co-dialog', (d) => d.textContent)
+  for (const want of ['Stash', 'Merge', 'Reset', 'Remember my choice']) if (!text.includes(want)) throw new Error('missing option: ' + want)
+  // Asked before trying ("Don't change" offered), or, if git found the collision first, asked once without it.
+  if (text.includes("Don't change")) {
+    await submitDialog() // "Don't change" collides with main's a.txt, so it asks again
+    await until(() => page.$eval('.co-dialog', (d) => !d.textContent.includes("Don't change")).catch(() => false), 'asked again without the failed option')
+  }
+  await submitDialog() // default now: stash, switch, bring back
   await until(() => g('branch', '--show-current') === 'main', 'on main')
   const st = g('status', '--porcelain')
   const stashes = g('stash', 'list')
   if (!st && !stashes) throw new Error('local change was lost')
+})
+
+await step('checkout with Reset discards changes (and untracked files) then switches', async () => {
+  g('reset', '-q', '--hard'); g('stash', 'clear'); g('switch', '-q', 'e2e-branch')
+  write('b.txt', 'b throwaway\n'); write('junk.tmp', 'junk\n')
+  await refresh()
+  await until(() => page.$$eval('#side .item', (r) => r.some((x) => x.textContent.includes('main'))), 'main in sidebar')
+  await clickInRow('#side .item', 'main', 'Checkout')
+  await until(() => page.$('.co-dialog'), 'local-changes dialog')
+  await page.evaluate(() => document.querySelector('.co-option[data-mode="reset"] input').click())
+  await page.evaluate(() => document.querySelector('.co-clean input').click())
+  await shot('11-checkout-reset')
+  await submitDialog()
+  await until(() => g('branch', '--show-current') === 'main', 'on main')
+  if (g('status', '--porcelain')) throw new Error('changes left after Reset: ' + g('status', '--porcelain'))
 })
 
 await step('checking out a diverged origin branch asks what to do (merge)', async () => {

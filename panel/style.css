@@ -703,3 +703,30 @@ span.ci { cursor: default; height: 17px; padding: 0 7px; font-size: 10.5px; }
 /* long menus (many repositories) scroll inside the screen */
 .menu { max-height: calc(100vh - 16px); overflow-y: auto; }
 .menu .label { position: sticky; top: -5px; background: var(--card); z-index: 1; }
+
+/* checkout: what to do with uncommitted changes */
+.co-dialog { max-width: 460px; }
+.co-options { display: flex; flex-direction: column; gap: 6px; }
+.co-option { display: flex; align-items: flex-start; gap: 10px; padding: 9px 11px; border-radius: var(--radius); border: 1px solid var(--line); background: var(--raised); cursor: pointer; transition: border-color .12s, background-color .12s; }
+.co-option:hover { border-color: var(--line-hi); }
+.co-option.on { border-color: var(--ren); background: color-mix(in srgb, var(--ren) 10%, var(--raised)); }
+.co-option.danger.on { border-color: var(--del); background: color-mix(in srgb, var(--del) 10%, var(--raised)); }
+.co-option .co-title { font-weight: 600; color: var(--t1); }
+.co-option .dim { font-size: 11.5px; }
+.co-option input[type='radio'] { margin: 3px 0 0; accent-color: var(--ren); }
+.co-option.danger input[type='radio'] { accent-color: var(--del); }
+.co-clean { margin-left: 4px; color: var(--del); }
+
+/* Long lines scroll sideways inside the diff; the bar, file and hunk headers and the line numbers stay put. */
+.sheet-body, .diff-pane .sheet-body { container-type: inline-size; }
+.dv { width: max-content; min-width: 100%; }
+.dv-bar, .dv-file, .dv-hunk { position: sticky; left: 0; width: 100cqi; box-sizing: border-box; }
+.dv-hunk { z-index: 1; }
+.dv .l .n { position: sticky; left: 0; z-index: 1; background: var(--bg); }
+.dv .l.add .n { background: color-mix(in srgb, var(--add) 16%, var(--bg)); }
+.dv .l.del .n { background: color-mix(in srgb, var(--del) 16%, var(--bg)); }
+/* Commit details: the file list fills the height of the box, not a fixed 320px. */
+.inline-grid { align-items: stretch; }
+.inline-grid > .inline-files { max-height: none; position: relative; overflow: hidden; }
+.inline-grid > .inline-files > .if-scroll { position: absolute; inset: 0; overflow: auto; padding-bottom: 6px; }
+.inline-grid > .inline-files { min-height: 180px; }
