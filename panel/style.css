@@ -730,3 +730,7 @@ span.ci { cursor: default; height: 17px; padding: 0 7px; font-size: 10.5px; }
 .inline-grid > .inline-files { max-height: none; position: relative; overflow: hidden; }
 .inline-grid > .inline-files > .if-scroll { position: absolute; inset: 0; overflow: auto; padding-bottom: 6px; }
 .inline-grid > .inline-files { min-height: 180px; }
+/* Wrap: lines fit the width again (no sideways scroll). */
+.dv.dv-wrapped { width: auto; min-width: 0; }
+.dv-path.link { cursor: pointer; }
+.dv-path.link:hover strong { text-decoration: underline; color: var(--ren); }

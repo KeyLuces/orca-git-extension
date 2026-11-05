@@ -991,6 +991,7 @@ function renderDiff(text, hunkActions, { onLine } = {}) {
       wrapBtn,
       h('span', { class: 'grow' }),
       files.length > 1 && h('span', { class: 'dim' }, `${files.length} files`),
+      files.length === 1 && !files[0].badges.includes('deleted') && h('button', { class: 'btn sm', title: `Open ${files[0].path} in the editor`, onClick: () => openRepoFile(files[0].path) }, icon('file', 12), 'Open file'),
       h('span', { class: 'dv-count' }, h('span', { class: 'a' }, `+${total[0]}`), h('span', { class: 'd' }, `−${total[1]}`))
     ),
     body
@@ -1019,7 +1020,7 @@ function renderDiff(text, hunkActions, { onLine } = {}) {
           'div',
           { class: 'dv-file' },
           icon('file', 13),
-          h('span', { class: 'dv-path' }, dir && h('span', { class: 'dim' }, dir), h('strong', null, f.path.slice(dir.length))),
+          h('span', { class: 'dv-path link', title: `Open ${f.path} in the editor`, onClick: () => openRepoFile(f.path) }, dir && h('span', { class: 'dim' }, dir), h('strong', null, f.path.slice(dir.length))),
           ...f.badges.map((b) => h('span', { class: `pill dv-${b}` }, b)),
           f.badges.includes('renamed') && f.oldPath !== f.path && h('span', { class: 'dim mono' }, `from ${f.oldPath}`),
           h('span', { class: 'grow' }),
@@ -1079,6 +1080,14 @@ function renderDiff(text, hunkActions, { onLine } = {}) {
   }
   draw()
   return root
+}
+
+async function openRepoFile(file) {
+  try {
+    await request('file.open', { repo: state.repo, file }, 20000)
+  } catch (e) {
+    toast(e.message, 'error')
+  }
 }
 
 async function showDiff(title, loader, actions = [], hunkActions) {

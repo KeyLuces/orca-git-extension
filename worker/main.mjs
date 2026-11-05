@@ -1988,6 +1988,17 @@ Click to open Git Graph`
     if (focused) await openGraphTab(focused)
     return 'Opened Reviews'
   })
+  // open a repository file as an Orca editor tab (in its worktree)
+  orca.panels.handle('file.open', async ({ repo, file } = {}) => {
+    const p = await workPath(req(repo, 'repo'), req(file, 'file'))
+    if (!existsSync(p)) throw new GitError('That file is not in the working tree (deleted or on another branch)')
+    const { toplevel } = await paths(repo)
+    const r = await runProc(ORCA_BIN, ['file', 'open', p, '--worktree', `path:${path.resolve(toplevel)}`, '--focus', '--json'], { timeout: 15_000 })
+    let res = null
+    try { res = JSON.parse(r.stdout) } catch {}
+    if (!res?.ok) throw new GitError(res?.error?.message || r.stderr.trim() || 'Orca could not open the file')
+    return { opened: true }
+  })
   orca.panels.handle('shell.open', async ({ url } = {}) => ({ opened: await openInBrowser(String(url || '')) }))
   orca.panels.handle('tab.open', async ({ repo } = {}) => openGraphTab(req(repo, 'repo')))
 
