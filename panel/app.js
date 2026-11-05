@@ -649,27 +649,38 @@ function setTab(id) {
   state.sheets = []
   store.set('tab', id)
   renderTabs()
-  renderView()
+  renderView({ force: true })
 }
 
 /* =========================================================================
    refresh
    ========================================================================= */
 let refreshing = null
+let pendingRefresh = null
 async function refreshAll(full = false) {
-  if (refreshing) return refreshing
+  if (refreshing) {
+    // something changed since that refresh started (an operation finished, the repo switched): run once more
+    pendingRefresh ||= refreshing.catch(() => {}).then(() => {
+      pendingRefresh = null
+      return refreshAll(full)
+    })
+    return pendingRefresh
+  }
   refreshing = (async () => {
     if (full || !state.repo) {
       const before = state.repo
       await resolveRepo()
       if (state.repo !== before && state.status) renderAll() // snapshot of the new repo: show it now
     }
-    if (state.repo) {
+    const repo = state.repo
+    if (repo) {
       try {
         const [st, refs] = await Promise.all([call('status'), call('refs').catch(() => state.refs)])
+        if (repo !== state.repo) return // switched meanwhile: the queued refresh handles the new repo
         state.status = st
         state.refs = refs
       } catch (e) {
+        if (repo !== state.repo) return
         state.status = null
         state.statusError = e.message
       }
@@ -696,8 +707,10 @@ async function renderAll() {
 /** Light status poll: only re-render when something changed. */
 async function pollStatus(force) {
   if (!force && (document.hidden || !state.repo || state.busy || refreshing || document.querySelector('.overlay'))) return
+  const repo = state.repo
   try {
     const st = await call('status')
+    if (repo !== state.repo) return
     if (JSON.stringify(st) !== JSON.stringify(state.status)) {
       const headMoved = st.oid !== state.status?.oid
       state.status = st
@@ -718,8 +731,15 @@ async function pollStatus(force) {
    view host + sheets
    ========================================================================= */
 let lastTabRendered = null
-async function renderView() {
+let renderSeq = 0
+// A form the person is typing into (Settings and the like) must not be redrawn under them by a
+// background refresh. Typing marks it; switching tabs or saving (which re-renders by tab) clears it.
+document.addEventListener('input', (e) => {
+  if (e.target.closest?.('#main .form')) e.target.closest('.view')?.setAttribute('data-editing', '1')
+})
+async function renderView({ force = false } = {}) {
   const main = $('#main')
+  if (!force && lastTabRendered === state.tab && main.querySelector('.view[data-editing]')) return
   const keepScroll = main.scrollTop
   const loading = main.querySelector('.loading')
   if (!state.repo) {
@@ -739,12 +759,16 @@ async function renderView() {
     clear(main).append(h('div', { class: 'view skeleton-list' }, Array.from({ length: 14 }, (_, i) => h('div', { class: 'skeleton-row', style: { animationDelay: `${i * 40}ms` } }, h('span', { class: 'dot' }), h('span', { class: 'bar', style: { width: `${35 + ((i * 37) % 45)}%` } })))))
     if (loading) main.prepend(loading)
   }
+  // Views load asynchronously; when renders overlap, only the newest may land. An older one
+  // (built for another tab, scope or repository) would otherwise replace it.
+  const seq = ++renderSeq
   let el
   try {
     el = await views[state.tab]()
   } catch (e) {
     el = h('div', { class: 'empty' }, icon('alert', 28), h('div', null, e.message))
   }
+  if (seq !== renderSeq) return
   if (lastTabRendered !== state.tab) el.classList.add('view-enter')
   lastTabRendered = state.tab
   clear(main).append(el)
@@ -1255,8 +1279,10 @@ function refPills(refs, lane) {
 
 async function loadHistory(more = false) {
   const H = state.history
+  const repo = state.repo
   const page = 300
   const commits = await call('log', { all: H.all, limit: page, skip: more ? H.commits.length : 0, search: H.search, mode: H.mode || 'message' })
+  if (repo !== state.repo) return
   H.commits = more ? H.commits.concat(commits) : commits
   H.done = commits.length < page
 }
@@ -1304,6 +1330,7 @@ async function goToHead() {
 
 /** Loads the next page when it scrolls into view (a button too, for keyboards). */
 let loadingMore = false
+let moreObserver = null
 function loadMoreSentinel() {
   const more = async () => {
     if (loadingMore) return
@@ -1317,7 +1344,8 @@ function loadMoreSentinel() {
     }
   }
   const btn = h('button', { class: 'btn sm load-more', onClick: more }, 'Load more')
-  const io = new IntersectionObserver((ents) => ents.some((e) => e.isIntersecting) && (io.disconnect(), more()), { root: $('#main'), rootMargin: '600px' })
+  moreObserver?.disconnect()
+  const io = (moreObserver = new IntersectionObserver((ents) => ents.some((e) => e.isIntersecting) && (io.disconnect(), more()), { root: $('#main'), rootMargin: '600px' }))
   requestAnimationFrame(() => btn.isConnected && io.observe(btn))
   return btn
 }
@@ -1588,7 +1616,7 @@ function commitMenu(anchor, c) {
       icon: 'right',
       items: [
         ...local.filter((b) => b !== cur).map((b) => ({ label: `Branch ${b}`, icon: 'branch', onClick: () => checkout(b) })),
-        ...remote.map((b) => ({ label: `Remote ${b} (new local branch)`, icon: 'globe', onClick: () => checkout(b, { track: true }) })),
+        ...remote.map((b) => ({ label: state.localNames?.has(b.replace(/^[^/]+\//, '')) ? `Remote ${b}…` : `Remote ${b} (new local branch)`, icon: 'globe', onClick: () => checkout(b, { track: true }) })),
         { label: 'This commit (detached HEAD)', icon: 'commit', onClick: () => checkoutCommit(c.hash) }
       ]
     },
@@ -1820,6 +1848,7 @@ A branch can be checked out in only one worktree at a time.`,
             value: 'stash',
             options: [
               ['stash', 'Stash them, switch, then bring them back (recommended)'],
+              ['merge', 'Merge them into the other branch (may leave conflicts to resolve)'],
               ['discard', 'Discard them and switch']
             ]
           }
@@ -1828,7 +1857,7 @@ A branch can be checked out in only one worktree at a time.`,
       })
       if (!r) return
       if (r.how === 'discard' && !(await confirmBox('Discard your changes?', 'They cannot be recovered.', 'Discard & switch', true))) return
-      return checkout(name, { ...opts, stash: r.how === 'stash', discard: r.how === 'discard' })
+      return checkout(name, { ...opts, stash: r.how === 'stash', merge: r.how === 'merge', discard: r.how === 'discard' })
     }
     toast(e.message, 'error')
     await refreshAll()
@@ -2013,7 +2042,8 @@ function remoteBranchRow(b, local) {
       { class: 'hover-actions', onClick: (e) => e.stopPropagation() },
       iconBtn('more', 'More', (e) =>
         menu(e.currentTarget, [
-          hasLocal ? { label: `Checkout ${short}`, icon: 'right', onClick: () => checkout(short) } : { label: `Checkout as ${short}`, icon: 'right', onClick: () => checkout(b.name, { track: true }) },
+          // Always go through the remote: when a local branch exists, checkout() asks how to bring it up to date.
+          { label: hasLocal ? `Checkout ${b.name}…` : `Checkout as ${short}`, icon: 'right', onClick: () => checkout(b.name, { track: true }) },
           cur && { label: `Merge into ${cur}`, icon: 'merge', onClick: () => mergeRef(b.name) },
           cur && { label: `Rebase ${cur} onto this`, icon: 'merge', onClick: () => rebaseOnto(b.name) },
           { label: 'New branch from here…', icon: 'plus', onClick: () => newBranch(b.name) },
@@ -2406,7 +2436,7 @@ const COMMON = [
   },
   { key: 'http.proxy', label: 'HTTP proxy', placeholder: 'http://proxy.example.com:8080' },
   { key: 'https.proxy', label: 'HTTPS proxy', placeholder: 'http://proxy.example.com:8080' },
-  { key: 'http.sslCAInfo', label: 'Custom CA certificate file', placeholder: 'C:\certs\company-ca.pem' },
+  { key: 'http.sslCAInfo', label: 'Custom CA certificate file', placeholder: 'C:\\certs\\company-ca.pem' },
   { key: 'http.postBuffer', label: 'Upload buffer (bytes, for large pushes)', placeholder: '524288000' }
 ]
 
@@ -2429,9 +2459,14 @@ async function viewSettings() {
     h('button', { class: scope === 'local' ? 'on' : '', onClick: () => setScope('local') }, 'This repository')
   )
   function setScope(s) {
+    if (s === state.configScope) return
     state.configScope = s
     store.set('configScope', s)
-    renderView()
+    // Show the choice at once and lock the old form until the new scope's values arrive, so
+    // nothing typed meanwhile is saved to the wrong scope.
+    seg.querySelectorAll('button').forEach((b, i) => b.classList.toggle('on', (i === 0) === (s === 'global')))
+    root.classList.add('pending')
+    renderView({ force: true })
   }
   root.append(
     h('div', { style: { padding: '4px 10px 2px' } }, seg),
@@ -2494,7 +2529,7 @@ async function viewSettings() {
               toast(e.message, 'error')
             } finally {
               setBusy(-1)
-              renderView()
+              renderView({ force: true })
             }
           }
         },
@@ -3089,8 +3124,8 @@ async function aiCommitModal({ staged, total, onUse, onCommit }) {
     busy = on
     result.classList.toggle('generating', on)
     result.readOnly = on
-    clear(status).append(on ? [h('span', { class: 'spinner' }), text] : text || '')
-    clear(genBtn).append(on ? [icon('x', 13), 'Stop'] : [icon('sparkle', 13), result.value.trim() ? 'Regenerate' : 'Generate'])
+    append(clear(status), [on ? [h('span', { class: 'spinner' }), text] : text || ''])
+    append(clear(genBtn), [on ? [icon('x', 13), 'Stop'] : [icon('sparkle', 13), result.value.trim() ? 'Regenerate' : 'Generate']])
     genBtn.className = `btn ${on ? '' : result.value.trim() ? '' : 'primary'}`
     const has = !on && !!result.value.trim()
     useBtn.disabled = !has
@@ -3175,8 +3210,19 @@ if (hasOrca) {
     window.orca.on('workspace.changed', () => followFocus())
   } catch {}
 }
+let following = false
 async function followFocus() {
-  if (state.pinned) return
+  // A confirm or menu is about this repository, and so is a running operation: switching now
+  // would send the action to another one.
+  if (state.pinned || following || state.busy || document.querySelector('.overlay, .menu')) return
+  following = true
+  try {
+    await followFocusOnce()
+  } finally {
+    following = false
+  }
+}
+async function followFocusOnce() {
   const before = state.repo
   await resolveRepo()
   if (state.repo !== before) refreshAll()

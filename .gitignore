@@ -1,2 +1,3 @@
 .orca/
 *.gitgraph
+node_modules/

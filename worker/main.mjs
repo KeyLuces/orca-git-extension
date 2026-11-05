@@ -27,7 +27,25 @@ class GitError extends Error {
 }
 
 /** Run git and resolve with stdout. Rejects with stderr on a non-zero exit unless `okCodes` allows it. */
-function git(cwd, args, { input, timeout = LOCAL_TIMEOUT, okCodes = [0], signal, env } = {}) {
+/**
+ * Run git. When another git (an agent in a terminal, an editor) holds the repository lock for a
+ * moment, wait and try again instead of failing.
+ */
+async function git(cwd, args, opts = {}) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await gitOnce(cwd, args, opts)
+    } catch (e) {
+      if (attempt < 4 && /index\.lock': File exists|Unable to create '.*\.lock'/.test(e.message)) {
+        await new Promise((res) => setTimeout(res, 250 * (attempt + 1)))
+        continue
+      }
+      throw e
+    }
+  }
+}
+
+function gitOnce(cwd, args, { input, timeout = LOCAL_TIMEOUT, okCodes = [0], signal, env } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn('git', args, {
       cwd: cwd || undefined,
@@ -325,9 +343,15 @@ async function logUncached(repo, { all = false, limit = 200, skip = 0, search = 
 async function commitShow(repo, args) {
   const key = (await commonDir(repo)) + '|' + req(args.hash, 'hash')
   const hit = showCache.get(key)
-  if (hit && /^[0-9a-f]{40}$/.test(args.hash)) return hit
+  if (hit && /^[0-9a-f]{40}$/.test(args.hash)) {
+    // refs move; read the current ones (cheap) instead of trusting the cache
+    const refs = (await git(repo, ['log', '-1', '--format=%D', hit.hash])).trim()
+    return { ...hit, refs: refs ? refs.split(', ') : [] }
+  }
   const out = await commitShowUncached(repo, args)
-  return /^[0-9a-f]{40}$/.test(args.hash) ? remember(showCache, key, out, 400) : out
+  if (!/^[0-9a-f]{40}$/.test(args.hash)) return out
+  remember(showCache, key, out, 400)
+  return out
 }
 
 async function commitShowUncached(repo, { hash }) {
@@ -652,11 +676,12 @@ async function aiResolve(orca, repo, agent) {
   const conflicted = (await git(repo, ['diff', '--name-only', '--diff-filter=U'])).trim().split('\n').filter(Boolean)
   const op = state || 'merge'
   const prompt =
-    `A git ${op} is in progress in this repository and these files have conflicts: ${conflicted.join(', ') || '(see git status)'}. ` +
+    `A git ${op} is in progress in this repository and ${conflicted.length || 'some'} file${conflicted.length === 1 ? ' has' : 's have'} conflicts (run git status to list them). ` +
     'Resolve every conflict by understanding what both sides intended and keeping both changes where possible. ' +
     'Remove all conflict markers, make sure the code still builds, then stage the resolved files with git add. ' +
     `Do not commit and do not run git ${op} --continue or --abort; I will review and continue myself.`
-  const safe = prompt.replace(/["`$]/g, "'")
+  // The command goes through the terminal's shell: keep only plain characters (no quotes, %, $, \).
+  const safe = prompt.replace(/[^\w .,:;()'\/-]/g, ' ')
   const command = a.bin === 'codex' ? `codex "${safe}"` : `claude "${safe}"`
   const { terminalId } = await orca.host.call('terminal.create', {
     workspaceId: ws.id,
@@ -686,7 +711,8 @@ const ops = {
   discard: async (r, a) => {
     const tracked = a.files || []
     const untracked = a.untracked || []
-    if (tracked.length) await git(r, ['restore', '--worktree', '--source=HEAD', '--', ...tracked])
+    // from the index, so staged parts of the same file survive (and newly added files work)
+    if (tracked.length) await git(r, ['restore', '--worktree', '--', ...tracked])
     if (untracked.length) await git(r, ['clean', '-f', '-d', '--', ...untracked])
     return ''
   },
@@ -731,6 +757,7 @@ const ops = {
     }
     const args = ['switch']
     if (a.discard) args.push('--discard-changes')
+    else if (a.merge) args.push('--merge')
     // A remote branch: create a local tracking branch with the same name.
     if (a.track) args.push('--track')
     else if (a.detach) args.push('--detach')
@@ -840,9 +867,12 @@ const ops = {
     if (a.message) args.push('-m', String(a.message))
     return git(r, args)
   },
-  stashApply: (r, a) => git(r, ['stash', 'apply', '--index', stashRef(a.ref)]).catch(() =>
-    git(r, ['stash', 'apply', stashRef(a.ref)])
-  ),
+  stashApply: (r, a) =>
+    git(r, ['stash', 'apply', '--index', stashRef(a.ref)]).catch((e) => {
+      // conflicts in the files themselves: report them; only an index-only failure retries without --index
+      if (!/Conflicts in index|could not restore index|--index/i.test(e.message)) throw e
+      return git(r, ['stash', 'apply', stashRef(a.ref)])
+    }),
   stashPop: (r, a) => git(r, ['stash', 'pop', stashRef(a.ref)]),
   stashDrop: (r, a) => git(r, ['stash', 'drop', stashRef(a.ref)]),
   stashShow: async (r, a) =>
@@ -1033,6 +1063,9 @@ Tick "Force" to remove it anyway.`)
   },
   squashSince: async (r, a) => {
     const base = req(a.base, 'base commit')
+    // exit 0 = ancestor; 1 = not (git() rejects on 1 since only 0 is ok)
+    const isAncestor = await git(r, ['merge-base', '--is-ancestor', base, 'HEAD']).then(() => true, () => false)
+    if (!isAncestor) throw new GitError('That commit is not in the current branch, so there is nothing to squash onto it')
     const msg = String(a.message || '')
     if (!msg.trim()) throw new GitError('message is empty')
     if ((await git(r, ['status', '--porcelain', '--untracked-files=no'])).trim())
@@ -1078,7 +1111,8 @@ let ORCA = null
 export default function activate(orca) {
   ORCA = orca
   orca.panels.handle('git', async (input) => {
-    const { op, repo, args = {} } = input || {}
+    const { op, repo } = input || {}
+    const args = input?.args || {}
     const fn = ops[op]
     if (!fn) throw Object.assign(new Error(`unknown operation: ${op}`), { code: 'invalid_params' })
     const scopeGlobal = args.scope === 'global'
@@ -1120,8 +1154,17 @@ export default function activate(orca) {
     return 'Opened Git Graph'
   })
   let lastBar = ''
+  let barBusy = false // a slow git must not pile up overlapping polls
   async function updateStatusBar() {
-    if (!orca.host.has('statusBar.update')) return
+    if (barBusy || !orca.host.has('statusBar.update')) return
+    barBusy = true
+    try {
+      await updateStatusBarOnce()
+    } finally {
+      barBusy = false
+    }
+  }
+  async function updateStatusBarOnce() {
     let item = { id: 'branch', text: 'Git', tone: 'neutral', tooltip: 'Open Git Graph', visible: true }
     try {
       const { focused } = await resolveFocused()
@@ -1208,7 +1251,7 @@ Click to open Git Graph`
       return 'claude'
     }
   }
-  orca.panels.handle('ai.commitMessage', async ({ repo, agent, instructions, scope }) =>
+  orca.panels.handle('ai.commitMessage', async ({ repo, agent, instructions, scope } = {}) =>
     aiCommitMessage(req(repo, 'repo'), AI[agent] ? agent : await agentSetting(), { instructions, scope })
   )
   orca.panels.handle('ai.settings', async (input) => {
@@ -1223,11 +1266,11 @@ Click to open Git Graph`
     )
     return { agent: await agentSetting(), agents: Object.entries(AI).map(([id, v]) => ({ id, name: v.name, available: available[id] })) }
   })
-  orca.panels.handle('ai.resolve', async ({ repo }) => aiResolve(orca, req(repo, 'repo'), await agentSetting()))
-  orca.panels.handle('repo.ignoreGraphFiles', async ({ repo }) => ignoreGraphFiles(req(repo, 'repo')).then(() => ({ ok: true })))
-  orca.panels.handle('tab.open', async ({ repo }) => openGraphTab(req(repo, 'repo')))
+  orca.panels.handle('ai.resolve', async ({ repo } = {}) => aiResolve(orca, req(repo, 'repo'), await agentSetting()))
+  orca.panels.handle('repo.ignoreGraphFiles', async ({ repo } = {}) => ignoreGraphFiles(req(repo, 'repo')).then(() => ({ ok: true })))
+  orca.panels.handle('tab.open', async ({ repo } = {}) => openGraphTab(req(repo, 'repo')))
 
-  orca.panels.handle('repo.check', async ({ path: p }) => {
+  orca.panels.handle('repo.check', async ({ path: p } = {}) => {
     try {
       const top = (await git(req(p, 'path'), ['rev-parse', '--show-toplevel'])).trim()
       return { ok: true, toplevel: top }
@@ -1237,7 +1280,7 @@ Click to open Git Graph`
   })
 
   // Show a worktree in Orca when Orca knows it as a workspace.
-  orca.panels.handle('worktree.open', async ({ path: p }) => {
+  orca.panels.handle('worktree.open', async ({ path: p } = {}) => {
     const ws = (await listWorkspaces(orca)).find((w) => norm(w.path) === norm(p))
     if (!ws || !orca.host.has('workspace.open')) return { opened: false }
     try {

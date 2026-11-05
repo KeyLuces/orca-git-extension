@@ -30,6 +30,17 @@ Or: Settings → Plugins → Turn on plugins → Development folders… → add 
 
 Requires Orca ≥ 1.4.246 and `git` on PATH.
 
+## End-to-end test
+
+`tests/e2e.mjs` opens the real Git Graph tab in headless Chrome, wires it to the real worker, and
+clicks through commit, branch, checkout (dirty and diverged remote), stash, discard, worktrees,
+settings, tags and the AI dialog on a throwaway repository, checking every result with plain git.
+It uses its own global git config, never yours.
+
+```sh
+cd tests && npm install && npm run e2e   # needs Google Chrome installed
+```
+
 ## Layout
 
 ```
