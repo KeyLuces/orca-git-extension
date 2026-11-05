@@ -12,7 +12,7 @@ Formerly "Git Graph": the plugin is now **Git Control** (id `git-control`).
 - **Worktrees:** list, create (new branch, existing branch, or detached), lock/unlock, remove, prune, open in Orca
 - **Stash:** save (untracked / keep staged), apply, pop, drop, view diff
 - **Settings:** git config at **Global** or **This repository** scope (user.name/email, pull.rebase, autocrlf, and more), edit any entry, manage remotes
-- **Inbox** (status bar item and **Git: Open Inbox**): open pull/merge requests to review, assigned to you, opened by you, or all open in this repository; approve, comment, or draft a review with AI. Merge requests can be created from a branch or commit menu
+- **Review & MR** (status bar item and **Git: Open Review & MR**): open pull/merge requests to review, assigned to you, opened by you, or all open in this repository; approve, comment, or draft a review with AI. Merge requests can be created from a branch or commit menu
 - Merge/rebase/cherry-pick in progress → Continue / Skip / Abort banner
 - Fetch / Pull (merge, rebase, ff-only) / Push (force-with-lease) in the header
 - **Git Control tab:** the whole client lives in one editor tab (VS Code Git Control style); commit details slide in from the right

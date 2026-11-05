@@ -54,7 +54,7 @@
       },
       {
         "id": "openReviews",
-        "title": "Git: Open Inbox (merge and pull requests)"
+        "title": "Git: Open Review & MR"
       }
     ],
     "statusBarItems": [
@@ -67,9 +67,9 @@
       },
       {
         "id": "reviews",
-        "text": "Inbox",
+        "text": "Review & MR",
         "icon": "bell",
-        "tooltip": "Inbox: pull/merge requests waiting for you",
+        "tooltip": "Review & MR: merge and pull requests waiting for you",
         "command": "openReviews"
       }
     ],

@@ -548,7 +548,7 @@ await step('Inbox (GitLab, saved Git login): to review, assigned, opened by me, 
   g('config', '--unset', 'gitcontrol.provider')
   g('remote', 'set-url', 'origin', 'https://gitlab2.example.test/team/app.git')
   process.env.GITX_API_BASE = API + '/api/v4'
-  await tab('Inbox')
+  await tab('Review & MR')
   await clickText('.reviews .btn', 'Refresh').catch(() => {})
   const seg = async (label, want, not) => {
     await clickText('.reviews .segmented button', label)
