@@ -782,6 +782,8 @@ async function refreshAll(full = false) {
       try {
         const [st, refs] = await Promise.all([call('status', full ? { fresh: true } : {}), call('refs').catch(() => state.refs)])
         if (repo !== state.repo) return // switched meanwhile: the queued refresh handles the new repo
+        // any branch, tag or remote moving (our own push, fetch, commit…) redraws the graph's labels
+        if (state.status && (st.oid !== state.status.oid || st.refsSig !== state.status.refsSig)) state.history.stale = true
         state.status = st
         state.refs = refs
       } catch (e) {

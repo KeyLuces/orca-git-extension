@@ -428,6 +428,16 @@ await step('a push made outside the app (e.g. the Orca Git panel) turns the labe
   await until(() => page.evaluate(() => [...document.querySelectorAll('.commit-row')][0]?.querySelector('.ref.synced')?.textContent.replace(/\s+/g, '') === 'mainorigin'), 'main │ origin on the checked-out commit', 15000)
 })
 
+await step('pushing with the toolbar Push moves origin onto the commit (main │ origin)', async () => {
+  write('ours.txt', 'pushed from the app\n'); g('add', '.'); g('commit', '-qm', 'Pushed from the app')
+  await refresh()
+  await until(() => page.$$eval('.commit-row', (r) => r[0]?.textContent.includes('Pushed from the app')), 'new commit shows')
+  await clickSel('[title="Push"]')
+  await clickText('.menu button', 'Push').catch(() => {}) // the button may open its menu
+  await until(() => g('rev-parse', 'origin/main') === g('rev-parse', 'main'), 'pushed')
+  await until(() => page.evaluate(() => [...document.querySelectorAll('.commit-row')][0]?.querySelector('.ref.synced')?.textContent.replace(/\s+/g, '') === 'mainorigin'), 'label is main │ origin right after the push', 10000)
+})
+
 await step('merge request: one button pushes the branch and hands over to GitLab', async () => {
   g('switch', '-q', '-c', 'mr-branch'); write('mr.txt', 'mr\n'); g('add', '.'); g('commit', '-qm', 'Add MR change')
   // looks like a GitLab project, while pushes still go to the local test remote
