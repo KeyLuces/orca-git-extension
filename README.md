@@ -30,6 +30,20 @@ Or: Settings → Plugins → Turn on plugins → Development folders… → add 
 
 Requires Orca ≥ 1.4.246 and `git` on PATH.
 
+## Phones and the web client
+
+The Orca mobile app does not show plugins yet, but Orca's web client (`orca serve`, or a remote Orca
+server, opened in a phone's browser) does. It loads a plugin frame as one sandboxed document that
+cannot fetch other files, so the Git Graph tab is built into a single file:
+
+```sh
+node tools/build.mjs   # panel/tab.html + style.css + app.js -> panel/graph.html (the editor entry)
+```
+
+Run it after every change to those files. On narrow screens the branch sidebar becomes a drawer (☰),
+row actions stay visible on touch screens, long-press works as right-click, and dialogs open as sheets.
+`tests/mobile.mjs` checks this at iPhone size with the page loaded the way the web client loads it.
+
 ## End-to-end test
 
 `tests/e2e.mjs` opens the real Git Graph tab in headless Chrome, wires it to the real worker, and

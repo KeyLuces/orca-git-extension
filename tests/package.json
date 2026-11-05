@@ -5,7 +5,9 @@
   "description": "Blackbox end-to-end test: the real Git Graph tab in headless Chrome, driven like a user, checked with plain git.",
   "scripts": {
     "e2e": "node e2e.mjs .. ../.orca/e2e",
-    "perf": "node perf.mjs .. ../.orca/e2e"
+    "perf": "node perf.mjs .. ../.orca/e2e",
+    "build": "node ../tools/build.mjs",
+    "mobile": "node mobile.mjs .. ../.orca/e2e"
   },
   "devDependencies": {
     "puppeteer-core": "25.16.0"

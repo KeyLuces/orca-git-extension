@@ -20,7 +20,7 @@
         "extensions": [
           ".gitgraph"
         ],
-        "entry": "panel/tab.html"
+        "entry": "panel/graph.html"
       }
     ],
     "settings": [

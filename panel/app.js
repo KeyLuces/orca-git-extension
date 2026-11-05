@@ -3976,6 +3976,51 @@ if (hasOrca) {
   setTimeout(() => request('ui.pending', {}).then((p) => p?.tab && setTab(p.tab), () => {}), 800)
 }
 
+
+/* =========================================================================
+   Phones and tablets (Orca's web client in a mobile browser)
+   ========================================================================= */
+// The branch sidebar becomes a drawer behind the ☰ button on narrow screens.
+const setSide = (open) => document.body.classList.toggle('side-open', open)
+$('#sideToggle')?.addEventListener('click', () => setSide(!document.body.classList.contains('side-open')))
+$('#sideBackdrop')?.addEventListener('click', () => setSide(false))
+document.addEventListener('click', (e) => {
+  // picking something in the drawer closes it (but not opening its menus)
+  if (e.target.closest?.('#side .side-item, #side .item') && !e.target.closest('.hover-actions, .icon-btn')) setSide(false)
+})
+// Long-press = right-click, so the commit, branch and file menus work by touch.
+{
+  let timer = null
+  let start = null
+  document.addEventListener(
+    'touchstart',
+    (e) => {
+      if (e.touches.length !== 1) return
+      const t = e.touches[0]
+      start = { x: t.clientX, y: t.clientY, target: e.target }
+      clearTimeout(timer)
+      timer = setTimeout(() => {
+        start.target.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: start.x, clientY: start.y }))
+        start.fired = true
+      }, 520)
+    },
+    { passive: true }
+  )
+  document.addEventListener(
+    'touchmove',
+    (e) => {
+      const t = e.touches[0]
+      if (start && Math.hypot(t.clientX - start.x, t.clientY - start.y) > 10) clearTimeout(timer)
+    },
+    { passive: true }
+  )
+  document.addEventListener('touchend', (e) => {
+    clearTimeout(timer)
+    if (start?.fired) e.preventDefault() // the long-press opened a menu: no click as well
+    start = null
+  })
+}
+
 /* =========================================================================
    boot
    ========================================================================= */

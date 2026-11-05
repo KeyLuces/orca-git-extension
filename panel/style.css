@@ -530,3 +530,73 @@ span.ci { cursor: default; height: 17px; padding: 0 7px; font-size: 10.5px; }
 .review-diff .file-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 6px; padding: 6px 12px; margin-top: 10px; background: var(--card); border-block: 1px solid var(--line); font-family: system-ui, sans-serif; font-weight: 600; }
 .review-diff .commentable { cursor: pointer; }
 .review-diff .commentable:hover { outline: 1px solid color-mix(in srgb, var(--ren) 55%, transparent); outline-offset: -1px; }
+
+/* =====================================================================
+   Phones and tablets
+   ===================================================================== */
+.side-toggle, .side-backdrop { display: none; }
+@media (max-width: 820px) {
+  .side-toggle { display: inline-flex; font-size: 17px; flex: none; }
+  header { flex-wrap: wrap; gap: 8px; padding: 8px 10px; }
+  .repo-line { flex: 1; min-width: 0; }
+  .repo-btn { max-width: none; }
+  .toolbar { order: 3; width: 100%; margin-left: 0; overflow-x: auto; scrollbar-width: none; }
+  .toolbar::-webkit-scrollbar { display: none; }
+  #branchLine { order: 2; flex: 1 1 100%; }
+  .branch-chip { max-width: 70vw; }
+  /* sidebar → drawer */
+  .wide-body { grid-template-columns: 1fr; }
+  #side { display: block; position: fixed; top: 0; bottom: 0; left: 0; z-index: 45; width: min(86vw, 340px); transform: translateX(-100%); transition: transform .22s var(--ease); box-shadow: var(--shadow); padding-top: 12px; }
+  body.side-open #side { transform: none; }
+  .side-backdrop { display: block; position: fixed; inset: 0; z-index: 44; background: rgba(0, 0, 0, .45); opacity: 0; pointer-events: none; transition: opacity .2s; }
+  body.side-open .side-backdrop { opacity: 1; pointer-events: auto; }
+  nav.tabs { padding: 6px 8px; }
+  .history-bar { flex-wrap: wrap; padding: 0 10px 10px; }
+  .history-bar input { flex: 1 1 100%; order: 3; }
+  .commit-row { padding-right: 10px; }
+  .card, .commit-box, .form { margin-left: 10px; margin-right: 10px; }
+  .form { padding-left: 0; padding-right: 0; grid-template-columns: 1fr; }
+  .review-row { flex-wrap: wrap; padding: 10px; }
+  .review-actions { width: 100%; justify-content: flex-end; }
+  .commit-inline { margin: 2px 8px 10px; }
+  .res-sides { grid-template-columns: 1fr; }
+  .res-sides > div + div { border-left: 0; border-top: 1px solid var(--line); }
+  .wide-sheet, .sheet { width: 100%; }
+  .overlay { padding: 12px 8px; align-items: flex-end; }
+  .dialog { max-width: none !important; border-radius: 14px 14px 10px 10px; max-height: 92vh; overflow: auto; }
+  .dialog .buttons { flex-wrap: wrap; }
+  .ai-row { flex-direction: column; }
+  #toasts { left: 8px; right: 8px; bottom: 8px; max-width: none; align-items: stretch; }
+}
+@media (max-width: 520px) {
+  .tb-label { display: none; }
+  .col-hash { display: none; }
+}
+/* touch screens: no hover, so row buttons stay visible, and targets are finger-sized */
+@media (hover: none) {
+  .item .hover-actions { display: flex; }
+  .item .meta-right { display: none; }
+  .item, .side-item { min-height: 40px; }
+  .btn { height: 36px; }
+  .btn.sm { height: 32px; }
+  .icon-btn { min-width: 36px; height: 36px; }
+  .menu button { padding: 10px 12px; font-size: 14px; }
+  input[type='text'], input:not([type]), select, textarea { font-size: 16px; } /* no zoom-on-focus in mobile Safari */
+}
+@media (max-width: 820px) {
+  /* header rows: ☰ + repository, then branch, then the toolbar */
+  .repo-line { flex: 1 1 calc(100% - 52px); }
+  .repo-btn .ellipsis { min-width: 0; }
+  #branchLine { order: 2; }
+  .toolbar { order: 3; }
+  /* the diff area only takes space once a file is chosen */
+  .diff-pane:has(> .empty) { display: none; }
+  .diff-pane { border-top: 1px solid var(--line); }
+}
+@media (max-width: 820px) {
+  /* the toolbar lives inside .repo-line: let it wrap under the repository name */
+  .repo-line { flex-wrap: wrap; row-gap: 8px; }
+  .repo-line .repo-btn { flex: 1 1 auto; }
+  .repo-line .toolbar { flex: 1 1 100%; width: 100%; }
+}
+@media (max-width: 820px) { .side-toggle { align-self: flex-start; margin-top: 2px; } }
