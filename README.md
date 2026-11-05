@@ -39,6 +39,7 @@ It uses its own global git config, never yours.
 
 ```sh
 cd tests && npm install && npm run e2e   # needs Google Chrome installed
+npm run perf -- <path to a large repo>  # read-only timings: open, tab switch, load more, details
 ```
 
 ## Layout

@@ -383,6 +383,7 @@ async function resolveRepo() {
 
 /** Point the view at another repository, showing its last snapshot right away when there is one. */
 function setRepo(p) {
+  if (p !== state.repo) rowCache?.clear()
   state.repo = p
   state.status = null
   state.refs = null
@@ -1294,6 +1295,11 @@ async function loadHistory(more = false) {
   H.done = commits.length < page
 }
 
+/** Built graph rows by commit, reused across renders while their look is unchanged. */
+const rowCache = new Map()
+const rowSignature = (c, row, width, open) =>
+  [c.refs.join(','), open ? 1 : 0, width, state.localNames ? state.localNames.size : 0, row ? row.color + ':' + row.col + ':' + JSON.stringify(row.edges) : '-'].join('|')
+
 /** Reload the first page in the background; redraw only when something changed. */
 let reloadingHistory = false
 async function reloadHistoryQuietly() {
@@ -1352,7 +1358,7 @@ function loadMoreSentinel() {
   }
   const btn = h('button', { class: 'btn sm load-more', onClick: more }, 'Load more')
   moreObserver?.disconnect()
-  const io = (moreObserver = new IntersectionObserver((ents) => ents.some((e) => e.isIntersecting) && (io.disconnect(), more()), { root: $('#main'), rootMargin: '600px' }))
+  const io = (moreObserver = new IntersectionObserver((ents) => ents.some((e) => e.isIntersecting) && (io.disconnect(), more()), { root: $('#main'), rootMargin: '1500px' }))
   requestAnimationFrame(() => btn.isConnected && io.observe(btn))
   return btn
 }
@@ -1427,7 +1433,24 @@ async function viewHistory() {
   if (rows) rows.forEach((r, i) => laneOfCommit.set(H.commits[i].hash, r.color))
   const width = rows ? graphWidth(rows) + 4 : 8
   const list = h('div')
+  const frag = document.createDocumentFragment()
   H.commits.forEach((c, i) => {
+    // Rows are rebuilt only when what they show changed (lines, labels, selection): switching tabs,
+    // refreshing or loading more reuses the rest instead of rebuilding hundreds of SVG rows.
+    const sig = rowSignature(c, rows && rows[i], width, H.open === c.hash)
+    const cached = rowCache.get(c.hash)
+    let row = cached && cached.sig === sig ? cached.el : null
+    if (!row) {
+      row = buildRow(c, i)
+      rowCache.set(c.hash, { sig, el: row })
+    }
+    row.classList.toggle('selected', H.open === c.hash) // toggleInline changes it in place
+    frag.append(row)
+    if (H.open === c.hash) frag.append(inlineDetail(c))
+  })
+  if (rowCache.size > 4000) rowCache.clear()
+  list.append(frag)
+  function buildRow(c, i) {
     const row = h(
         'div',
         { class: `commit-row ${H.open === c.hash ? 'selected' : ''}`, 'data-hash': c.hash, onClick: () => toggleInline(c, row), onContextmenu: (e) => commitContextMenu(e, c) },
@@ -1446,9 +1469,8 @@ async function viewHistory() {
               h('div', { class: 'commit-meta', title: fullDate(c.time) }, `${c.author} · ${ago(c.time)} · `, h('span', { class: 'mono' }, c.hash.slice(0, 7)))
             )
       )
-    list.append(row)
-    if (H.open === c.hash) list.append(inlineDetail(c))
-  })
+    return row
+  }
   root.append(list)
   if (!H.done)
     root.append(

@@ -101,9 +101,23 @@ const trunc = (s, max = 400_000) =>
 
 // ---------- repository ----------
 
+// --git-dir and --show-toplevel never change for a folder: ask git once per repository.
+const repoPaths = new Map()
+async function paths(repo) {
+  const k = repo
+  let p = repoPaths.get(k)
+  if (!p) {
+    p = git(repo, ['rev-parse', '--git-dir', '--show-toplevel']).then((out) => {
+      const [d, top] = out.trim().split(/\r?\n/)
+      return { gitDir: path.resolve(repo, d), toplevel: top || repo }
+    })
+    repoPaths.set(k, p)
+    p.catch(() => repoPaths.delete(k))
+  }
+  return p
+}
 async function gitDir(repo) {
-  const d = (await git(repo, ['rev-parse', '--git-dir'])).trim()
-  return path.resolve(repo, d)
+  return (await paths(repo)).gitDir
 }
 
 async function repoState(repo) {
@@ -225,14 +239,15 @@ function parseStatus(raw) {
 }
 
 async function status(repo) {
-  const [raw, state, stashCount] = await Promise.all([
-    git(repo, ['status', '--porcelain=v2', '--branch', '-z', '--untracked-files=all']),
+  // One git process: --show-stash adds "# stash <n>" to the header (git 2.35+).
+  const [raw, state, { gitDir: d, toplevel }] = await Promise.all([
+    git(repo, ['status', '--porcelain=v2', '--branch', '--show-stash', '-z', '--untracked-files=all']),
     repoState(repo),
-    git(repo, ['stash', 'list', '--format=%gd']).then((s) => s.split('\n').filter(Boolean).length)
+    paths(repo)
   ])
   const st = parseStatus(raw)
-  const toplevel = (await git(repo, ['rev-parse', '--show-toplevel'])).trim()
-  const bisect = existsSync(path.join(await gitDir(repo), 'BISECT_LOG'))
+  const stashCount = +(raw.match(/(?:^|\0)# stash (\d+)/)?.[1] || 0)
+  const bisect = existsSync(path.join(d, 'BISECT_LOG'))
   return { ...st, state, stashCount, toplevel, bisect }
 }
 
@@ -269,9 +284,30 @@ async function commonDir(repo) {
   }
   return commonDirs.get(k)
 }
-async function refsFingerprint(repo) {
-  const raw = await git(repo, ['for-each-ref', '--format=%(objectname) %(refname)'])
-  return createHash('sha1').update(raw).digest('hex')
+/** Share an answer for a moment: one refresh asks the same question several times. */
+const shortMemo = new Map()
+function memo(key, ms, fn) {
+  const hit = shortMemo.get(key)
+  if (hit && Date.now() - hit.at < ms) return hit.p
+  const p = fn()
+  shortMemo.set(key, { at: Date.now(), p })
+  p.catch(() => shortMemo.delete(key))
+  if (shortMemo.size > 200) shortMemo.delete(shortMemo.keys().next().value)
+  return p
+}
+function refsFingerprint(repo) {
+  return memo('fp|' + repo, 1500, async () => {
+    const raw = await git(repo, ['for-each-ref', '--format=%(objectname) %(refname)'])
+    return createHash('sha1').update(raw).digest('hex')
+  })
+}
+/** HEAD's commit and branch (null when detached or before the first commit), in one git call. */
+function headInfo(repo) {
+  return memo('head|' + repo, 1500, async () => {
+    const out = await git(repo, ['rev-parse', 'HEAD', '--abbrev-ref', 'HEAD', '--'], { okCodes: [0] }).catch(() => '') // no commits yet: nothing
+    const [oid, name] = out.trim().split(/\s+/)
+    return { oid: /^[0-9a-f]{40}$/.test(oid || '') ? oid : null, branch: name && name !== 'HEAD' ? name : null }
+  })
 }
 const logCache = new Map() // key -> { sig, commits }
 const showCache = new Map() // common|hash -> details (commits never change)
@@ -284,12 +320,7 @@ function remember(map, key, value, max) {
 
 /** Move the "HEAD" decoration onto this worktree's HEAD commit. */
 async function applyHead(repo, commits) {
-  let head = null
-  let branch = null
-  try {
-    head = (await git(repo, ['rev-parse', '--verify', '-q', 'HEAD'])).trim()
-    branch = (await git(repo, ['symbolic-ref', '-q', '--short', 'HEAD'], { okCodes: [0, 1] })).trim() || null
-  } catch {}
+  const { oid: head, branch } = await headInfo(repo).catch(() => ({ oid: null, branch: null }))
   return commits.map((c) => {
     let refs = c.refs.filter((r) => r !== 'HEAD').map((r) => (r.startsWith('HEAD -> ') ? r.slice(8) : r))
     if (c.hash === head) {
@@ -306,7 +337,7 @@ async function log(repo, opts = {}) {
   if (!shareable) return logUncached(repo, opts)
   const [common, sig] = await Promise.all([commonDir(repo), refsFingerprint(repo)])
   // The current-branch view depends on this worktree's HEAD; the all-branches view does not.
-  const headKey = opts.all ? '' : (await git(repo, ['rev-parse', '-q', '--verify', 'HEAD'], { okCodes: [0, 1] })).trim()
+  const headKey = opts.all ? '' : (await headInfo(repo)).oid || ''
   const key = JSON.stringify([common, !!opts.all, opts.ref || '', headKey, +opts.limit || 200, +opts.skip || 0])
   const hit = logCache.get(key)
   let commits
@@ -385,8 +416,10 @@ async function commitShowUncached(repo, { hash }) {
   // A merge commit has no single diff; like Git Extensions, show it against its first parent.
   const parentList = parents ? parents.split(' ') : []
   const target = parentList.length > 1 ? [parentList[0], h] : ['--root', h]
-  const numstat = await git(repo, ['diff-tree', '--no-commit-id', '-r', '-M', '--numstat', '-z', ...target])
-  const nameStatus = await git(repo, ['diff-tree', '--no-commit-id', '-r', '-M', '--name-status', '-z', ...target])
+  const [numstat, nameStatus] = await Promise.all([
+    git(repo, ['diff-tree', '--no-commit-id', '-r', '-M', '--numstat', '-z', ...target]),
+    git(repo, ['diff-tree', '--no-commit-id', '-r', '-M', '--name-status', '-z', ...target])
+  ])
   // name-status -z: STATUS\0path\0 (or STATUS\0old\0new\0 for renames)
   const ns = nameStatus.split('\0').filter((x) => x !== '')
   const filesOut = []
@@ -441,7 +474,18 @@ async function commitFileDiff(repo, { hash, file }) {
 
 // ---------- branches & tags ----------
 
+const refsCache = new Map() // repo -> { sig, value }
 async function refs(repo) {
+  const [sig, head] = await Promise.all([refsFingerprint(repo), headInfo(repo)])
+  const key = sig + '|' + (head.branch || head.oid)
+  const hit = refsCache.get(repo)
+  if (hit && hit.key === key) return hit.value
+  const value = await refsUncached(repo)
+  remember(refsCache, repo, { key, value }, 30)
+  return value
+}
+
+async function refsUncached(repo) {
   const fmt = [
     '%(refname)',
     '%(refname:short)',
@@ -1061,6 +1105,7 @@ Tick "Force" to remove it anyway.`)
   },
 
   submodules: async (r) => {
+    if (!existsSync(path.join((await paths(r)).toplevel, '.gitmodules'))) return []
     const raw = await git(r, ['submodule', 'status', '--recursive'], { okCodes: [0, 128] })
     const states = { ' ': 'ok', '+': 'changed', '-': 'not initialized', U: 'conflict' }
     return raw
@@ -1124,6 +1169,11 @@ Tick "Force" to remove it anyway.`)
   }
 }
 
+const READ_ONLY_OPS = new Set([
+  'status', 'diff', 'log', 'commitShow', 'commitFileDiff', 'refs', 'worktrees', 'stashList', 'stashShow', 'remotes',
+  'configList', 'blame', 'showFile', 'treeFiles', 'compare', 'compareFileDiff', 'reflog', 'cleanPreview', 'submodules',
+  'aheadBehind', 'rebaseTodo', 'lastMessage', 'formatPatch'
+])
 const NO_REPO_OK = new Set(['configList', 'configSet', 'configUnset', 'init', 'clone'])
 
 let ORCA = null
@@ -1137,7 +1187,14 @@ export default function activate(orca) {
     const scopeGlobal = args.scope === 'global'
     if (!repo && !(NO_REPO_OK.has(op) && (scopeGlobal || op === 'init' || op === 'clone')))
       throw new GitError('no repository selected')
-    return fn(repo, args)
+    if (READ_ONLY_OPS.has(op)) return fn(repo, args)
+    // Anything that may change the repository: drop the shared short-lived answers before and after.
+    shortMemo.clear()
+    try {
+      return await fn(repo, args)
+    } finally {
+      shortMemo.clear()
+    }
   })
 
   // Find the repository for the focused Orca workspace, plus every local workspace for the picker.
