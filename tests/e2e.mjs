@@ -386,6 +386,15 @@ await step('a branch in sync with its remote is one label (main │ origin)', as
   if (separateOriginMain) throw new Error('origin/main is still a separate label while in sync')
 })
 
+await step('a push made outside the app (e.g. the Orca Git panel) turns the label into main │ origin by itself', async () => {
+  g('switch', '-q', 'main')
+  write('outside.txt', 'pushed elsewhere\n'); g('add', '.'); g('commit', '-qm', 'Pushed from outside')
+  await until(() => page.$$eval('.commit-row', (r) => r[0]?.textContent.includes('Pushed from outside')), 'new commit shows', 15000)
+  g('push', '-q', 'origin', 'main')
+  // no Refresh: the status poll must notice origin/main moving
+  await until(() => page.evaluate(() => [...document.querySelectorAll('.commit-row')][0]?.querySelector('.ref.synced')?.textContent.replace(/\s+/g, '') === 'mainorigin'), 'main │ origin on the checked-out commit', 15000)
+})
+
 await step('merge request: one button pushes the branch and hands over to GitLab', async () => {
   g('switch', '-q', '-c', 'mr-branch'); write('mr.txt', 'mr\n'); g('add', '.'); g('commit', '-qm', 'Add MR change')
   // looks like a GitLab project, while pushes still go to the local test remote

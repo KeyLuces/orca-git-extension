@@ -5921,6 +5921,9 @@ window.addEventListener('focus', () => (state.pinned ? pollStatus() : followFocu
 // workspace.changed may not fire for every switch, so also re-check the focused worktree now and then.
 setInterval(() => followFocus(), 5000)
 setInterval(pollStatus, 4000)
+// back from another panel (e.g. a push in Orca's own Git view): look for changes at once
+window.addEventListener('focus', () => pollStatus())
+document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && pollStatus())
 /**
  * Light theme: Orca passes its colors as --orca-* variables, not a class. Read the background's
  * luminance and set html.light, again whenever Orca rewrites the variables (theme switch).
