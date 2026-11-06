@@ -482,6 +482,7 @@ function setRepo(p) {
   resetHistory()
   state.history.open = null
   state.sheets = []
+  document.querySelectorAll(".sheet-host > .sheet").forEach((x) => x.remove())
   if (p) store.set('lastRepo', p)
   const s = p && snap.load(p)
   if (s) {
@@ -766,6 +767,7 @@ function renderTabs() {
 function setTab(id) {
   state.tab = id
   state.sheets = []
+  document.querySelectorAll(".sheet-host > .sheet").forEach((x) => x.remove())
   store.set('tab', id)
   renderTabs()
   renderView({ force: true })
@@ -907,7 +909,7 @@ async function renderView({ force = false } = {}) {
   lastTabRendered = state.tab
   clear(main).append(el)
   if (loading) main.prepend(loading)
-  if (state.sheets.length) main.append(state.sheets[state.sheets.length - 1].el)
+  if (state.sheets.length) placeSheet(state.sheets[state.sheets.length - 1].el)
   main.scrollTop = keepScroll
 }
 
@@ -928,16 +930,43 @@ function openSheet(title, body, actions = []) {
     h('div', { class: 'sheet-head' }, h('div', { class: 'sheet-title', title }, title), ...actions, h('span', { class: 'sheet-sep' }), iconBtn('x', 'Close (Esc)', closeSheet, { class: 'icon-btn sheet-close' })),
     h('div', { class: 'sheet-body' }, body)
   )
-  const main = $('#main')
-  main.querySelector('.sheet')?.remove()
+  document.querySelectorAll('.sheet').forEach((x) => x.remove())
   state.sheets.push({ el })
-  main.append(el)
+  placeSheet(el)
 }
 function closeSheet() {
-  const main = $('#main')
   state.sheets.pop()?.el.remove()
   const prev = state.sheets[state.sheets.length - 1]
-  if (prev) main.append(prev.el)
+  if (prev) placeSheet(prev.el)
+}
+/**
+ * A sheet sits beside the scrolling area, not inside it, so it stays whole while the graph scrolls
+ * behind it. It starts right under the tabs; its left edge drags to resize (remembered).
+ */
+function placeSheet(el) {
+  const main = $('#main')
+  const host = main.parentElement
+  host.classList.add('sheet-host')
+  el.style.top = `${main.offsetTop}px`
+  const w = store.get('sheetWidth', 0)
+  if (w && !el.classList.contains('wide-sheet')) el.style.width = `${Math.min(w, host.clientWidth - 120)}px`
+  if (!el.querySelector('.sheet-grip')) {
+    const grip = h('div', { class: 'sheet-grip', title: 'Drag to resize' })
+    grip.addEventListener('pointerdown', (e) => {
+      e.preventDefault()
+      grip.setPointerCapture(e.pointerId)
+      const right = host.getBoundingClientRect().right
+      const move = (ev) => (el.style.width = `${Math.max(320, Math.min(right - ev.clientX, host.clientWidth - 120))}px`)
+      const up = () => {
+        grip.removeEventListener('pointermove', move)
+        store.set('sheetWidth', el.getBoundingClientRect().width)
+      }
+      grip.addEventListener('pointermove', move)
+      grip.addEventListener('pointerup', up, { once: true })
+    })
+    el.prepend(grip)
+  }
+  if (el.parentElement !== host) host.append(el)
 }
 
 /* =========================================================================
