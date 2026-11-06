@@ -1,0 +1,7 @@
+Built-in image_gen edit, 2026-11-06. Replaces the original framed icon.
+
+Use case: precise-object-edit.
+Edit target: the supplied Git Control app icon.
+Primary request: remove the large raised charcoal rounded-square backing tile completely, including its outline, bevel, thickness, corners, and its large cast shadow. Replace that tile area seamlessly with the same continuous dark navy-charcoal studio background seen outside it, with the subtle existing blue tint at upper left and lavender tint at right.
+Preserve the central Git branch symbol exactly: its size, position, connected cornflower-blue vertical stem and curved lavender side branch, three thick ivory circular commit rings with colored inset centers, tactile paper fibers, off-white layered edges, depth and soft directional lighting. Keep appropriate delicate contact shadows immediately beneath the symbol on the continuous background.
+The finished image must show only the 3D paper Git branch symbol on a seamless full-bleed dark background, with NO enclosing tile, badge, frame, border, platform, rounded rectangle, or added shape. Square composition, opaque background, no text, no watermark.

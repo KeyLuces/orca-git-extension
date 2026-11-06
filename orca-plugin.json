@@ -3,10 +3,20 @@
   "manifestVersion": 2,
   "execution": "trusted-worker",
   "id": "git-control",
+  "publisher": "satangbudsai",
   "name": "Git Control",
   "version": "0.5.0",
   "description": "A lightweight Git client inside Orca: a full-tab history graph with changes, branches, merge/rebase, stash, worktrees, git config, right-click menus, and AI commit messages and conflict resolution.",
   "license": "MIT",
+  "author": {
+    "name": "SatangBudsai"
+  },
+  "repository": "https://github.com/SatangBudsai/orca-git-extension",
+  "icon": "assets/icon.png",
+  "cover": {
+    "path": "assets/cover.jpg",
+    "alt": "Git Control: a blue and lavender paper Git history sculpture with ivory commit nodes and revision cards on a dark studio backdrop"
+  },
   "engines": {
     "orca": ">=1.4.248"
   },
