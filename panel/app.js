@@ -524,8 +524,12 @@ async function resolveRepo() {
 
 /** Point the view at another repository, showing its last snapshot right away when there is one. */
 function setRepo(p) {
+  // switching projects: the whole page shows a loading skeleton until the new repository answers
+  // (its remembered tab, scroll and open commit still come back once it does)
+  const switching = !!state.repo && !!p && p !== state.repo
   if (p !== state.repo) rowCache?.clear()
   state.repo = p
+  state.loadingRepo = switching
   state.status = null
   state.refs = null
   resetHistory()
@@ -539,6 +543,7 @@ function setRepo(p) {
     state.history.open = m.open || null
     viewRestore = m.scroll || m.open ? { ...m } : null
   }
+  if (switching) return showLoadingSkeleton()
   const s = p && snap.load(p)
   if (s) {
     state.status = s.status
@@ -916,10 +921,12 @@ async function refreshAll(full = false) {
         if (state.status && (st.oid !== state.status.oid || st.refsSig !== state.status.refsSig)) state.history.stale = true
         state.status = st
         state.refs = refs
+        state.loadingRepo = false
       } catch (e) {
         if (repo !== state.repo) return
         state.status = null
         state.statusError = e.message
+        state.loadingRepo = false
       }
     } else state.status = null
     if (full) state.history.stale = true // reload quietly instead of emptying the list
@@ -991,6 +998,8 @@ async function renderView({ force = false } = {}) {
     clear(main).append(emptyRepo())
     return
   }
+  if (state.loadingRepo) return showLoadingSkeleton()
+  document.body.classList.remove('is-loading-repo')
   if (!state.status) {
     clear(main).append(
       h('div', { class: 'empty' }, icon('alert', 28), h('div', null, 'Not a Git repository'), h('div', { class: 'dim mono', style: { marginTop: '6px' } }, state.statusError || state.repo))
@@ -1034,6 +1043,19 @@ function applyViewRestore() {
     const c = state.history.commits.find((x) => x.hash === m.open)
     if (c) openDock(c)
   }
+}
+
+/** Placeholder rows over the whole page (list, header, sidebar) while another project loads. */
+function showLoadingSkeleton() {
+  const main = $('#main')
+  if (!main) return
+  const rows = (n, w0 = 35) => Array.from({ length: n }, (_, i) => h('div', { class: 'skeleton-row', style: { animationDelay: `${i * 40}ms` } }, h('span', { class: 'dot' }), h('span', { class: 'bar', style: { width: `${w0 + ((i * 37) % 45)}%` } })))
+  clear(main).append(h('div', { class: 'view skeleton-list repo-loading' }, h('div', { class: 'skeleton-bar-row' }, h('span', { class: 'bar wide' }), h('span', { class: 'bar short' })), rows(16)))
+  const side = document.getElementById('side')
+  if (side) clear(side).append(h('div', { class: 'skeleton-list side-skel' }, rows(6, 40)))
+  const bl = document.getElementById('branchLine')
+  if (bl) clear(bl).append(h('span', { class: 'skeleton-chip' }))
+  document.body.classList.add('is-loading-repo')
 }
 
 function emptyRepo() {
@@ -1419,13 +1441,26 @@ async function openRepoFile(file) {
   }
 }
 
+/** The list on the left, the selected item's diff on the right (Commit and Stash tabs, full tab only). */
+function splitWrap(root, hint) {
+  const empty = () => h('div', { class: 'empty' }, icon('file', 26), h('div', null, hint), h('div', { class: 'dim' }, '↑ ↓ move between files'))
+  const pane = h('div', { class: 'diff-pane' }, empty())
+  pane._empty = () => {
+    clear(pane).append(empty())
+    root.querySelectorAll('.item.sel').forEach((x) => x.classList.remove('sel'))
+    if (state.tab === 'changes') state.changesSel = null
+  }
+  root.classList.add('changes-list')
+  root.classList.remove('view')
+  return h('div', { class: 'view changes-split' }, root, pane)
+}
 async function showDiff(title, loader, actions = [], hunkActions) {
-  // In the Commit tab the diff opens beside the file list, not over it.
-  const pane = IN_TAB && state.tab === 'changes' ? document.querySelector('#main .diff-pane') : null
+  // In the Commit and Stash tabs the diff opens beside the list, not over it.
+  const pane = IN_TAB && (state.tab === 'changes' || state.tab === 'stash') ? document.querySelector('#main .diff-pane') : null
   let sheet
   if (pane) {
     clear(pane).append(
-      h('div', { class: 'sheet-head' }, h('div', { class: 'sheet-title', title }, title), ...actions),
+      h('div', { class: 'sheet-head' }, h('div', { class: 'sheet-title', title }, title), ...actions, h('span', { class: 'sheet-sep' }), iconBtn('x', 'Close', () => pane._empty?.(), { class: 'icon-btn sheet-close' })),
       h('div', { class: 'sheet-body' }, h('div', { class: 'inline-skeleton' }, h('span'), h('span'), h('span')))
     )
     sheet = { el: pane, inPane: true }
@@ -1615,7 +1650,11 @@ async function viewChanges() {
   )
 
   if (!st.files.length) {
-    root.append(h('div', { class: 'empty clean-note' }, icon('check', 28), h('div', null, 'Working tree clean'), h('div', { class: 'dim', style: { fontSize: '12px', marginTop: '4px' } }, pushMode === 'push' ? `Nothing to commit · ${st.ahead} commit${st.ahead > 1 ? 's' : ''} waiting to push` : pushMode === 'publish' ? `Nothing to commit · ${st.branch} is not on the remote yet` : 'Nothing to commit. Edits you make will show up here.')))
+    if (IN_TAB) {
+      root.append(h('div', { class: 'empty clean-note' }, icon('check', 28), h('div', null, 'Working tree clean'), h('div', { class: 'dim', style: { fontSize: '12px', marginTop: '4px' } }, pushMode === 'push' ? `Nothing to commit · ${st.ahead} commit${st.ahead > 1 ? 's' : ''} waiting to push` : pushMode === 'publish' ? `Nothing to commit · ${st.branch} is not on the remote yet` : 'Nothing to commit. Edits you make will show up here.')))
+      return splitWrap(root, 'Nothing to show: the working tree is clean')
+    }
+    root.append(h('div', { class: 'empty clean-note' }, icon('check', 28), h('div', null, 'Working tree clean')))
     return root
   }
 
@@ -1688,10 +1727,7 @@ async function viewChanges() {
   }
   if (!IN_TAB) return root
   // Full tab: the file list on the left, the selected file's diff on the right (↑/↓ to move).
-  root.classList.add('changes-list')
-  const pane = h('div', { class: 'diff-pane' }, h('div', { class: 'empty' }, icon('file', 26), h('div', null, 'Select a file to see its changes'), h('div', { class: 'dim' }, '↑ ↓ move between files')))
-  const split = h('div', { class: 'view changes-split' }, root, pane)
-  root.classList.remove('view')
+  const split = splitWrap(root, 'Select a file to see its changes')
   requestAnimationFrame(() => {
     const sel = state.changesSel
     const row = sel && [...root.querySelectorAll('.item[data-path]')].find((r) => r.dataset.path === sel.path && r.dataset.staged === sel.staged)
@@ -3155,7 +3191,7 @@ async function viewStash() {
     root.append(
       h(
         'div',
-        { class: 'item', title: s.subject, onClick: () => showDiff(s.subject, () => call('stashShow', { ref: s.ref }), [iconBtn('check', 'Apply', () => (closeSheet(), run('stashApply', { ref: s.ref }, { success: 'Applied' })))]) },
+        { class: 'item', title: s.subject, onClick: (e) => (root.querySelectorAll('.item.sel').forEach((x) => x.classList.remove('sel')), e.currentTarget.classList.add('sel'), showDiff(s.subject, () => call('stashShow', { ref: s.ref }), [iconBtn('check', 'Apply', () => (closeSheet(), run('stashApply', { ref: s.ref }, { success: 'Applied' })))])) },
         icon('stash', 13),
         h(
           'div',
@@ -4741,7 +4777,7 @@ async function aiReviewModal(it) {
   const result = h('textarea', { class: 'ai-result', rows: 12, placeholder: 'The review appears here. Edit it before posting.' })
   const status = h('div', { class: 'ai-status' })
   const verdictEl = h('span', { class: 'pill' })
-  const genBtn = h('button', { type: 'button', class: 'btn', onClick: () => generate() })
+  const genBtn = h('button', { type: 'button', class: 'btn sm ai-gen', onClick: () => generate() })
   const postBtns = {
     comment: h('button', { type: 'button', class: 'btn', onClick: () => post('comment') }, icon('edit', 13), 'Comment'),
     changes: h('button', { type: 'button', class: 'btn danger', onClick: () => post('changes') }, icon('x', 13), 'Request changes'),
@@ -4755,8 +4791,8 @@ async function aiReviewModal(it) {
     stopTick()
     if (on) stopTick = aiTicker(status, agents.find((a) => a.id === agentSel.value)?.name || 'AI', `the ${noun}`)
     else append(clear(status), [text || ''])
-    append(clear(genBtn), [on ? [icon('x', 13), 'Stop'] : [result.value.trim() ? 'Review again' : 'Start review']])
-    genBtn.className = `btn ${!on && !result.value.trim() ? 'primary' : ''}`
+    append(clear(genBtn), [on ? [icon('x', 13), 'Stop'] : [icon(result.value.trim() ? 'refresh' : 'wand', 13), result.value.trim() ? 'Review again' : 'Start review']])
+    genBtn.className = `btn sm ai-gen ${on ? 'stop' : ''}`
     const has = !on && !!result.value.trim()
     for (const [k, b] of Object.entries(postBtns)) {
       b.disabled = !has
@@ -4812,9 +4848,9 @@ async function aiReviewModal(it) {
     h('div', { class: 'ai-title' }, h('div', null, h('h3', null, 'AI review'), h('p', null, `${it.repo} ${it.provider === 'github' ? '#' : '!'}${it.number} · ${it.title}`))),
     h('div', { class: 'ai-row' }, h('div', { class: 'field grow' }, h('label', null, 'Agent'), agentSel)),
     h('div', { class: 'field' }, h('label', null, 'Instructions'), instructions),
-    h('div', { class: 'field' }, h('label', { class: 'row' }, 'Review', h('span', { class: 'grow' }), verdictEl), aiWrap(result)),
+    h('div', { class: 'field' }, h('div', { class: 'ai-msg-head' }, h('label', { class: 'row' }, 'Review', verdictEl), genBtn), aiWrap(result)),
     status,
-    h('div', { class: 'buttons' }, h('button', { type: 'button', class: 'btn', onClick: close }, 'Cancel'), h('span', { class: 'grow' }), genBtn, postBtns.comment, postBtns.changes, postBtns.approve)
+    h('div', { class: 'buttons' }, h('button', { type: 'button', class: 'btn', onClick: close }, 'Close'), h('span', { class: 'grow' }), postBtns.comment, postBtns.changes, postBtns.approve)
   )
   const overlay = h('div', { class: 'overlay', onMousedown: (e) => e.target === overlay && !busy && close() }, box)
   mountOverlay(overlay, close)
@@ -4982,7 +5018,11 @@ async function reviewDetailSheet(it, tab = 'overview') {
     const left = h(
       'div',
       { class: 'mrd-main' },
-      h('div', { class: 'mrd-desc' }, d.body.trim() ? mdRender(d.body) : h('div', { class: 'dim' }, 'No description')),
+      h('div', { class: 'mrd-desc' }, h('div', { class: 'mrd-label' }, 'Description'), d.body.trim() ? mdRender(d.body) : h('div', { class: 'dim' }, 'No description'))
+    )
+    const activity = h(
+      'div',
+      { class: 'mrd-activity' },
       h('div', { class: 'section-head mrd-sec' }, 'Activity', h('span', { class: 'count' }, d.comments.length)),
       d.comments.length
         ? h(
@@ -5023,7 +5063,7 @@ async function reviewDetailSheet(it, tab = 'overview') {
       (d.stats.add != null || d.stats.files != null) &&
         h('div', { class: 'mrd-box' }, h('div', { class: 'mrd-label' }, 'Changes'), h('div', { class: 'mono' }, d.stats.files != null && `${d.stats.files} files `, d.stats.add != null && [h('span', { class: 'a' }, `+${d.stats.add}`), ' ', h('span', { class: 'd' }, `−${d.stats.del}`)]))
     )
-    return h('div', { class: 'mrd-overview' }, left, side)
+    return h('div', { class: 'mrd-overview' }, left, side, activity)
   }
   function commitsPane() {
     if (!d.commits.length) return h('div', { class: 'empty' }, 'No commits')

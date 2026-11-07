@@ -39,6 +39,13 @@ try {
   g('add', '.')
   g('commit', '-qm', 'Not pushed yet')
   writeFileSync(path.join(repo, 'f1.txt'), 'changed\n')
+  const repo2 = path.join(root, 'other')
+  execFileSync('git', ['init', '-q', '-b', 'main', repo2])
+  writeFileSync(path.join(repo2, 'o.txt'), 'o\n')
+  execFileSync('git', ['add', '.'], { cwd: repo2 })
+  execFileSync('git', ['commit', '-qm', 'Other project'], { cwd: repo2 })
+  let focusedRepo = repo
+  let slowStatus = 0
 
   const { default: activate } = await import(pathToFileURL(path.join(PLUGIN, 'worker/main.mjs')).href)
   const handlers = {}
@@ -51,8 +58,8 @@ try {
     host: {
       has: (m) => ['settings.get', 'workspace.list', 'workspace.readContext'].includes(m),
       call: async (m) => {
-        if (m === 'workspace.list') return { workspaces: [{ name: 'main', displayName: 'main', branch: 'main', path: repo }] }
-        if (m === 'workspace.readContext') return { displayName: 'main', branch: 'main', terminals: [] }
+        if (m === 'workspace.list') return { workspaces: [{ name: 'main', branch: 'main', path: repo }, { name: 'other', branch: 'main', path: repo2 }] }
+        if (m === 'workspace.readContext') return { displayName: focusedRepo === repo ? 'main' : 'other', branch: 'main', terminals: [] }
         return { settings: {} }
       }
     }
@@ -78,6 +85,7 @@ try {
   await page.exposeFunction('__orcaRequest', async (name, input) => {
     try {
       if (name === 'reviews.list') return { out: fakeReviews }
+      if (slowStatus && name === 'git' && input?.op === 'status') await new Promise((res) => setTimeout(res, slowStatus))
       return { out: await handlers[name](input) }
     } catch (e) {
       return { error: e.message }
@@ -144,6 +152,35 @@ try {
     await until(() => page.$$eval('#main .item', (r) => !r.some((x) => x.textContent.includes('f1.txt'))), 'files hidden')
     await page.evaluate(() => [...document.querySelectorAll('.fold-head')].find((h) => h.textContent.includes('Changes')).click())
     await until(() => page.$$eval('#main .item', (r) => r.some((x) => x.textContent.includes('f1.txt'))), 'files back')
+  })
+  await step('a wide sidebar keeps its own layout: repository, toolbar and branch on separate rows', async () => {
+    await page.setViewport({ width: 935, height: 820 })
+    await new Promise((r) => setTimeout(r, 300))
+    const box = (sel) => page.$eval(sel, (e) => { const b = e.getBoundingClientRect(); return { top: b.top, bottom: b.bottom, left: b.left, right: b.right, w: b.width } })
+    const repo = await box('#repoBtn')
+    const tb = await box('#toolbar')
+    const chip = await box('.branch-chip')
+    const tabs = await box('#tabs')
+    if (!(chip.w > 40)) throw new Error('branch chip hidden')
+    if (!(tb.top >= repo.bottom - 1 && chip.top >= tb.bottom - 1 && tabs.top >= chip.bottom - 1)) throw new Error('rows overlap: ' + JSON.stringify({ repo, tb, chip, tabs }))
+    if (await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1)) throw new Error('scrolls sideways')
+    await page.screenshot({ path: path.join(SHOTS, 'side-wide.png') })
+    await page.setViewport({ width: 340, height: 820 })
+  })
+  await step('switching projects shows a loading skeleton, then the new project; coming back restores the tab', async () => {
+    await page.evaluate(() => [...document.querySelectorAll('.tab')].find((t) => t.textContent.includes('Stash')).click())
+    await until(() => page.$eval('.tab.active', (t) => t.textContent.includes('Stash')), 'on Stash')
+    focusedRepo = repo2
+    slowStatus = 1200
+    await page.evaluate(() => document.querySelector('#toolbar [data-op="refresh"]').click())
+    await until(() => page.$('.repo-loading').then(Boolean), 'skeleton while the other project loads', 4000)
+    slowStatus = 0
+    await until(() => page.$eval('#repoName', (e) => e.textContent === 'other'), 'other project shown')
+    if (await page.$('.repo-loading')) throw new Error('skeleton stayed after loading')
+    focusedRepo = repo
+    await page.evaluate(() => document.querySelector('#toolbar [data-op="refresh"]').click())
+    await until(() => page.$eval('#repoName', (e) => e.textContent === 'app'), 'back to app', 15000)
+    await until(() => page.$eval('.tab.active', (t) => t.textContent.includes('Stash')), 'remembered tab (Stash) for app')
   })
   await step('Review & MR fits the sidebar: one row per request, no sideways scroll', async () => {
     await page.evaluate(() => [...document.querySelectorAll('.tab')].find((t) => t.textContent.includes('Review')).click())

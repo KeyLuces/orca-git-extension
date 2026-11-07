@@ -720,7 +720,7 @@ await step('Inbox (GitLab, saved Git login): to review, assigned, opened by me, 
   await until(() => exists('.ai-review-dialog'), 'AI review dialog')
   if (await exists('.ai-review-dialog .ai-result.generating')) throw new Error('AI review started without pressing Start review')
   if (!(await page.$$eval('.ai-review-dialog .btn', (b) => b.some((x) => x.textContent.includes('Start review'))))) throw new Error('no Start review button')
-  await clickText('.ai-review-dialog .btn', 'Cancel')
+  await clickText('.ai-review-dialog .btn', 'Close')
   // a press outside the page closes it, like a modal
   await page.mouse.click(320, 700)
   await until(() => page.$('.mr-detail').then((x) => !x), 'detail closes on a click outside')
