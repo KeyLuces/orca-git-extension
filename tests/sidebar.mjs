@@ -63,8 +63,21 @@ try {
   await page.setViewport({ width: 340, height: 820 })
   const errors = []
   page.on('pageerror', (e) => errors.push(String(e)))
+  // Review & MR without any real account: a made-up list with long titles and paths
+  const now = Date.now() / 1000
+  const fakeReviews = {
+    items: [
+      { provider: 'gitlab', host: 'gitlab.example.test', url: 'https://gitlab.example.test/a/b/-/merge_requests/240', number: 240, projectId: 1, title: 'feat(approval): server decisionLevel + apv levels from all primary roles (TASK-128)', repo: 'eec/eec-custom/phase2/develop/web/ecustom-web', author: 'dev', source: 'task/TASK-128-apv-decision-level-remaining-modules', target: 'dev', updated: now, roles: ['assigned'], ci: 'passed' },
+      { provider: 'github', host: 'github.com', url: 'https://github.com/o/r/pull/1', number: 1, title: 'feature : update hero ui and fix redux', repo: 'o/r', author: 'top', updated: now, roles: ['review'] }
+    ],
+    providers: [],
+    errors: [],
+    repoPath: null,
+    repoHost: null
+  }
   await page.exposeFunction('__orcaRequest', async (name, input) => {
     try {
+      if (name === 'reviews.list') return { out: fakeReviews }
       return { out: await handlers[name](input) }
     } catch (e) {
       return { error: e.message }
@@ -126,6 +139,20 @@ try {
     if (!(await page.$('#toolbar [title="Open Git Control in a full tab"]'))) throw new Error('no open-in-tab button')
   })
   await page.screenshot({ path: path.join(SHOTS, 'side-panel.png') })
+  await step('a section head folds its files and opens them again', async () => {
+    await page.evaluate(() => [...document.querySelectorAll('.fold-head')].find((h) => h.textContent.includes('Changes')).click())
+    await until(() => page.$$eval('#main .item', (r) => !r.some((x) => x.textContent.includes('f1.txt'))), 'files hidden')
+    await page.evaluate(() => [...document.querySelectorAll('.fold-head')].find((h) => h.textContent.includes('Changes')).click())
+    await until(() => page.$$eval('#main .item', (r) => r.some((x) => x.textContent.includes('f1.txt'))), 'files back')
+  })
+  await step('Review & MR fits the sidebar: one row per request, no sideways scroll', async () => {
+    await page.evaluate(() => [...document.querySelectorAll('.tab')].find((t) => t.textContent.includes('Review')).click())
+    await until(() => page.$$eval('.review-row', (r) => r.length === 2), 'two requests listed')
+    const rows = await page.$$eval('.review-row', (rs) => rs.map((r) => { const a = r.querySelector('.review-actions').getBoundingClientRect(); const t = r.querySelector('.review-title').getBoundingClientRect(); return { sameLine: a.top < t.bottom + 30, h: r.getBoundingClientRect().height } }))
+    if (rows.some((x) => !x.sameLine)) throw new Error('row actions dropped to their own line: ' + JSON.stringify(rows))
+    if (await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1)) throw new Error('scrolls sideways')
+    await page.screenshot({ path: path.join(SHOTS, 'side-reviews.png') })
+  })
   if (errors.length) results.push([false, 'page errors: ' + errors.join(' | ')]), console.log('FAIL  page errors', errors)
 } catch (e) {
   results.push([false, 'crash'])

@@ -686,7 +686,7 @@ function renderHeader() {
   const counted = (b, n, title) => {
     if (n > 0) {
       const up = b.title === 'Push'
-      b.append(h('span', { class: `tb-count ${up ? 'ab-up' : 'ab-down'}`, title: diverged ? `${title}. The branch and its remote have gone separate ways: pull before pushing` : title }, `${up ? '↑' : '↓'}${n}`))
+      b.append(h('span', { class: `tb-count ${up ? 'ab-up' : 'ab-down'}`, title: diverged ? `${title}. The branch and its remote have gone separate ways: pull before pushing` : title }, h('span', { class: 'tb-arrow' }, up ? '↑' : '↓'), String(n)))
       b.classList.add('tb-hot')
       if (diverged) b.classList.add('diverged')
     }
@@ -1619,9 +1619,21 @@ async function viewChanges() {
     return root
   }
 
+  const folded = store.get('commitFolds', {}) || {}
+  const foldHead = (key, ...kids) => {
+    const head = h('div', { class: `section-head fold-head ${folded[key] ? 'folded' : ''}`, role: 'button', tabindex: 0, 'aria-expanded': !folded[key], title: folded[key] ? 'Show the files' : 'Hide the files' }, h('span', { class: 'fold-chev' }, icon('down', 12)), ...kids)
+    const toggle = (e) => {
+      if (e.target.closest('.actions')) return
+      store.set('commitFolds', { ...folded, [key]: !folded[key] })
+      renderView({ force: true })
+    }
+    head.addEventListener('click', toggle)
+    head.addEventListener('keydown', (e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), toggle(e)))
+    return head
+  }
   if (conflicts.length) {
-    root.append(h('div', { class: 'section-head' }, 'Conflicts', h('span', { class: 'count' }, conflicts.length)))
-    for (const f of conflicts)
+    root.append(foldHead('conflicts', 'Conflicts', h('span', { class: 'count' }, conflicts.length)))
+    if (!folded.conflicts) for (const f of conflicts)
       root.append(
         fileRow(f, {
           onClick: () => resolveConflict(f.path),
@@ -1640,15 +1652,9 @@ async function viewChanges() {
 
   if (staged.length) {
     root.append(
-      h(
-        'div',
-        { class: 'section-head' },
-        'Staged',
-        h('span', { class: 'count' }, staged.length),
-        h('div', { class: 'actions' }, iconBtn('minus', 'Unstage all', () => run('unstageAll', {})))
-      )
+      foldHead('staged', 'Staged', h('span', { class: 'count' }, staged.length), h('div', { class: 'actions' }, iconBtn('minus', 'Unstage all', () => run('unstageAll', {}))))
     )
-    for (const f of staged)
+    if (!folded.staged) for (const f of staged)
       root.append(
         fileRow(f, {
           staged: true,
@@ -1660,20 +1666,9 @@ async function viewChanges() {
 
   if (unstaged.length) {
     root.append(
-      h(
-        'div',
-        { class: 'section-head' },
-        'Changes',
-        h('span', { class: 'count' }, unstaged.length),
-        h(
-          'div',
-          { class: 'actions' },
-          iconBtn('undo', 'Discard all changes', () => discard(unstaged)),
-          iconBtn('plus', 'Stage all', () => run('stage', { files: unstaged.map((f) => f.path) }))
-        )
-      )
+      foldHead('changes', 'Changes', h('span', { class: 'count' }, unstaged.length), h('div', { class: 'actions' }, iconBtn('undo', 'Discard all changes', () => discard(unstaged)), iconBtn('plus', 'Stage all', () => run('stage', { files: unstaged.map((f) => f.path) }))))
     )
-    for (const f of unstaged)
+    if (!folded.changes) for (const f of unstaged)
       root.append(
         fileRow(f, {
           onClick: () =>
