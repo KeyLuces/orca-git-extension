@@ -824,7 +824,7 @@ function renderBanner() {
       h(
         'div',
         { class: 'row' },
-        conflicts > 0 && h('button', { class: 'btn sm primary', onClick: resolveWithAi }, icon('sparkle', 12), 'Resolve with AI'),
+        conflicts > 0 && h('button', { class: 'btn sm primary', onClick: resolveWithAi }, 'Resolve with AI'),
         h('button', { class: `btn sm ${conflicts ? '' : 'primary'}`, disabled: conflicts > 0, onClick: () => run('continue', {}, { success: 'Continued' }) }, 'Continue'),
         st.state !== 'merge' && h('button', { class: 'btn sm', onClick: () => run('skip', {}, { success: 'Skipped' }) }, 'Skip'),
         h(
@@ -1480,7 +1480,7 @@ async function viewChanges() {
 
   // commit box
   const ta = h('textarea', {
-    placeholder: st.branch ? `Message (Ctrl+Enter to commit on ${st.branch})` : 'Commit message',
+    placeholder: st.branch ? `Message for ${st.branch} · Ctrl+Enter` : 'Commit message',
     value: state.commitDraft,
     onInput: (e) => {
       state.commitDraft = e.target.value
@@ -1574,7 +1574,6 @@ async function viewChanges() {
                 }
               })
           },
-          icon('sparkle', 12),
           'AI message'
         )
       ),
@@ -2045,7 +2044,8 @@ async function viewHistory() {
   const search = (searchBox ||= h('input', {
     type: 'text',
     class: 'graph-search',
-    placeholder: 'Search message, author, file, hash, branch or tag…',
+    placeholder: 'Search commits',
+    title: 'Messages, authors, changed files, hashes, branches and tags',
     value: H.search,
     onInput: (e) => {
       clearTimeout(typing)
@@ -2344,7 +2344,7 @@ function commitMenu(anchor, c) {
         { label: 'Push', icon: 'push', onClick: () => run('push', b === cur ? {} : { branch: b }, { success: `Pushed ${b}` }) },
         { label: 'Rename…', icon: 'edit', onClick: () => renameBranch(b) },
         { label: 'Show only this branch', icon: 'history', onClick: () => showBranchLog(b) },
-        b !== cur && cur && { label: `Merge request → ${b}…`, icon: 'pr', cls: 'mr-item', badge: 'MR', onClick: () => mergeRequestDialog(b) },
+        b !== cur && cur && { label: `Merge request → ${b}…`, icon: 'pr', cls: 'mr-item', onClick: () => mergeRequestDialog(b) },
         b !== cur && { label: 'Delete…', icon: 'trash', danger: true, onClick: () => deleteBranch(b) }
       ]
     })),
@@ -2789,7 +2789,7 @@ function localBranchRow(b) {
     return menu(anchor, [
           !b.current && { label: 'Checkout', icon: 'right', onClick: () => checkout(b.name) },
           !b.current && cur && { label: `Merge into ${cur}`, icon: 'merge', onClick: () => mergeRef(b.name) },
-          !b.current && cur && { label: `Merge request → ${b.name}…`, icon: 'pr', cls: 'mr-item', badge: 'MR', onClick: () => mergeRequestDialog(b.name) },
+          !b.current && cur && { label: `Merge request → ${b.name}…`, icon: 'pr', cls: 'mr-item', onClick: () => mergeRequestDialog(b.name) },
           !b.current && cur && { label: `Rebase ${cur} onto this`, icon: 'merge', onClick: () => rebaseOnto(b.name) },
           { label: 'New branch from here…', icon: 'plus', onClick: () => newBranch(b.name) },
           { label: 'New worktree…', icon: 'worktree', onClick: () => addWorktree({ branch: b.name }) },
@@ -2826,7 +2826,7 @@ function remoteBranchRow(b, local) {
           // Always go through the remote: when a local branch exists, checkout() asks how to bring it up to date.
           { label: hasLocal ? `Checkout ${b.name}…` : `Checkout as ${short}`, icon: 'right', onClick: () => checkout(b.name, { track: true }) },
           cur && { label: `Merge into ${cur}`, icon: 'merge', onClick: () => mergeRef(b.name) },
-          cur && b.name.replace(/^[^/]+\//, '') !== cur && { label: `Merge request → ${b.name.replace(/^[^/]+\//, '')}…`, icon: 'pr', cls: 'mr-item', badge: 'MR', onClick: () => mergeRequestDialog(b.name) },
+          cur && b.name.replace(/^[^/]+\//, '') !== cur && { label: `Merge request → ${b.name.replace(/^[^/]+\//, '')}…`, icon: 'pr', cls: 'mr-item', onClick: () => mergeRequestDialog(b.name) },
           cur && { label: `Rebase ${cur} onto this`, icon: 'merge', onClick: () => rebaseOnto(b.name) },
           { label: 'New branch from here…', icon: 'plus', onClick: () => newBranch(b.name) },
           { label: 'New worktree…', icon: 'worktree', onClick: () => addWorktree({ newBranch: short, base: b.name }) },
@@ -4068,7 +4068,7 @@ async function aiCommitModal({ staged, total, onUse, onCommit }) {
   instructions.value = prefs.instructions || ''
   const result = h('textarea', { class: 'ai-result', rows: 6, placeholder: 'The generated message appears here. You can edit it before using it.' })
   const status = h('div', { class: 'ai-status' })
-  const genBtn = h('button', { type: 'button', class: 'btn primary', onClick: () => generate() }, icon('sparkle', 13), 'Generate')
+  const genBtn = h('button', { type: 'button', class: 'btn primary', onClick: () => generate() }, 'Generate')
   const useBtn = h('button', { type: 'button', class: 'btn', disabled: true, onClick: () => finish(onUse) }, 'Use message')
   const commitBtn = h('button', { type: 'button', class: 'btn primary', disabled: true, onClick: () => finish(onCommit) }, icon('check', 13), 'Commit')
 
@@ -4080,7 +4080,7 @@ async function aiCommitModal({ staged, total, onUse, onCommit }) {
     stopTick()
     if (on) stopTick = aiTicker(status, agents.find((a) => a.id === agentSel.value)?.name || 'AI', 'your changes')
     else append(clear(status), [text || ''])
-    append(clear(genBtn), [on ? [icon('x', 13), 'Stop'] : [icon('sparkle', 13), result.value.trim() ? 'Regenerate' : 'Generate']])
+    append(clear(genBtn), [on ? [icon('x', 13), 'Stop'] : [result.value.trim() ? 'Regenerate' : 'Generate']])
     genBtn.className = `btn ${on ? '' : result.value.trim() ? '' : 'primary'}`
     const has = !on && !!result.value.trim()
     useBtn.disabled = !has
@@ -4131,7 +4131,7 @@ async function aiCommitModal({ staged, total, onUse, onCommit }) {
   const box = h(
     'div',
     { class: 'dialog ai-dialog', role: 'dialog', 'aria-label': 'Generate commit message' },
-    h('div', { class: 'ai-title' }, h('span', { class: 'ai-badge' }, icon('sparkle', 14)), h('div', null, h('h3', null, 'Generate commit message'), h('p', null, 'An AI agent reads your diff and drafts a message. Nothing is committed until you choose.'))),
+    h('div', { class: 'ai-title' }, h('div', null, h('h3', null, 'Generate commit message'), h('p', null, 'An AI agent reads your diff and drafts a message. Nothing is committed until you choose.'))),
     h('div', { class: 'ai-row' }, h('div', { class: 'field grow' }, h('label', null, 'Agent'), agentSel), h('div', { class: 'field grow' }, h('label', null, 'Changes'), scopeSel)),
     h('div', { class: 'field' }, h('label', null, 'Instructions'), instructions),
     h('div', { class: 'field' }, h('label', null, 'Message'), aiWrap(result)),
@@ -4154,8 +4154,8 @@ function mrItem(local, remote, cur) {
   if (!cur) return null
   const targets = [...new Set([...local, ...remote.filter((r) => !r.endsWith('/HEAD')).map((r) => r.replace(/^[^/]+\//, ''))])].filter((b) => b !== cur)
   if (!targets.length) return null
-  if (targets.length === 1) return { label: `Merge request → ${targets[0]}…`, icon: 'pr', cls: 'mr-item', badge: 'MR', onClick: () => mergeRequestDialog(targets[0]) }
-  return { label: 'Merge request', icon: 'pr', cls: 'mr-item', badge: 'MR', items: targets.map((b) => ({ label: `→ ${b}…`, icon: 'pr', onClick: () => mergeRequestDialog(b) })) }
+  if (targets.length === 1) return { label: `Merge request → ${targets[0]}…`, icon: 'pr', cls: 'mr-item', onClick: () => mergeRequestDialog(targets[0]) }
+  return { label: 'Merge request', icon: 'pr', cls: 'mr-item', items: targets.map((b) => ({ label: `→ ${b}…`, icon: 'pr', onClick: () => mergeRequestDialog(b) })) }
 }
 /**
  * Pick people (assignees, reviewers): chips plus a search box with a list of the project's members.
@@ -4283,7 +4283,7 @@ async function mergeRequestDialog(target, source, swapped) {
     (r) => {
       peopleNote.remove()
       if (!r.via) {
-        const msg = h('div', { class: 'dim pp-note' }, `Sign in (${info.tools.cli} or your Git login) to pick people here. `, h('b', null, 'Open link'), ' lets you choose them on the web page.')
+        const msg = h('div', { class: 'dim pp-note' }, `Sign in to ${info.tools.cli} or Git to pick people here, or choose them on the web page with Open link`)
         assignees.el.before(msg)
         return
       }
@@ -4462,11 +4462,10 @@ async function mergeRequestDialog(target, source, swapped) {
                 body.classList.remove('generating')
                 title.readOnly = body.readOnly = false
                 b.disabled = false
-                append(clear(b), [icon('sparkle', 12), 'Write with AI'])
+                append(clear(b), ['Write with AI'])
               }
             }
           },
-          icon('sparkle', 12),
           'Write with AI'
         )
       ),
@@ -4612,9 +4611,9 @@ function reviewRow(it) {
         { class: 'review-title' },
         h('span', { class: 'ellipsis', title: it.title }, it.title),
         it.draft && h('span', { class: 'pill' }, 'Draft'),
-        it.roles.includes('review') && h('span', { class: 'pill role-review' }, 'Review requested'),
-        it.roles.includes('assigned') && h('span', { class: 'pill role-assigned' }, 'Assigned'),
-        it.roles.includes('mine') && h('span', { class: 'pill role-mine' }, 'Mine'),
+        it.roles.includes('review') && h('span', { class: 'pill role' }, 'Review requested'),
+        it.roles.includes('assigned') && h('span', { class: 'pill role' }, 'Assigned'),
+        it.roles.includes('mine') && h('span', { class: 'pill role' }, 'Mine'),
         it.ci && h('span', { class: `ci ci-${it.ci}`, title: `CI: ${it.ci}` }, ciIcon(it.ci), it.ci)
       ),
       h(
@@ -4630,7 +4629,7 @@ function reviewRow(it) {
       { class: 'review-actions' },
       h('button', { class: 'btn sm', title: `Open the ${noun} in the browser`, onClick: open }, icon('open', 12), 'Open'),
       h('button', { class: 'btn sm', title: 'See the changes and comment on lines', onClick: () => reviewDiffSheet(it) }, icon('file', 12), 'Diff'),
-      h('button', { class: 'btn sm', title: 'Review it with AI, then post', onClick: () => aiReviewModal(it) }, icon('sparkle', 12), 'AI review'),
+      h('button', { class: 'btn sm', title: 'Review it with AI, then post', onClick: () => aiReviewModal(it) }, 'AI review'),
       !own && h('button', { class: 'btn sm', onClick: () => reviewDialog(it) }, icon('edit', 12), 'Review…'),
       !own && h(
         'button',
@@ -4716,7 +4715,7 @@ async function aiReviewModal(it) {
     stopTick()
     if (on) stopTick = aiTicker(status, agents.find((a) => a.id === agentSel.value)?.name || 'AI', `the ${noun}`)
     else append(clear(status), [text || ''])
-    append(clear(genBtn), [on ? [icon('x', 13), 'Stop'] : [icon('sparkle', 13), result.value.trim() ? 'Review again' : 'Start review']])
+    append(clear(genBtn), [on ? [icon('x', 13), 'Stop'] : [result.value.trim() ? 'Review again' : 'Start review']])
     genBtn.className = `btn ${!on && !result.value.trim() ? 'primary' : ''}`
     const has = !on && !!result.value.trim()
     for (const [k, b] of Object.entries(postBtns)) {
@@ -4770,7 +4769,7 @@ async function aiReviewModal(it) {
   const box = h(
     'div',
     { class: 'dialog ai-dialog ai-review-dialog', role: 'dialog' },
-    h('div', { class: 'ai-title' }, h('span', { class: 'ai-badge' }, icon('sparkle', 14)), h('div', null, h('h3', null, 'AI review'), h('p', null, `${it.repo} ${it.provider === 'github' ? '#' : '!'}${it.number} · ${it.title}`))),
+    h('div', { class: 'ai-title' }, h('div', null, h('h3', null, 'AI review'), h('p', null, `${it.repo} ${it.provider === 'github' ? '#' : '!'}${it.number} · ${it.title}`))),
     h('div', { class: 'ai-row' }, h('div', { class: 'field grow' }, h('label', null, 'Agent'), agentSel)),
     h('div', { class: 'field' }, h('label', null, 'Instructions'), instructions),
     h('div', { class: 'field' }, h('label', { class: 'row' }, 'Review', h('span', { class: 'grow' }), verdictEl), aiWrap(result)),
@@ -5257,7 +5256,7 @@ async function resolveConflict(file) {
 /** A pull/merge request's diff; click a line to comment on it. */
 async function reviewDiffSheet(it) {
   openSheet(`${it.repo} ${it.provider === 'github' ? '#' : '!'}${it.number} · ${it.title}`, h('div', { class: 'inline-skeleton', style: { margin: '12px' } }, h('span'), h('span'), h('span')), [
-    h('button', { class: 'btn sm', onClick: () => aiReviewModal(it) }, icon('sparkle', 12), 'AI review'),
+    h('button', { class: 'btn sm', onClick: () => aiReviewModal(it) }, 'AI review'),
     h('button', { class: 'btn sm primary', onClick: () => reviewDialog(it) }, icon('edit', 12), 'Review…')
   ])
   const sheet = state.sheets[state.sheets.length - 1]
