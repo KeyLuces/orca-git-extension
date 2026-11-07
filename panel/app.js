@@ -334,7 +334,7 @@ function menu(anchor, items, parent = null) {
           }
         },
         it.icon ? icon(it.icon) : h('span', { style: { width: '14px' } }),
-        h('span', { class: 'grow ellipsis', title: it.label }, it.label),
+        h('span', { class: 'grow ellipsis', title: it.full || it.label }, it.label),
         it.badge && h('span', { class: 'menu-badge' }, it.badge),
         it.hint && h('span', { class: 'dim', style: { fontSize: '11px' } }, it.hint),
         it.items && h('span', { class: 'dim sub-arrow', 'aria-hidden': 'true' }, '›')
@@ -2304,7 +2304,7 @@ async function openCommit(hash) {
     return toast(e.message, 'error')
   }
   if (!sheet.el.isConnected) return
-  sheet.el.querySelector('.sheet-title').textContent = `${hash.slice(0, 7)} · ${c.message.split('\n')[0]}`
+  sheet.el.querySelector('.sheet-title').textContent = sheet.el.querySelector('.sheet-title').title = `${hash.slice(0, 7)} · ${c.message.split('\n')[0]}`
   clear(sheet.el.querySelector('.sheet-body')).append(commitBody(c))
 }
 
@@ -2374,7 +2374,7 @@ function commitMenu(anchor, c) {
     { label: 'Create tag here…', icon: 'tag', onClick: () => newTag(c.hash) },
     { label: 'New worktree here…', icon: 'worktree', onClick: () => addWorktree({ base: c.hash }) },
     '-',
-    !isHead && cur && { label: mergeLabel(local[0] || remote.find((r) => !r.endsWith('/HEAD')) || short, cur), icon: 'merge', onClick: () => mergeRef(local[0] || c.hash) },
+    !isHead && cur && { label: mergeLabel(local[0] || remote.find((r) => !r.endsWith('/HEAD')) || short, cur), full: `Merge ${local[0] || remote.find((r) => !r.endsWith('/HEAD')) || short} → ${cur}`, icon: 'merge', onClick: () => mergeRef(local[0] || c.hash) },
     mrItem(local, remote, cur),
     !isHead && { label: `Rebase ${cur} onto this…`, icon: 'merge', onClick: () => rebaseOnto(local[0] || c.hash) },
     !isHead && { label: 'Cherry-pick', icon: 'commit', onClick: () => run('cherryPick', { hash: c.hash, mainline: isMerge }, { success: 'Cherry-picked' }) },
@@ -2788,7 +2788,7 @@ function localBranchRow(b) {
     const b = { ...b0, current: b0.name === cur }
     return menu(anchor, [
           !b.current && { label: 'Checkout', icon: 'right', onClick: () => checkout(b.name) },
-          !b.current && cur && { label: mergeLabel(b.name, cur), icon: 'merge', onClick: () => mergeRef(b.name) },
+          !b.current && cur && { label: mergeLabel(b.name, cur), full: `Merge ${b.name} → ${cur}`, icon: 'merge', onClick: () => mergeRef(b.name) },
           !b.current && mrBoth(b.name, cur),
           !b.current && cur && { label: `Rebase ${cur} onto this`, icon: 'merge', onClick: () => rebaseOnto(b.name) },
           { label: 'New branch from here…', icon: 'plus', onClick: () => newBranch(b.name) },
@@ -2825,7 +2825,7 @@ function remoteBranchRow(b, local) {
         return menu(e.currentTarget, [
           // Always go through the remote: when a local branch exists, checkout() asks how to bring it up to date.
           { label: hasLocal ? `Checkout ${b.name}…` : `Checkout as ${short}`, icon: 'right', onClick: () => checkout(b.name, { track: true }) },
-          cur && { label: mergeLabel(b.name, cur), icon: 'merge', onClick: () => mergeRef(b.name) },
+          cur && { label: mergeLabel(b.name, cur), full: `Merge ${b.name} → ${cur}`, icon: 'merge', onClick: () => mergeRef(b.name) },
           mrBoth(b.name.replace(/^[^/]+\//, ''), cur),
           cur && { label: `Rebase ${cur} onto this`, icon: 'merge', onClick: () => rebaseOnto(b.name) },
           { label: 'New branch from here…', icon: 'plus', onClick: () => newBranch(b.name) },
@@ -4161,8 +4161,8 @@ function mrBoth(other, cur) {
     icon: 'pr',
     cls: 'mr-item',
     items: [
-      { label: `${nm(cur)} → ${nm(other)}…`, icon: 'pr', onClick: () => mergeRequestDialog(other) },
-      { label: `${nm(other)} → ${nm(cur)}…`, icon: 'pr', onClick: () => mergeRequestDialog(cur, other) }
+      { label: `${nm(cur)} → ${nm(other)}…`, full: `Merge request: ${cur} → ${other}`, icon: 'pr', onClick: () => mergeRequestDialog(other) },
+      { label: `${nm(other)} → ${nm(cur)}…`, full: `Merge request: ${other} → ${cur}`, icon: 'pr', onClick: () => mergeRequestDialog(cur, other) }
     ]
   }
 }
@@ -4172,7 +4172,7 @@ function mrItem(local, remote, cur) {
   const targets = [...new Set([...local, ...remote.filter((r) => !r.endsWith('/HEAD')).map((r) => r.replace(/^[^/]+\//, ''))])].filter((b) => b !== cur)
   if (!targets.length) return null
   if (targets.length === 1) return mrBoth(targets[0], cur)
-  return { label: 'Merge request', icon: 'pr', cls: 'mr-item', items: targets.flatMap((b) => [{ label: `${nm(cur)} → ${nm(b)}…`, icon: 'pr', onClick: () => mergeRequestDialog(b) }, { label: `${nm(b)} → ${nm(cur)}…`, icon: 'pr', onClick: () => mergeRequestDialog(cur, b) }]) }
+  return { label: 'Merge request', icon: 'pr', cls: 'mr-item', items: targets.flatMap((b) => [{ label: `${nm(cur)} → ${nm(b)}…`, full: `Merge request: ${cur} → ${b}`, icon: 'pr', onClick: () => mergeRequestDialog(b) }, { label: `${nm(b)} → ${nm(cur)}…`, full: `Merge request: ${b} → ${cur}`, icon: 'pr', onClick: () => mergeRequestDialog(cur, b) }]) }
 }
 /**
  * Pick people (assignees, reviewers): chips plus a search box with a list of the project's members.
@@ -5477,20 +5477,33 @@ function hideTip(restore = true) {
   const t = tip.target
   tip.target = null
   if (restore && t && t.dataset.tip != null) {
-    if (!t.hasAttribute('title')) t.setAttribute('title', t.dataset.tip)
+    if (!t.dataset.tipAuto && !t.hasAttribute('title')) t.setAttribute('title', t.dataset.tip)
     delete t.dataset.tip
+    delete t.dataset.tipAuto
   }
 }
 document.addEventListener(
   'mouseover',
   (e) => {
-    const t = e.target.closest?.('[title], [data-tip]')
+    let t = e.target.closest?.('[title], [data-tip]')
+    let auto = false
+    if (!t) {
+      // no title: text the layout cut with "…" shows whole
+      for (let el = e.target, i = 0; el && el !== document.body && i < 4; el = el.parentElement, i++) {
+        if (el.nodeType === 1 && el.scrollWidth > el.clientWidth + 1 && getComputedStyle(el).textOverflow === 'ellipsis' && el.textContent.trim()) {
+          t = el
+          auto = true
+          break
+        }
+      }
+    }
     if (t === tip.target) return
     hideTip()
     if (!t || matchMedia('(hover: none)').matches) return
-    const text = t.getAttribute('title') ?? t.dataset.tip
+    const text = auto ? t.textContent.trim() : t.getAttribute('title') ?? t.dataset.tip
     if (!text || !text.trim()) return
     t.dataset.tip = text
+    if (auto) t.dataset.tipAuto = '1'
     t.removeAttribute('title')
     tip.target = t
     tip.timer = setTimeout(() => tip.target === t && showTip(t), Date.now() < tip.warmUntil ? 0 : 450)
