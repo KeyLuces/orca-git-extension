@@ -1682,6 +1682,96 @@ async function reviewAct(it) {
   return { ok: true }
 }
 
+/**
+ * One pull/merge request in full, for the detail page: description, people and their review state,
+ * approvals, comments (with file and line for inline ones) and commits. Same shape for GitHub and GitLab.
+ */
+async function reviewDetail(it) {
+  const { w, via } = await itemTarget(it)
+  const t = (s) => (s ? Date.parse(s) / 1000 : 0)
+  const soft = (p) => p.catch(() => null)
+  if (w.kind === 'github') {
+    const get = (p) => forgeCall(w, via, 'GET', p)
+    const base = `/repos/${w.path}`
+    const [pr, reviews, issueComments, lineComments, commits] = await Promise.all([
+      get(`${base}/pulls/${w.number}`),
+      soft(get(`${base}/pulls/${w.number}/reviews?per_page=100`)),
+      soft(get(`${base}/issues/${w.number}/comments?per_page=100`)),
+      soft(get(`${base}/pulls/${w.number}/comments?per_page=100`)),
+      soft(get(`${base}/pulls/${w.number}/commits?per_page=100`))
+    ])
+    if (!pr) throw new GitError('could not read the pull request')
+    // each person's latest review decides their state
+    const latest = new Map()
+    for (const r of Array.isArray(reviews) ? reviews : []) {
+      const who = r.user?.login
+      if (!who || r.state === 'COMMENTED' || r.state === 'PENDING') continue
+      latest.set(who, r.state === 'APPROVED' ? 'approved' : r.state === 'CHANGES_REQUESTED' ? 'changes' : 'pending')
+    }
+    const people = new Map((pr.requested_reviewers || []).map((u) => [u.login, 'pending']))
+    for (const [who, st] of latest) people.set(who, st)
+    const comments = [
+      ...(Array.isArray(issueComments) ? issueComments : []).map((c) => ({ author: c.user?.login || '', body: c.body || '', at: t(c.created_at) })),
+      ...(Array.isArray(reviews) ? reviews : []).filter((r) => (r.body || '').trim()).map((r) => ({ author: r.user?.login || '', body: r.body, at: t(r.submitted_at), kind: r.state === 'APPROVED' ? 'approved' : r.state === 'CHANGES_REQUESTED' ? 'changes' : null })),
+      ...(Array.isArray(lineComments) ? lineComments : []).map((c) => ({ author: c.user?.login || '', body: c.body || '', at: t(c.created_at), file: c.path, line: c.line || c.original_line || null }))
+    ].sort((a, b) => a.at - b.at)
+    return {
+      provider: 'github',
+      title: pr.title || '',
+      body: pr.body || '',
+      state: pr.merged ? 'merged' : pr.state === 'closed' ? 'closed' : 'open',
+      draft: !!pr.draft,
+      author: pr.user?.login || '',
+      created: t(pr.created_at),
+      source: pr.head?.ref || '',
+      target: pr.base?.ref || '',
+      headSha: pr.head?.sha || '',
+      url: pr.html_url || it.url,
+      labels: (pr.labels || []).map((l) => l.name).filter(Boolean),
+      assignees: (pr.assignees || []).map((u) => u.login),
+      reviewers: [...people].map(([name, state]) => ({ name, state })),
+      approvals: { given: [...latest.values()].filter((s) => s === 'approved').length, required: null },
+      stats: { files: pr.changed_files ?? null, add: pr.additions ?? null, del: pr.deletions ?? null },
+      mergeable: pr.mergeable_state || null,
+      comments,
+      commits: (Array.isArray(commits) ? commits : []).map((c) => ({ sha: c.sha, subject: String(c.commit?.message || '').split('\n')[0], author: c.commit?.author?.name || c.author?.login || '', at: t(c.commit?.author?.date) }))
+    }
+  }
+  const [mr, approvals, notes, commits] = await Promise.all([
+    gitlabGet(w, via, w.mr),
+    soft(gitlabGet(w, via, `${w.mr}/approvals`)),
+    soft(gitlabGet(w, via, `${w.mr}/notes?sort=asc&order_by=created_at&per_page=100`)),
+    soft(gitlabGet(w, via, `${w.mr}/commits?per_page=100`))
+  ])
+  if (!mr) throw new GitError('could not read the merge request')
+  const approvedBy = new Set((approvals?.approved_by || []).map((a) => a.user?.username).filter(Boolean))
+  const reviewers = (mr.reviewers || []).map((u) => ({ name: u.username, state: approvedBy.has(u.username) ? 'approved' : 'pending' }))
+  for (const u of approvedBy) if (!reviewers.some((r) => r.name === u)) reviewers.push({ name: u, state: 'approved' })
+  return {
+    provider: 'gitlab',
+    title: mr.title || '',
+    body: mr.description || '',
+    state: mr.state === 'merged' ? 'merged' : mr.state === 'closed' ? 'closed' : 'open',
+    draft: !!(mr.draft || mr.work_in_progress),
+    author: mr.author?.username || '',
+    created: t(mr.created_at),
+    source: mr.source_branch || '',
+    target: mr.target_branch || '',
+    headSha: mr.sha || '',
+    url: mr.web_url || it.url,
+    labels: (mr.labels || []).map((l) => (typeof l === 'string' ? l : l.name)).filter(Boolean),
+    assignees: (mr.assignees || []).map((u) => u.username),
+    reviewers,
+    approvals: { given: approvedBy.size, required: approvals ? (approvals.approvals_required ?? null) : null },
+    stats: { files: mr.changes_count != null ? parseInt(mr.changes_count, 10) || null : null, add: null, del: null },
+    mergeable: mr.detailed_merge_status || mr.merge_status || null,
+    comments: (Array.isArray(notes) ? notes : [])
+      .filter((n) => !n.system)
+      .map((n) => ({ author: n.author?.username || '', body: n.body || '', at: t(n.created_at), file: n.position?.new_path || null, line: n.position?.new_line || null })),
+    commits: (Array.isArray(commits) ? commits : []).map((c) => ({ sha: c.id, subject: c.title || String(c.message || '').split('\n')[0], author: c.author_name || '', at: t(c.created_at) }))
+  }
+}
+
 /** A pull/merge request's title, description and diff, from its service. */
 async function reviewMaterial(it) {
   const { w, via } = await itemTarget(it)
@@ -2642,6 +2732,7 @@ Click to open Git Control`
   orca.panels.handle('reviews.list', ({ repo } = {}) => reviewsList(orca, repo))
   orca.panels.handle('ai.review', async (input = {}) => aiReview(input, AI[input.agent] ? input.agent : await agentSetting()))
   orca.panels.handle('reviews.act', (input = {}) => reviewAct(input))
+  orca.panels.handle('reviews.detail', (input = {}) => reviewDetail(input))
   orca.panels.handle('reviews.setup', async ({ host, step } = {}) => {
     // same terminal setup as the merge request dialog, for a host instead of a repository
     setupCommand(step, host) // validates before looking up workspaces

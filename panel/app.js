@@ -4625,12 +4625,12 @@ async function viewReviews() {
 }
 
 function reviewRow(it) {
-  const own = it.roles.length > 0 && it.roles.every((r) => r === 'mine' || r === 'repo') && it.roles.includes('mine') // your own MR: nothing to approve
   const open = () => openLink(it.url)
   const noun = it.provider === 'github' ? 'pull request' : 'merge request'
+  const show = () => reviewDetailSheet(it)
   return h(
     'div',
-    { class: 'review-row', onDblclick: open },
+    { class: 'review-row', role: 'button', tabindex: 0, title: `Open ${mrRef(it)}`, onClick: show, onKeydown: (e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), show()) },
     h('span', { class: 'review-icon' }, icon('merge', 15)),
     h(
       'div',
@@ -4656,23 +4656,8 @@ function reviewRow(it) {
     h(
       'div',
       { class: 'review-actions' },
-      h('button', { class: 'btn sm', title: `Open the ${noun} in the browser`, onClick: open }, icon('open', 12), 'Open'),
-      h('button', { class: 'btn sm', title: 'See the changes and comment on lines', onClick: () => reviewDiffSheet(it) }, icon('file', 12), 'Diff'),
-      h('button', { class: 'btn sm', title: 'Review it with AI, then post', onClick: () => aiReviewModal(it) }, 'AI review'),
-      !own && h('button', { class: 'btn sm', onClick: () => reviewDialog(it) }, icon('edit', 12), 'Review'),
-      !own && h(
-        'button',
-        {
-          class: 'btn sm primary',
-          onClick: async (e) => {
-            const b = e.currentTarget // gone after the await
-            if (!(await confirmBox(`Approve this ${noun}?`, `${it.repo} ${it.provider === 'github' ? '#' : '!'}${it.number}\n${it.title}`, 'Approve'))) return
-            await actOnReview(it, 'approve', '', b)
-          }
-        },
-        icon('check', 12),
-        'Approve'
-      )
+      h('button', { class: 'icon-btn', title: `Open the ${noun} in the browser`, onClick: (e) => (e.stopPropagation(), open()) }, icon('open', 14)),
+      h('span', { class: 'review-chev', 'aria-hidden': 'true' }, icon('right', 14))
     )
   )
 }
@@ -4812,7 +4797,7 @@ async function aiReviewModal(it) {
   genBtn.focus() // choose the agent and add instructions first, then Start review
 }
 
-async function reviewDialog(it) {
+async function reviewDialog(it, preset = 'approve') {
   const noun = it.provider === 'github' ? 'pull request' : 'merge request'
   const r = await dialog({
     title: `Review: ${it.title}`,
@@ -4822,7 +4807,7 @@ async function reviewDialog(it) {
         key: 'action',
         label: 'Your review',
         type: 'select',
-        value: 'approve',
+        value: preset,
         options: [
           ['approve', 'Approve'],
           ['changes', 'Request changes'],
@@ -4838,6 +4823,232 @@ async function reviewDialog(it) {
   await actOnReview(it, r.action, r.body)
 }
 
+
+/* =========================================================================
+   Merge request detail: read it first, decide inside (like GitHub / GitLab)
+   ========================================================================= */
+/** Small, safe Markdown: everything is escaped first, then a few marks become tags. Links open outside. */
+function mdRender(src) {
+  const esc = (s) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c])
+  const inline = (s) =>
+    esc(s)
+      .replace(/`([^`]+)`/g, '<code>$1</code>')
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/(^|[\s(])\*([^*\s][^*]*)\*/g, '$1<em>$2</em>')
+      .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" data-ext="1">$1</a>')
+      .replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, '$1<a href="$2" data-ext="1">$2</a>')
+  const lines = String(src || '').replace(/\r\n/g, '\n').split('\n')
+  let html = ''
+  let list = null
+  let code = null
+  const closeList = () => list && ((html += `</${list}>`), (list = null))
+  for (const ln of lines) {
+    if (code !== null) {
+      if (/^```/.test(ln)) (html += `<pre><code>${esc(code)}</code></pre>`), (code = null)
+      else code += (code ? '\n' : '') + ln
+      continue
+    }
+    if (/^```/.test(ln)) {
+      closeList()
+      code = ''
+      continue
+    }
+    let m
+    if ((m = ln.match(/^(#{1,6})\s+(.*)/))) {
+      closeList()
+      const lvl = Math.min(6, m[1].length + 2)
+      html += `<h${lvl}>${inline(m[2])}</h${lvl}>`
+    } else if ((m = ln.match(/^\s*[-*+]\s+(\[[ xX]\]\s+)?(.*)/))) {
+      if (list !== 'ul') closeList(), (html += '<ul>'), (list = 'ul')
+      const box = m[1] ? `<input type="checkbox" disabled ${/x/i.test(m[1]) ? 'checked' : ''}> ` : ''
+      html += `<li>${box}${inline(m[2])}</li>`
+    } else if ((m = ln.match(/^\s*\d+[.)]\s+(.*)/))) {
+      if (list !== 'ol') closeList(), (html += '<ol>'), (list = 'ol')
+      html += `<li>${inline(m[1])}</li>`
+    } else if ((m = ln.match(/^>\s?(.*)/))) {
+      closeList()
+      html += `<blockquote>${inline(m[1])}</blockquote>`
+    } else if (!ln.trim()) closeList()
+    else {
+      closeList()
+      html += `<p>${inline(ln)}</p>`
+    }
+  }
+  if (code !== null) html += `<pre><code>${esc(code)}</code></pre>`
+  closeList()
+  const el = h('div', { class: 'md' })
+  el.innerHTML = html
+  el.addEventListener('click', (e) => {
+    const a = e.target.closest('a[data-ext]')
+    if (!a) return
+    e.preventDefault()
+    openLink(a.getAttribute('href'))
+  })
+  return el
+}
+
+const mrNoun = (it) => (it.provider === 'github' ? 'pull request' : 'merge request')
+const mrRef = (it) => `${it.provider === 'github' ? '#' : '!'}${it.number}`
+const isOwnMr = (it) => it.roles?.length > 0 && it.roles.every((r) => r === 'mine' || r === 'repo') && it.roles.includes('mine')
+const initials = (n) => (String(n || '?').replace(/[^A-Za-z0-9]/g, '')[0] || '?').toUpperCase()
+
+/** The detail page of one pull/merge request: header, Overview / Commits / Changes / Pipeline, and the decision bar. */
+async function reviewDetailSheet(it, tab = 'overview') {
+  const body = h('div', { class: 'mrd' }, h('div', { class: 'inline-skeleton', style: { margin: '16px' } }, h('span'), h('span'), h('span')))
+  openSheet(`${mrRef(it)} · ${it.title}`, body, [h('button', { class: 'btn sm', title: `Open the ${mrNoun(it)} in the browser`, onClick: () => openLink(it.url) }, icon('open', 12), 'Open')])
+  const sheet = state.sheets[state.sheets.length - 1]
+  sheet.el.classList.add('wide-sheet', 'mr-detail')
+  let d
+  try {
+    d = await request('reviews.detail', { ...it, ci: undefined }, 90000)
+  } catch (e) {
+    if (!sheet.el.isConnected) return
+    return append(clear(body), [h('div', { class: 'empty' }, icon('alert', 28), h('div', null, e.message), h('div', { class: 'empty-actions' }, h('button', { class: 'btn sm', onClick: () => openLink(it.url) }, icon('open', 12), 'Open in the browser')))])
+  }
+  if (!sheet.el.isConnected) return
+  const own = isOwnMr(it)
+  const localRepo = !!(state.status && state.reviews?.repo === state.repo && inThisRepo(it, state.reviews))
+  const stateLabel = d.state === 'merged' ? 'Merged' : d.state === 'closed' ? 'Closed' : d.draft ? 'Draft' : 'Open'
+
+  const head = h(
+    'div',
+    { class: 'mrd-head' },
+    h('h2', { class: 'mrd-title' }, d.title, h('span', { class: 'mrd-ref mono' }, ` ${mrRef(it)}`)),
+    h(
+      'div',
+      { class: 'mrd-meta' },
+      h('span', { class: `mrd-state s-${d.draft && d.state === 'open' ? 'draft' : d.state}` }, stateLabel),
+      d.source && h('span', { class: 'mrd-route' }, h('span', { class: 'ref' }, icon('branch', 10), h('span', { class: 'ref-t' }, d.source)), icon('right', 12), h('span', { class: 'ref' }, icon('branch', 10), h('span', { class: 'ref-t' }, d.target))),
+      h('span', { class: 'dim' }, `${d.author} · opened ${ago(d.created)} · ${it.repo}`),
+      it.ci && h('button', { class: `ci ci-${it.ci}`, title: 'See the pipeline', onClick: () => go('pipeline') }, ciIcon(it.ci), `CI ${it.ci}`)
+    )
+  )
+  const counts = { commits: d.commits.length, changes: d.stats.files }
+  const tabs = h('div', { class: 'mrd-tabs', role: 'tablist' })
+  const pane = h('div', { class: 'mrd-pane' })
+  const TABS_MR = [
+    ['overview', 'Overview'],
+    ['commits', 'Commits', counts.commits],
+    ['changes', 'Changes', counts.changes],
+    ['pipeline', 'Pipeline']
+  ]
+  function drawTabs(cur) {
+    clear(tabs)
+    for (const [id, label, n] of TABS_MR) tabs.append(h('button', { class: `mrd-tab ${cur === id ? 'on' : ''}`, role: 'tab', 'aria-selected': cur === id, onClick: () => go(id) }, label, n != null && h('span', { class: 'mrd-count mono' }, String(n))))
+  }
+  function go(id) {
+    // Changes and Pipeline open their own page over this one (Back returns here)
+    if (id === 'changes') return reviewDiffSheet(it)
+    if (id === 'pipeline') {
+      if (localRepo && d.headSha) return openPipelines({ sha: d.headSha, branch: d.source })
+      return openLink(it.provider === 'github' ? `${d.url}/checks` : `${d.url}/pipelines`)
+    }
+    drawTabs(id)
+    clear(pane).append(id === 'commits' ? commitsPane() : overviewPane())
+  }
+
+  function person(name, extra) {
+    return h('div', { class: 'mrd-person' }, h('span', { class: 'mrd-avatar' }, initials(name)), h('span', { class: 'grow ellipsis' }, name), extra)
+  }
+  function overviewPane() {
+    const left = h(
+      'div',
+      { class: 'mrd-main' },
+      h('div', { class: 'mrd-desc' }, d.body.trim() ? mdRender(d.body) : h('div', { class: 'dim' }, 'No description')),
+      h('div', { class: 'section-head mrd-sec' }, 'Activity', h('span', { class: 'count' }, d.comments.length)),
+      d.comments.length
+        ? h(
+            'div',
+            { class: 'mrd-thread' },
+            d.comments.map((c) =>
+              h(
+                'div',
+                { class: `mrd-comment ${c.kind ? 'k-' + c.kind : ''}` },
+                h('span', { class: 'mrd-avatar' }, initials(c.author)),
+                h(
+                  'div',
+                  { class: 'grow', style: { minWidth: 0 } },
+                  h(
+                    'div',
+                    { class: 'mrd-c-head' },
+                    h('b', null, c.author),
+                    c.kind === 'approved' && h('span', { class: 'mrd-tag ok' }, icon('check', 11), 'approved'),
+                    c.kind === 'changes' && h('span', { class: 'mrd-tag bad' }, 'requested changes'),
+                    c.file && h('span', { class: 'mono dim mrd-c-file' }, `${c.file}${c.line ? ':' + c.line : ''}`),
+                    h('span', { class: 'dim' }, ago(c.at))
+                  ),
+                  mdRender(c.body)
+                )
+              )
+            )
+          )
+        : h('div', { class: 'dim mrd-none' }, 'No comments yet')
+    )
+    const stateIcon = (s) => (s === 'approved' ? h('span', { class: 'mrd-rs ok', title: 'Approved' }, icon('check', 12)) : s === 'changes' ? h('span', { class: 'mrd-rs bad', title: 'Requested changes' }, icon('x', 12)) : h('span', { class: 'mrd-rs', title: 'Waiting' }, icon('minus', 12)))
+    const side = h(
+      'aside',
+      { class: 'mrd-side' },
+      h('div', { class: 'mrd-box' }, h('div', { class: 'mrd-label' }, 'Approvals'), h('div', { class: 'mrd-big' }, d.approvals.required ? `${d.approvals.given} of ${d.approvals.required}` : String(d.approvals.given), h('span', { class: 'dim' }, d.approvals.required ? ' approved' : d.approvals.given === 1 ? ' approval' : ' approvals'))),
+      h('div', { class: 'mrd-box' }, h('div', { class: 'mrd-label' }, 'Reviewers'), d.reviewers.length ? d.reviewers.map((r) => person(r.name, stateIcon(r.state))) : h('div', { class: 'dim' }, 'None')),
+      h('div', { class: 'mrd-box' }, h('div', { class: 'mrd-label' }, 'Assignees'), d.assignees.length ? d.assignees.map((a) => person(a)) : h('div', { class: 'dim' }, 'None')),
+      d.labels.length > 0 && h('div', { class: 'mrd-box' }, h('div', { class: 'mrd-label' }, 'Labels'), h('div', { class: 'mrd-labels' }, d.labels.map((l) => h('span', { class: 'pill role' }, l)))),
+      (d.stats.add != null || d.stats.files != null) &&
+        h('div', { class: 'mrd-box' }, h('div', { class: 'mrd-label' }, 'Changes'), h('div', { class: 'mono' }, d.stats.files != null && `${d.stats.files} files `, d.stats.add != null && [h('span', { class: 'a' }, `+${d.stats.add}`), ' ', h('span', { class: 'd' }, `−${d.stats.del}`)]))
+    )
+    return h('div', { class: 'mrd-overview' }, left, side)
+  }
+  function commitsPane() {
+    if (!d.commits.length) return h('div', { class: 'empty' }, 'No commits')
+    return h(
+      'div',
+      { class: 'mrd-commits' },
+      d.commits.map((c) =>
+        h(
+          'button',
+          {
+            class: 'mrd-commit',
+            title: localRepo ? 'Show this commit' : 'Open this commit in the browser',
+            onClick: async () => {
+              if (localRepo && (await call('commitShow', { hash: c.sha }).then(() => true, () => false))) return openCommit(c.sha)
+              openLink(it.provider === 'github' ? `${d.url}/commits/${c.sha}` : `${d.url}/diffs?commit_id=${c.sha}`)
+            }
+          },
+          h('span', { class: 'mono dim' }, c.sha.slice(0, 7)),
+          h('span', { class: 'grow ellipsis' }, c.subject),
+          h('span', { class: 'dim' }, c.author),
+          h('span', { class: 'dim mrd-when' }, ago(c.at))
+        )
+      )
+    )
+  }
+
+  // the decision bar: one primary action (Approve), the rest secondary
+  const bar = h(
+    'div',
+    { class: 'mrd-bar' },
+    h('span', { class: 'dim grow' }, own ? `Your own ${mrNoun(it)}` : d.state !== 'open' ? `This ${mrNoun(it)} is ${d.state}` : 'Read it through, then decide'),
+    h('button', { class: 'btn', onClick: () => aiReviewModal(it) }, 'AI review'),
+    d.state === 'open' && h('button', { class: 'btn', onClick: () => reviewDialog(it, 'comment') }, icon('edit', 12), 'Comment'),
+    d.state === 'open' && !own && h('button', { class: 'btn', onClick: () => reviewDialog(it, 'changes') }, 'Request changes'),
+    d.state === 'open' &&
+      !own &&
+      h(
+        'button',
+        {
+          class: 'btn primary',
+          onClick: async (e) => {
+            const b = e.currentTarget
+            if (!(await confirmBox(`Approve this ${mrNoun(it)}?`, `${it.repo} ${mrRef(it)}\n${it.title}`, 'Approve'))) return
+            if (await actOnReview(it, 'approve', '', b)) state.sheets.includes(sheet) && (closeSheet(), reviewDetailSheet(it))
+          }
+        },
+        icon('check', 12),
+        'Approve'
+      )
+  )
+  append(clear(body), [head, tabs, pane, bar])
+  go(tab === 'commits' ? 'commits' : 'overview')
+}
 
 /* =========================================================================
    CI status, undo, branch clean-up, conflict resolver, review diffs

@@ -50,6 +50,10 @@ const server = http.createServer((rq, rs) => {
       }
       if (u === '/repos/o/r/pulls/7') return e.accept === 'application/vnd.github.diff' ? send(200, 'diff --git a/x b/x\n', 'text/plain') : send(200, { title: 'T', body: 'B', head: { ref: 'feature', sha: 'abc123' }, base: { ref: 'main' } })
       if (e.method === 'POST' && u === '/repos/o/r/pulls/7/reviews') return send(200, { id: 1 })
+      if (e.method === 'GET' && u.startsWith('/repos/o/r/pulls/7/reviews')) return send(200, [{ user: { login: 'ann' }, state: 'CHANGES_REQUESTED', body: 'Fix x', submitted_at: '2026-01-01T00:00:00Z' }, { user: { login: 'ann' }, state: 'APPROVED', body: '', submitted_at: '2026-01-02T00:00:00Z' }, { user: { login: 'bob' }, state: 'COMMENTED', body: 'hm', submitted_at: '2026-01-02T00:00:00Z' }])
+      if (e.method === 'GET' && u.startsWith('/repos/o/r/issues/7/comments')) return send(200, [{ user: { login: 'bob' }, body: 'Nice', created_at: '2026-01-01T01:00:00Z' }])
+      if (e.method === 'GET' && u.startsWith('/repos/o/r/pulls/7/comments')) return send(200, [{ user: { login: 'bob' }, body: 'rename', path: 'x.js', line: 4, created_at: '2026-01-01T02:00:00Z' }])
+      if (e.method === 'GET' && u.startsWith('/repos/o/r/pulls/7/commits')) return send(200, [{ sha: 'c0ffee1234', commit: { message: 'Do it\n\nbody', author: { name: 'Me', date: '2026-01-01T00:00:00Z' } } }])
       if (e.method === 'POST' && u === '/repos/o/r/pulls/7/comments') return send(201, { id: 2 })
       if (/\/commits\/\w+\/check-runs$/.test(u)) return send(200, { check_runs: [{ conclusion: 'success' }] })
       if (/\/commits\/\w+\/status$/.test(u)) return send(200, { statuses: [] })
@@ -64,7 +68,10 @@ const server = http.createServer((rq, rs) => {
       if (e.method === 'POST' && u === `${P}/projects/42/merge_requests/3/approve`) return send(201, {})
       if (e.method === 'POST' && u === `${P}/projects/42/merge_requests/3/unapprove`) return send(404, { message: '404 Not Found' })
       if (e.method === 'POST' && u === `${P}/projects/42/merge_requests/3/discussions`) return send(201, { id: 'x' })
-      if (u === `${P}/projects/42/merge_requests/3`) return send(200, { head_pipeline: { status: 'success' } })
+      if (u === `${P}/projects/42/merge_requests/3`) return send(200, { head_pipeline: { status: 'success' }, title: 'MR', description: 'D', state: 'opened', author: { username: 'me' }, source_branch: 'feature', target_branch: 'main', sha: 'abc', reviewers: [{ username: 'ann' }, { username: 'bob' }], assignees: [], labels: ['x'], changes_count: '1' })
+      if (u === `${P}/projects/42/merge_requests/3/approvals`) return send(200, { approvals_required: 1, approved_by: [{ user: { username: 'ann' } }] })
+      if (u.startsWith(`${P}/projects/42/merge_requests/3/notes?`)) return send(200, [{ system: true, body: 'changed', author: { username: 'me' } }, { body: 'Nice', author: { username: 'bob' }, created_at: '2026-01-01T00:00:00Z', position: { new_path: 'b.txt', new_line: 1 } }])
+      if (u.startsWith(`${P}/projects/42/merge_requests/3/commits`)) return send(200, [{ id: 'c0ffee1234', title: 'Do it', author_name: 'Me', created_at: '2026-01-01T00:00:00Z' }])
       if (u.startsWith(`${P}/projects/group%2Fsub%2Fproj/repository/commits/`)) return send(200, { last_pipeline: { status: 'failed', web_url: 'x' } })
     }
     send(404, { message: 'no route ' + u })
@@ -144,6 +151,20 @@ try {
   }
   const noText = await call('reviews.act', { ...it, action: 'changes', body: '' }).then(() => null, (e) => e)
   ok(noText && /comment first/.test(noText.message), 'changes requires text')
+  // the detail page: description, reviewers with their state, approvals, comments, commits
+  const det = await call('reviews.detail', it)
+  ok(det.title && det.source === 'feature' && det.target === 'main', 'detail basics', JSON.stringify([det.title, det.source, det.target]))
+  ok(det.commits.length === 1 && det.commits[0].subject === 'Do it' && det.commits[0].sha === 'c0ffee1234', 'detail commits', JSON.stringify(det.commits))
+  const ann = det.reviewers.find((x) => x.name === 'ann')
+  ok(ann?.state === 'approved', 'reviewer state from the latest review', JSON.stringify(det.reviewers))
+  ok(det.approvals.given === 1, 'approvals given', JSON.stringify(det.approvals))
+  if (KIND === 'github') {
+    ok(!det.reviewers.some((x) => x.name === 'bob'), 'a comment-only review is not a reviewer state', JSON.stringify(det.reviewers))
+    ok(det.comments.some((c) => c.file === 'x.js' && c.line === 4) && det.comments.some((c) => c.kind === 'changes'), 'github comments (line + review)', JSON.stringify(det.comments))
+  } else {
+    ok(det.approvals.required === 1 && det.reviewers.find((x) => x.name === 'bob')?.state === 'pending', 'gitlab approvals and waiting reviewer', JSON.stringify([det.approvals, det.reviewers]))
+    ok(det.comments.length === 1 && det.comments[0].file === 'b.txt', 'gitlab notes without system notes', JSON.stringify(det.comments))
+  }
   // diff + line comment
   const d = await call('reviews.diff', it)
   ok(d.diff.includes('diff --git'), 'reviews.diff', JSON.stringify(d))

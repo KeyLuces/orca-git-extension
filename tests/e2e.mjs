@@ -557,6 +557,12 @@ const apiServer = http.createServer((req, res) => {
     if (u.pathname === '/api/v4/projects/team%2Fapp') return send(200, { remove_source_branch_after_merge: true, squash_option: 'default_on', merge_requests_template: '## What does this MR do?' })
     if (u.pathname.endsWith('/assignees') && req.method === 'GET') return send(200, [{ id: 1, login: 'me' }, { id: 2, login: 'dev1' }])
     if (req.method === 'POST' && /\/(assignees|requested_reviewers)$/.test(u.pathname)) return send(201, {})
+    if (req.method === 'GET' && u.pathname === '/api/v4/projects/5/merge_requests/11')
+      return send(200, { iid: 11, title: 'MR review', description: '## Why\nKeeps **reviews** in the app.\n\n- [x] tests\n- docs', state: 'opened', author: { username: 'dev' }, source_branch: 's11', target_branch: 'main', sha: 'abc1234567', created_at: new Date().toISOString(), web_url: 'https://gitlab2.example.test/team/app/-/merge_requests/11', labels: ['backend'], reviewers: [{ username: 'dev1' }, { username: 'me' }], assignees: [{ username: 'dev' }], changes_count: '2' })
+    if (req.method === 'GET' && u.pathname === '/api/v4/projects/5/merge_requests/11/approvals') return send(200, { approvals_required: 2, approved_by: [{ user: { username: 'dev1' } }] })
+    if (req.method === 'GET' && u.pathname === '/api/v4/projects/5/merge_requests/11/notes')
+      return send(200, [{ system: true, body: 'added 1 commit', author: { username: 'dev' } }, { body: 'Looks good to me', author: { username: 'dev1' }, created_at: new Date().toISOString() }, { body: 'Rename this?', author: { username: 'qa' }, created_at: new Date().toISOString(), position: { new_path: 'src/a.js', new_line: 3 } }])
+    if (req.method === 'GET' && u.pathname === '/api/v4/projects/5/merge_requests/11/commits') return send(200, [{ id: 'abc1234567890', title: 'Add review change', author_name: 'Dev', created_at: new Date().toISOString() }])
     if (req.method === 'GET' && /merge_requests$/.test(u.pathname)) {
       const role = u.search.includes('reviewer_username') ? 'review' : u.search.includes('assignee_username') ? 'assigned' : u.search.includes('author_username') ? 'mine' : 'repo'
       const n = { review: 11, assigned: 12, mine: 13, repo: 14 }[role]
@@ -694,12 +700,27 @@ await step('Inbox (GitLab, saved Git login): to review, assigned, opened by me, 
   await until(() => page.$eval('.reviews', (r) => r.textContent.includes('MR other repo')), 'All repos lists the other project', 20000)
   await clickText('.reviews .segmented button', 'app')
   await shot('11-inbox')
+  // a row opens the detail page: description, people, approvals, activity; then decide inside
+  if (await page.$$eval('.review-row .btn', (b) => b.some((x) => /Approve/.test(x.textContent)))) throw new Error('the list still has Approve buttons')
+  await clickText('.review-row', 'MR review')
+  await until(() => page.$eval('.mr-detail .mrd-desc', (d) => d.textContent.includes('Keeps reviews in the app')).catch(() => false), 'description rendered', 20000)
+  if (!(await page.$eval('.mr-detail .mrd-desc strong', (b) => b.textContent === 'reviews'))) throw new Error('markdown bold not rendered')
+  const side = await page.$eval('.mr-detail .mrd-side', (x) => x.textContent)
+  if (!side.includes('1 of 2') || !side.includes('dev1') || !side.includes('backend')) throw new Error('side: ' + side)
+  const thread = await page.$eval('.mr-detail .mrd-thread', (x) => x.textContent)
+  if (!thread.includes('Looks good to me') || !thread.includes('src/a.js:3') || thread.includes('added 1 commit')) throw new Error('activity: ' + thread)
+  await shot('11b-mr-detail')
+  await clickText('.mrd-tab', 'Commits')
+  await until(() => page.$$eval('.mrd-commit', (c) => c.some((x) => x.textContent.includes('Add review change'))), 'commits tab')
+  if (await page.$eval('.mr-detail', (x) => /\bfalse\b|\bnull\b|undefined|\[object/.test(x.textContent))) throw new Error('stray false/null text on the detail page')
   // AI review waits for Start review, so the agent and instructions can be chosen first
-  await clickText('.review-actions .btn', 'AI review')
+  await clickText('.mrd-bar .btn', 'AI review')
   await until(() => exists('.ai-review-dialog'), 'AI review dialog')
   if (await exists('.ai-review-dialog .ai-result.generating')) throw new Error('AI review started without pressing Start review')
   if (!(await page.$$eval('.ai-review-dialog .btn', (b) => b.some((x) => x.textContent.includes('Start review'))))) throw new Error('no Start review button')
   await clickText('.ai-review-dialog .btn', 'Cancel')
+  await clickSel('.mr-detail .sheet-close')
+  await until(() => page.$('.mr-detail').then((x) => !x), 'detail closes')
 })
 await step('pipeline (GitLab): CI badge opens the pipeline, its jobs and the failed log; retry', async () => {
   g('remote', 'set-url', 'origin', 'https://gitlab2.example.test/team/app.git')
