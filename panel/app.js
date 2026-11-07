@@ -5439,6 +5439,70 @@ new MutationObserver(syncTheme).observe(document.head, { childList: true, subtre
 window.matchMedia?.('(prefers-color-scheme: light)').addEventListener?.('change', syncTheme)
 
 /* =========================================================================
+   tooltips: every title="" shows in our own tooltip instead of the browser's
+   ========================================================================= */
+// Elements keep their title (code, tests and screen readers use it); while one is hovered its title
+// moves to data-tip so the browser's own tooltip stays away, and comes back when the pointer leaves.
+const tip = { el: null, target: null, timer: 0, warmUntil: 0 }
+function tipEl() {
+  if (!tip.el) {
+    tip.el = h('div', { class: 'tip', role: 'tooltip' })
+    document.body.append(tip.el)
+  }
+  return tip.el
+}
+function showTip(target) {
+  const text = target.dataset.tip
+  if (!text || !target.isConnected) return
+  const el = tipEl()
+  el.textContent = text
+  el.classList.remove('on')
+  el.style.left = '0px'
+  el.style.top = '0px'
+  const r = target.getBoundingClientRect()
+  const t = el.getBoundingClientRect()
+  const gap = 6
+  const below = r.bottom + gap + t.height <= innerHeight - 4
+  const top = below ? r.bottom + gap : r.top - gap - t.height
+  const left = Math.max(6, Math.min(innerWidth - t.width - 6, r.left + r.width / 2 - t.width / 2))
+  el.style.left = `${Math.round(left)}px`
+  el.style.top = `${Math.round(Math.max(4, top))}px`
+  el.dataset.side = below ? 'below' : 'above'
+  el.classList.add('on')
+}
+function hideTip(restore = true) {
+  clearTimeout(tip.timer)
+  if (tip.el?.classList.contains('on')) tip.warmUntil = Date.now() + 400
+  tip.el?.classList.remove('on')
+  const t = tip.target
+  tip.target = null
+  if (restore && t && t.dataset.tip != null) {
+    if (!t.hasAttribute('title')) t.setAttribute('title', t.dataset.tip)
+    delete t.dataset.tip
+  }
+}
+document.addEventListener(
+  'mouseover',
+  (e) => {
+    const t = e.target.closest?.('[title], [data-tip]')
+    if (t === tip.target) return
+    hideTip()
+    if (!t || matchMedia('(hover: none)').matches) return
+    const text = t.getAttribute('title') ?? t.dataset.tip
+    if (!text || !text.trim()) return
+    t.dataset.tip = text
+    t.removeAttribute('title')
+    tip.target = t
+    tip.timer = setTimeout(() => tip.target === t && showTip(t), Date.now() < tip.warmUntil ? 0 : 450)
+  },
+  true
+)
+document.addEventListener('mouseout', (e) => tip.target && !tip.target.contains(e.relatedTarget) && hideTip(), true)
+// a press, a key, a scroll or the window losing focus: the tooltip gets out of the way
+for (const ev of ['mousedown', 'keydown', 'wheel', 'blur']) window.addEventListener(ev, () => hideTip(), true)
+document.addEventListener('scroll', () => tip.el?.classList.contains('on') && hideTip(), true)
+
+/* =========================================================================
    graph: row quick actions, date chip, keyboard, command palette
    ========================================================================= */
 /** Buttons that appear on the hovered (or keyboard-selected) row; the full menu stays on right-click. */

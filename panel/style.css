@@ -1048,3 +1048,10 @@ mark.hit { background: color-mix(in srgb, var(--mod) 38%, transparent); color: v
 /* MR dialog: the people hint is one line of text, not three columns */
 .pp-note { display: block !important; font-size: 12px; line-height: 16px; margin-bottom: 8px; }
 .tab .badge { display: inline-flex; align-items: center; height: auto !important; line-height: inherit !important; vertical-align: baseline; }
+
+/* ---------- tooltip: our own, in the theme, instead of the browser's ---------- */
+.tip { position: fixed; z-index: 10000; max-width: min(360px, calc(100vw - 12px)); padding: 6px 8px; border-radius: 6px; border: 1px solid var(--line-hi); background: var(--raised); color: var(--t1); box-shadow: var(--shadow); font-size: 12px; line-height: 16px; white-space: pre-line; overflow-wrap: anywhere; pointer-events: none; opacity: 0; transform: translateY(-2px); transition: opacity .12s cubic-bezier(.22, 1, .36, 1), transform .12s cubic-bezier(.22, 1, .36, 1); }
+.tip[data-side="above"] { transform: translateY(2px); }
+.tip.on { opacity: 1; transform: none; }
+html.light .tip { background: #fff; }
+@media (prefers-reduced-motion: reduce) { .tip { transition: none; } }

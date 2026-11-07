@@ -252,6 +252,17 @@ await step('reopening comes back to the same tab; Refresh shows it worked', asyn
   await until(() => page.$$eval('.toast', (t) => t.some((x) => /Refreshed/.test(x.textContent))), 'refresh says what changed')
 })
 
+await step('tooltips come from our own component, not the browser', async () => {
+  const btn = await page.$('#toolbar [title="Fetch all (prune)"]')
+  await btn.hover()
+  await until(() => page.$eval('.tip.on', (t) => t.textContent.includes('Fetch all')).catch(() => false), 'our tooltip shows')
+  if (await page.$('#toolbar [title="Fetch all (prune)"]')) throw new Error('the browser tooltip (title) is still active while hovered')
+  await shot('02e-tooltip')
+  await page.mouse.move(5, 400)
+  await until(() => page.$('#toolbar [title="Fetch all (prune)"]').then(Boolean), 'title restored after leaving')
+  await until(() => page.$('.tip.on').then((x) => !x), 'tooltip hides')
+})
+
 await step('search finds everything as you type (message, file, author, hash) and highlights it', async () => {
   const typeSearch = async (text) => {
     const box = await page.$('.history-bar input') // redrawn with each result
