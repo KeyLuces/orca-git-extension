@@ -685,7 +685,7 @@ function renderHeader() {
   const tb = clear($('#toolbar'))
   const dis = !state.repo || !st
   // In the full tab the main actions carry a label, like a toolbar; in the narrow panel icons only.
-  const lbl = (b, text) => (IN_TAB && b.append(h('span', { class: 'tb-label' }, text)), b)
+  const lbl = (b, text) => (b.append(h('span', { class: 'tb-label' }, text)), b) // narrow screens hide it, except on a button with work waiting
   // Pull/Push carry how many commits wait (↓ to pull, ↑ to push) and stand out while any do.
   const diverged = st?.ahead > 0 && st?.behind > 0
   const counted = (b, n, title) => {
