@@ -1162,3 +1162,8 @@ body:has(.mrd-bar) #toasts { bottom: 72px; }
 .ai-msg-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
 .ai-msg-head label { margin: 0; }
 .ai-gen { min-width: 92px; justify-content: center; }
+
+/* right-sidebar panel: no branches drawer button, so the toolbar starts at the edge */
+.side-panel .repo-line .toolbar { margin-left: 0 !important; width: 100% !important; flex-basis: 100% !important; }
+.side-panel .repo-line .toolbar > button { height: 32px; }
+.side-panel header { padding: 8px 12px; }

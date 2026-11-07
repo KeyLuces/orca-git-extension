@@ -1171,6 +1171,11 @@ body:has(.mrd-bar) #toasts { bottom: 72px; }
 .ai-msg-head label { margin: 0; }
 .ai-gen { min-width: 92px; justify-content: center; }
 
+/* right-sidebar panel: no branches drawer button, so the toolbar starts at the edge */
+.side-panel .repo-line .toolbar { margin-left: 0 !important; width: 100% !important; flex-basis: 100% !important; }
+.side-panel .repo-line .toolbar > button { height: 32px; }
+.side-panel header { padding: 8px 12px; }
+
 </style>
   </head>
   <body class="wide">
@@ -1610,7 +1615,9 @@ function setBusy(delta) {
  * Open a web link outside Orca. Desktop: the worker hands it to the system default browser (no Orca
  * prompt, no in-app tab). Orca's web client (e.g. on a phone): a new tab of that browser.
  */
-const isDesktop = /Electron/i.test(navigator.userAgent)
+// Orca's plugin frames do not always say "Electron", so only a phone or tablet counts as the web client;
+// everywhere else the worker opens the link on this computer.
+const isDesktop = /Electron/i.test(navigator.userAgent) || !/Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
 async function openLink(url) {
   if (!/^https?:\/\//.test(String(url))) return
   if (isDesktop) {

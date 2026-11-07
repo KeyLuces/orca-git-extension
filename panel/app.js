@@ -412,7 +412,9 @@ function setBusy(delta) {
  * Open a web link outside Orca. Desktop: the worker hands it to the system default browser (no Orca
  * prompt, no in-app tab). Orca's web client (e.g. on a phone): a new tab of that browser.
  */
-const isDesktop = /Electron/i.test(navigator.userAgent)
+// Orca's plugin frames do not always say "Electron", so only a phone or tablet counts as the web client;
+// everywhere else the worker opens the link on this computer.
+const isDesktop = /Electron/i.test(navigator.userAgent) || !/Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
 async function openLink(url) {
   if (!/^https?:\/\//.test(String(url))) return
   if (isDesktop) {

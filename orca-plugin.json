@@ -33,6 +33,14 @@
         "entry": "panel/graph.html"
       }
     ],
+    "panels": [
+      {
+        "id": "git",
+        "title": "Git Control",
+        "icon": "layers",
+        "entry": "panel/sidebar.html"
+      }
+    ],
     "settings": [
       {
         "key": "aiAgent",
