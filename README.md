@@ -4,7 +4,7 @@ A Git client inside Orca: the commit graph, commits, branches, stashes, merge re
 GitHub and GitLab, in one editor tab and a sidebar panel. It runs your installed `git` and signs in with
 the Git login you already have (or `gh` / `glab` when they are set up), so there are no tokens to create.
 
-![The commit graph with a merge commit's details docked beside it](assets/screenshots/graph.png)
+![Git Control: the commit graph with a merge commit's details docked beside it](assets/promo/graph.png)
 
 ## Get started
 
@@ -92,6 +92,7 @@ node mobile.mjs <plugin folder> <shots folder>    # phone size, loaded the way O
 node sidebar.mjs <plugin folder> <shots folder>   # the right-sidebar panel at several widths
 node worker-api.mjs github|gitlab                 # merge requests, reviews and CI through the Git login
 node screenshots.mjs <plugin folder> <out folder> # the screenshots above, on a made-up project
+node promo.mjs <plugin folder>                    # marketplace posters from assets/screenshots → assets/promo
 ```
 
 ```

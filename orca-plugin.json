@@ -5,7 +5,7 @@
   "id": "git-control",
   "publisher": "satangbudsai",
   "name": "Git Control",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "A Git client inside Orca: commit graph, commits, branches, stashes and worktrees, plus GitHub and GitLab merge requests and pipelines, with your existing Git login. In a full tab and the right sidebar.",
   "license": "MIT",
   "author": {
@@ -19,32 +19,32 @@
   },
   "screenshots": [
     {
-      "path": "assets/screenshots/graph.png",
+      "path": "assets/promo/graph.png",
       "alt": "The commit graph with coloured branches and a merge commit's details docked on the right",
       "caption": "Commit graph with details beside it"
     },
     {
-      "path": "assets/screenshots/commit.png",
+      "path": "assets/promo/commit.png",
       "alt": "The Commit tab with changed files on the left and a file diff on the right",
       "caption": "Stage and commit with the diff in view"
     },
     {
-      "path": "assets/screenshots/merge-request.png",
+      "path": "assets/promo/merge-request.png",
       "alt": "A GitLab merge request page with description, reviewers, approvals and activity",
       "caption": "Read a merge request, then approve or comment"
     },
     {
-      "path": "assets/screenshots/new-merge-request.png",
+      "path": "assets/promo/new-merge-request.png",
       "alt": "The new merge request dialog with title, description, assignees and reviewers",
       "caption": "Open a merge request with your Git login"
     },
     {
-      "path": "assets/screenshots/pipeline.png",
+      "path": "assets/promo/pipeline.png",
       "alt": "A failed GitLab CI job log with its error lines highlighted",
       "caption": "Step through a failed pipeline's errors"
     },
     {
-      "path": "assets/screenshots/commands.png",
+      "path": "assets/promo/commands.png",
       "alt": "The command palette listing Pull, Pull with rebase and Push",
       "caption": "Every action by name with Ctrl+K"
     }
