@@ -1145,3 +1145,15 @@ html.light .tip { background: #fff; }
 }
 /* toasts sit above the decision bar of a detail page */
 body:has(.mrd-bar) #toasts { bottom: 72px; }
+
+/* merge request detail: long names wrap inside their card; narrow pages stack the side facts on top */
+.mrd-c-head b, .mrd-person .grow { min-width: 0; overflow-wrap: anywhere; }
+.mrd-comment > .grow { min-width: 0; }
+.mrd-comment .md { overflow-wrap: anywhere; }
+@container (max-width: 820px) {
+  .mrd-overview { grid-template-columns: 1fr; gap: 16px; }
+  .mrd-side { order: -1; flex-direction: row; flex-wrap: wrap; gap: 12px 24px; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
+  .mrd-box { padding-bottom: 0; border-bottom: 0; min-width: 140px; }
+  .mrd-bar > .grow { display: none; }
+  .mrd-bar { justify-content: flex-end; }
+}

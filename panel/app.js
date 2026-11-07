@@ -1129,8 +1129,10 @@ function placeSheet(el) {
   const host = main.parentElement
   host.classList.add('sheet-host')
   el.style.top = `${main.offsetTop}px`
-  const w = store.get('sheetWidth', 0)
-  if (w && !el.classList.contains('wide-sheet')) el.style.width = `${Math.min(w, host.clientWidth - 120)}px`
+  // wide pages (merge request, pipelines, review diff) remember their own width, apart from the side sheets
+  const wkey = el.classList.contains('wide-sheet') ? 'wideSheetWidth' : 'sheetWidth'
+  const w = store.get(wkey, 0)
+  el.style.width = w ? `${Math.min(w, host.clientWidth - 120)}px` : ''
   if (!el.querySelector('.sheet-grip')) {
     const grip = h('div', { class: 'sheet-grip', title: 'Drag to resize' })
     grip.addEventListener('pointerdown', (e) => {
@@ -1140,7 +1142,7 @@ function placeSheet(el) {
       const move = (ev) => ((el.style.width = `${Math.max(320, Math.min(right - ev.clientX, host.clientWidth - 120))}px`), syncDock())
       const up = () => {
         grip.removeEventListener('pointermove', move)
-        store.set('sheetWidth', el.getBoundingClientRect().width)
+        store.set(el.classList.contains('wide-sheet') ? 'wideSheetWidth' : 'sheetWidth', el.getBoundingClientRect().width)
       }
       grip.addEventListener('pointermove', move)
       grip.addEventListener('pointerup', up, { once: true })
@@ -4898,6 +4900,7 @@ async function reviewDetailSheet(it, tab = 'overview') {
   openSheet(`${mrRef(it)} · ${it.title}`, body, [h('button', { class: 'btn sm', title: `Open the ${mrNoun(it)} in the browser`, onClick: () => openLink(it.url) }, icon('open', 12), 'Open')])
   const sheet = state.sheets[state.sheets.length - 1]
   sheet.el.classList.add('wide-sheet', 'mr-detail')
+  placeSheet(sheet.el)
   let d
   try {
     d = await request('reviews.detail', { ...it, ci: undefined }, 90000)
@@ -5068,6 +5071,7 @@ async function openPipelines({ branch, sha, openId } = {}) {
   openSheet(`Pipelines · ${branch || state.status?.branch || 'HEAD'}`, body)
   const sheet = state.sheets[state.sheets.length - 1]
   sheet.el.classList.add('wide-sheet')
+  placeSheet(sheet.el)
   let timer = null
   const alive = () => state.sheets.includes(sheet) && document.body.contains(sheet.el)
   const later = (fn, ms) => {
@@ -5501,6 +5505,7 @@ async function reviewDiffSheet(it) {
   ])
   const sheet = state.sheets[state.sheets.length - 1]
   sheet.el.classList.add('wide-sheet')
+  placeSheet(sheet.el)
   let diff
   try {
     diff = (await request('reviews.diff', { ...it, ci: undefined }, 90000)).diff

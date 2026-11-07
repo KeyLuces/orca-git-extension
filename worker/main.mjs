@@ -1140,14 +1140,24 @@ function mrWebUrl(info, { title, body, assignees = [], reviewers = [], removeSou
 
 /** Open a web page in the person's default browser (the worker is not limited to a click like frames are). */
 function openInBrowser(url) {
-  if (!/^https:\/\//.test(url) || process.env.GITX_NO_BROWSER) return Promise.resolve(false) // tests keep the browser closed
+  // https, and http too: self-hosted GitLab often runs on plain http inside a company network
+  if (!/^https?:\/\/[^\s"]+$/.test(url) || process.env.GITX_NO_BROWSER) return Promise.resolve(false) // tests keep the browser closed
   const [bin, args] =
     process.platform === 'win32'
       ? ['rundll32', ['url.dll,FileProtocolHandler', url]] // no shell, so "&" in the URL is safe
       : process.platform === 'darwin'
         ? ['open', [url]]
         : ['xdg-open', [url]]
-  return runProc(bin, args, { timeout: 10_000 }).then((r) => r.code === 0 || r.code === null, () => false)
+  const ok = (r) => r.code === 0 || r.code === null
+  return runProc(bin, args, { timeout: 10_000 }).then(
+    async (r) => {
+      if (ok(r) || process.platform !== 'win32') return ok(r)
+      // Windows fallback: the URL travels in an environment variable, never through a command line
+      const p = await runProc('powershell', ['-NoProfile', '-NonInteractive', '-Command', 'Start-Process -FilePath $env:GITX_OPEN_URL'], { timeout: 15_000, env: { GITX_OPEN_URL: url } }).catch(() => null)
+      return !!p && ok(p)
+    },
+    () => false
+  )
 }
 
 const projectPath = (p) => encodeURIComponent(p) // GitLab: group/sub/project → group%2Fsub%2Fproject
