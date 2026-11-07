@@ -263,6 +263,22 @@ await step('tooltips come from our own component, not the browser', async () => 
   await until(() => page.$('.tip.on').then((x) => !x), 'tooltip hides')
 })
 
+await step('menus: no trailing "…", and no tooltip on text that is shown in full', async () => {
+  const row = await page.$('.commit-row:last-child')
+  await row.click({ button: 'right' })
+  await until(() => page.$('.menu button').then(Boolean), 'commit menu')
+  const labels = await page.$$eval('.menu button .grow', (s) => s.map((x) => x.textContent))
+  const dotted = labels.filter((t) => /…$/.test(t))
+  if (dotted.length) throw new Error(`labels still end in …: ${dotted.join(', ')}`)
+  let item = null
+  for (const b of await page.$$('.menu button')) if ((await b.evaluate((x) => x.textContent)).includes('Create tag here')) item = b
+  await item.hover()
+  await new Promise((r) => setTimeout(r, 800))
+  if (await page.$('.tip.on')) throw new Error('a tooltip showed for a label that is fully visible')
+  await page.keyboard.press('Escape')
+  await until(() => page.$('.menu').then((x) => !x), 'menu closed')
+})
+
 await step('search finds everything as you type (message, file, author, hash) and highlights it', async () => {
   const typeSearch = async (text) => {
     const box = await page.$('.history-bar input') // redrawn with each result

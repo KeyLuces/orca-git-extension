@@ -1425,7 +1425,7 @@ function menu(anchor, items, parent = null) {
           }
         },
         it.icon ? icon(it.icon) : h('span', { style: { width: '14px' } }),
-        h('span', { class: 'grow ellipsis', title: it.full || it.label }, it.label),
+        h('span', { class: 'grow ellipsis', title: (it.full || it.label).replace(/…$/, '') }, it.label.replace(/…$/, '')),
         it.badge && h('span', { class: 'menu-badge' }, it.badge),
         it.hint && h('span', { class: 'dim', style: { fontSize: '11px' } }, it.hint),
         it.items && h('span', { class: 'dim sub-arrow', 'aria-hidden': 'true' }, '›')
@@ -5243,7 +5243,7 @@ async function aiCommitModal({ staged, total, onUse, onCommit }) {
 /** A branch name short enough for a menu line: the middle gives way, both ends stay readable. */
 const nm = (b, max = 30) => (b.length > max ? b.slice(0, Math.ceil(max / 2) - 1) + '…' + b.slice(-Math.floor(max / 2) + 1) : b)
 /** Merge in menus, always written source → target, the way git and GitLab say it. */
-const mergeLabel = (src, dst) => `Merge ${nm(src)} → ${nm(dst)}…`
+const mergeLabel = (src, dst) => `Merge ${nm(src)} → ${nm(dst)}`
 /** Merge request with another branch, in either direction, each written source → target. */
 function mrBoth(other, cur) {
   if (!cur || !other || other === cur) return null
@@ -5738,7 +5738,7 @@ function reviewRow(it) {
       h('button', { class: 'btn sm', title: `Open the ${noun} in the browser`, onClick: open }, icon('open', 12), 'Open'),
       h('button', { class: 'btn sm', title: 'See the changes and comment on lines', onClick: () => reviewDiffSheet(it) }, icon('file', 12), 'Diff'),
       h('button', { class: 'btn sm', title: 'Review it with AI, then post', onClick: () => aiReviewModal(it) }, 'AI review'),
-      !own && h('button', { class: 'btn sm', onClick: () => reviewDialog(it) }, icon('edit', 12), 'Review…'),
+      !own && h('button', { class: 'btn sm', onClick: () => reviewDialog(it) }, icon('edit', 12), 'Review'),
       !own && h(
         'button',
         {
@@ -6365,7 +6365,7 @@ async function resolveConflict(file) {
 async function reviewDiffSheet(it) {
   openSheet(`${it.repo} ${it.provider === 'github' ? '#' : '!'}${it.number} · ${it.title}`, h('div', { class: 'inline-skeleton', style: { margin: '12px' } }, h('span'), h('span'), h('span')), [
     h('button', { class: 'btn sm', onClick: () => aiReviewModal(it) }, 'AI review'),
-    h('button', { class: 'btn sm primary', onClick: () => reviewDialog(it) }, icon('edit', 12), 'Review…')
+    h('button', { class: 'btn sm primary', onClick: () => reviewDialog(it) }, icon('edit', 12), 'Review')
   ])
   const sheet = state.sheets[state.sheets.length - 1]
   sheet.el.classList.add('wide-sheet')
@@ -6542,6 +6542,15 @@ function tipEl() {
   }
   return tip.el
 }
+const sameText = (a, b) => String(a || '').replace(/\s+/g, ' ').trim() === String(b || '').replace(/\s+/g, ' ').trim()
+/** Is this element's text (or a child's) cut short on screen: an ellipsis, or a name shortened with "…"? */
+function isCut(el) {
+  const cut = (x) => x.scrollWidth > x.clientWidth + 1 && getComputedStyle(x).textOverflow === 'ellipsis'
+  if (cut(el)) return true
+  const kids = el.querySelectorAll('*')
+  for (let i = 0; i < kids.length && i < 30; i++) if (cut(kids[i])) return true
+  return false
+}
 function showTip(target) {
   const text = target.dataset.tip
   if (!text || !target.isConnected) return
@@ -6596,6 +6605,11 @@ document.addEventListener(
     t.dataset.tip = text
     if (auto) t.dataset.tipAuto = '1'
     t.removeAttribute('title')
+    // the title says nothing the screen does not already show in full: no tooltip (and no browser one)
+    if (!auto && sameText(t.textContent, text) && !isCut(t)) {
+      tip.target = t
+      return
+    }
     tip.target = t
     tip.timer = setTimeout(() => tip.target === t && showTip(t), Date.now() < tip.warmUntil ? 0 : 450)
   },
