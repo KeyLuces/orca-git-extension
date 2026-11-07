@@ -253,8 +253,8 @@ await step('reopening comes back to the same tab; Refresh shows it worked', asyn
 })
 
 await step('tooltips come from our own component, not the browser', async () => {
-  const btn = await page.$('#toolbar [title="Fetch all (prune)"]')
-  await btn.hover()
+  await new Promise((r) => setTimeout(r, 400)) // the toolbar redraws after the previous refresh
+  await page.hover('#toolbar [title="Fetch all (prune)"]')
   await until(() => page.$eval('.tip.on', (t) => t.textContent.includes('Fetch all')).catch(() => false), 'our tooltip shows')
   if (await page.$('#toolbar [title="Fetch all (prune)"]')) throw new Error('the browser tooltip (title) is still active while hovered')
   await shot('02e-tooltip')
@@ -719,8 +719,9 @@ await step('Inbox (GitLab, saved Git login): to review, assigned, opened by me, 
   if (await exists('.ai-review-dialog .ai-result.generating')) throw new Error('AI review started without pressing Start review')
   if (!(await page.$$eval('.ai-review-dialog .btn', (b) => b.some((x) => x.textContent.includes('Start review'))))) throw new Error('no Start review button')
   await clickText('.ai-review-dialog .btn', 'Cancel')
-  await clickSel('.mr-detail .sheet-close')
-  await until(() => page.$('.mr-detail').then((x) => !x), 'detail closes')
+  // a press outside the page closes it, like a modal
+  await page.mouse.click(320, 700)
+  await until(() => page.$('.mr-detail').then((x) => !x), 'detail closes on a click outside')
 })
 await step('pipeline (GitLab): CI badge opens the pipeline, its jobs and the failed log; retry', async () => {
   g('remote', 'set-url', 'origin', 'https://gitlab2.example.test/team/app.git')

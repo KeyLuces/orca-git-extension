@@ -1073,6 +1073,20 @@ function closeSheet() {
   if (prev) placeSheet(prev.el)
   syncDock()
 }
+// A press outside the open sheet closes it (the merge request page, pipelines, diffs), like a modal.
+// The docked commit details stay: the graph beside them is meant to be clicked while they are open.
+// The header, menus, dialogs and toasts never count as outside.
+document.addEventListener(
+  'mousedown',
+  (e) => {
+    const top = state.sheets[state.sheets.length - 1]
+    if (!top || top.dock || e.button !== 0) return
+    if (e.target.closest?.('.sheet, .overlay, .menu, .tip, #toasts, header, .side-backdrop')) return
+    if (!e.target.isConnected) return
+    closeSheet()
+  },
+  true
+)
 /** Drop every sheet (tab or repository switch). */
 function clearSheets() {
   state.sheets = []
@@ -4837,6 +4851,7 @@ function mdRender(src) {
       .replace(/`([^`]+)`/g, '<code>$1</code>')
       .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
       .replace(/(^|[\s(])\*([^*\s][^*]*)\*/g, '$1<em>$2</em>')
+      .replace(/(^|[\s(])_([^_\s][^_]*)_(?=$|[\s).,:;!?])/g, '$1<em>$2</em>')
       .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" data-ext="1">$1</a>')
       .replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, '$1<a href="$2" data-ext="1">$2</a>')
   const lines = String(src || '').replace(/\r\n/g, '\n').split('\n')
