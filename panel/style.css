@@ -1173,3 +1173,10 @@ body:has(.mrd-bar) #toasts { bottom: 72px; }
 .tab .badge.tb-changes { background: color-mix(in srgb, var(--mod) 18%, transparent) !important; color: var(--mod) !important; }
 .tab .badge.tb-reviews { background: color-mix(in srgb, var(--ren) 20%, transparent) !important; color: var(--ren) !important; }
 .tab .badge.tb-stash { background: color-mix(in srgb, var(--fg) 10%, transparent) !important; color: var(--t2) !important; }
+
+/* Generate: an outlined accent button with its own icon, so Commit stays the one solid action */
+.btn.ai-gen { gap: 6px; height: 30px; padding: 0 12px; border-radius: 8px; border: 1px solid color-mix(in srgb, var(--ren) 55%, var(--line)); background: color-mix(in srgb, var(--ren) 10%, transparent); color: var(--ren); font-weight: 500; transition: background-color .15s, border-color .15s, color .15s; }
+.btn.ai-gen:hover:not(:disabled) { background: color-mix(in srgb, var(--ren) 18%, transparent); border-color: var(--ren); color: var(--t1); }
+.btn.ai-gen:focus-visible { outline: 2px solid color-mix(in srgb, var(--ren) 60%, transparent); outline-offset: 2px; }
+.btn.ai-gen svg { color: currentColor; }
+.btn.ai-gen.stop { border-color: color-mix(in srgb, var(--del) 55%, var(--line)); background: color-mix(in srgb, var(--del) 10%, transparent); color: var(--del); }
