@@ -3186,7 +3186,7 @@ async function viewStash() {
     )
   )
   root.append(h('div', { class: 'section-head' }, 'Stashes', h('span', { class: 'count' }, list.length)))
-  if (!list.length) root.append(h('div', { class: 'empty' }, 'No stashes'))
+  if (!list.length) root.append(h('div', { class: 'empty' }, icon('stash', 26), h('div', null, 'No stashes'), h('div', { class: 'dim' }, 'Stash your changes to set them aside and come back later')))
   for (const s of list) {
     root.append(
       h(
@@ -3209,7 +3209,7 @@ async function viewStash() {
       )
     )
   }
-  return root
+  return IN_TAB ? splitWrap(root, 'Select a stash to see its changes') : root
 }
 
 /* =========================================================================
@@ -4631,7 +4631,7 @@ async function viewReviews() {
   )
   const seg = h(
     'div',
-    { class: 'segmented' },
+    { class: 'segmented rv-filter' },
     [
       ['all', 'All'],
       ['review', 'To review'],

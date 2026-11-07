@@ -1261,6 +1261,27 @@ body.is-loading-repo nav.tabs { opacity: .6; pointer-events: none; }
 .side-panel .reviews .segmented button { flex: 1 1 auto; }
 @media (max-width: 820px) { .reviews .segmented { flex-wrap: wrap; overflow: visible !important; row-gap: 4px; } .reviews .segmented button { flex: 1 1 auto; } }
 
+/* a Pull/Push with work waiting fits its words and number; the icon buttons give way instead */
+.side-panel .toolbar .icon-btn.tb-hot { flex: 0 0 auto !important; padding: 0 10px !important; overflow: visible; }
+.side-panel .toolbar .icon-btn.tb-hot .tb-count { margin-left: 2px; }
+.side-panel .toolbar > button:not(.tb-hot) { min-width: 28px; }
+
+/* narrow Review & MR filters: separate chips that wrap neatly, not one box broken over two lines */
+.side-panel .reviews .rv-filter, .reviews .rv-filter.chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0; border: 0; background: none; }
+.side-panel .reviews .rv-filter button { flex: none !important; height: 30px; padding: 0 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); color: var(--t2); }
+.side-panel .reviews .rv-filter button.on { border-color: color-mix(in srgb, var(--ren) 55%, var(--line)); background: color-mix(in srgb, var(--ren) 14%, var(--card)); color: var(--t1); }
+@media (max-width: 820px) {
+  .reviews .rv-filter { display: flex; flex-wrap: wrap; gap: 6px; padding: 0; border: 0; background: none; }
+  .reviews .rv-filter button { flex: none !important; height: 32px; padding: 0 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); color: var(--t2); }
+  .reviews .rv-filter button.on { border-color: color-mix(in srgb, var(--ren) 55%, var(--line)); background: color-mix(in srgb, var(--ren) 14%, var(--card)); color: var(--t1); }
+}
+
+/* the sidebar toolbar never runs past the edge: icon buttons shrink (no side padding), and if even that
+   is not enough the row wraps instead of cutting a button off */
+.side-panel .repo-line .toolbar { flex-wrap: wrap; row-gap: 6px; min-width: 0; max-width: 100%; box-sizing: border-box; }
+.side-panel .repo-line .toolbar > button:not(.tb-hot) { flex: 1 1 32px !important; min-width: 30px !important; max-width: 64px; padding: 0 !important; }
+.side-panel .repo-line .toolbar > .tb-sep { display: none; }
+
 </style>
   </head>
   <body class="side-panel">
@@ -4467,7 +4488,7 @@ async function viewStash() {
     )
   )
   root.append(h('div', { class: 'section-head' }, 'Stashes', h('span', { class: 'count' }, list.length)))
-  if (!list.length) root.append(h('div', { class: 'empty' }, 'No stashes'))
+  if (!list.length) root.append(h('div', { class: 'empty' }, icon('stash', 26), h('div', null, 'No stashes'), h('div', { class: 'dim' }, 'Stash your changes to set them aside and come back later')))
   for (const s of list) {
     root.append(
       h(
@@ -4490,7 +4511,7 @@ async function viewStash() {
       )
     )
   }
-  return root
+  return IN_TAB ? splitWrap(root, 'Select a stash to see its changes') : root
 }
 
 /* =========================================================================
@@ -5912,7 +5933,7 @@ async function viewReviews() {
   )
   const seg = h(
     'div',
-    { class: 'segmented' },
+    { class: 'segmented rv-filter' },
     [
       ['all', 'All'],
       ['review', 'To review'],

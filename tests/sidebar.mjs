@@ -35,9 +35,11 @@ try {
   }
   g('remote', 'add', 'origin', origin)
   g('push', '-qu', 'origin', 'main')
-  writeFileSync(path.join(repo, 'f5.txt'), '5\n')
-  g('add', '.')
-  g('commit', '-qm', 'Not pushed yet')
+  for (let i = 0; i < 18; i++) {
+    writeFileSync(path.join(repo, 'f5.txt'), `${i}\n`)
+    g('add', '.')
+    g('commit', '-qm', `Not pushed yet ${i}`)
+  }
   writeFileSync(path.join(repo, 'f1.txt'), 'changed\n')
   const repo2 = path.join(root, 'other')
   execFileSync('git', ['init', '-q', '-b', 'main', repo2])
@@ -139,7 +141,17 @@ try {
     await until(() => page.$$eval('#main .item', (r) => r.some((x) => x.textContent.includes('f1.txt'))), 'changed file listed')
   })
   await step('push count on the Push button (green arrow), toolbar fits', async () => {
-    await until(() => page.$eval('#toolbar [data-op="push"] .tb-count', (c) => c.textContent.includes('1')), 'push ↑1')
+    await until(() => page.$eval('#toolbar [data-op="push"] .tb-count', (c) => c.textContent.includes('18')), 'push 18')
+    const fit = await page.$eval('#toolbar [data-op="push"]', (b) => { const r = b.getBoundingClientRect(); const c = b.querySelector('.tb-count').getBoundingClientRect(); return c.right <= r.right - 2 && b.scrollWidth <= b.clientWidth + 1 })
+    if (!fit) throw new Error('the push count runs outside its button')
+    // every toolbar button inside the panel, at a few sidebar widths
+    for (const w of [300, 340, 353, 400]) {
+      await page.setViewport({ width: w, height: 820 })
+      await new Promise((r) => setTimeout(r, 150))
+      const out = await page.$$eval('#toolbar > button', (bs) => bs.filter((b) => b.getBoundingClientRect().right > innerWidth - 1 || b.getBoundingClientRect().left < 0).length)
+      if (out) throw new Error(`${out} toolbar button(s) cut off at ${w}px`)
+    }
+    await page.setViewport({ width: 340, height: 820 })
     const over = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1)
     if (over) throw new Error('the panel scrolls sideways')
   })
