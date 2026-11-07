@@ -322,6 +322,8 @@ await step('stages and commits a new file from the Commit tab', async () => {
   await clickSel('.commit-box .split .btn:first-child')
   await until(() => g('log', '-1', '--format=%s') === 'Add new file from the UI', 'commit in git log')
   await until(() => page.evaluate(() => document.body.textContent.includes('Working tree clean')), 'clean state shown')
+  // nothing left to commit, one commit not on the remote: the button offers Push (or Publish)
+  await until(() => page.$eval('.commit-box .split .btn:first-child', (x) => /^(Push [0-9]+ commit|Publish )/.test(x.textContent.trim())), 'commit button turns into Push')
 })
 
 await step('creates a branch from the sidebar', async () => {
@@ -791,7 +793,7 @@ await step('AI commit dialog opens with agent, instructions and message', async 
   await until(() => page.$eval('.ai-dialog .ai-result', (t) => t.value === 'feat: add the answer'), 'message filled in', 10000)
   if (await page.$eval('.ai-dialog .ai-skel', (k) => getComputedStyle(k).display !== 'none')) throw new Error('skeleton still shown after generating')
   delete fakes['ai.commitMessage']
-  await clickText('.ai-dialog .btn', 'Cancel')
+  await clickText('.ai-dialog .btn', 'Close')
   g('clean', '-fdq')
 })
 

@@ -1166,6 +1166,11 @@ body:has(.mrd-bar) #toasts { bottom: 72px; }
   .mrd-bar { justify-content: flex-end; }
 }
 
+/* AI commit: Generate sits on the Message field it fills */
+.ai-msg-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+.ai-msg-head label { margin: 0; }
+.ai-gen { min-width: 92px; justify-content: center; }
+
 </style>
   </head>
   <body class="wide">
@@ -1969,7 +1974,6 @@ function pullMenu(anchor) {
 function pushMenu(anchor) {
   menu(anchor, [
     { label: 'Push', icon: 'push', onClick: () => run('push', {}, { success: 'Pushed' }) },
-    { label: 'Push with tags', icon: 'tag', onClick: () => run('push', { tags: true }, { success: 'Pushed' }) },
     '-',
     {
       label: 'Force push (with lease)…',
@@ -2716,10 +2720,22 @@ async function viewChanges() {
       updateCommitBtn()
     }
   })
-  const commitBtn = h('button', { class: 'btn primary', onClick: () => doCommit({}) })
+  let pushMode = null // 'push' | 'publish' when there is nothing to commit but something to send
+  const commitBtn = h('button', { class: 'btn primary', onClick: () => (pushMode ? run('push', {}, { success: pushMode === 'publish' ? `Published ${st.branch}` : 'Pushed' }) : doCommit({})) })
   const commitMore = h('button', { class: 'btn primary', title: 'More commit options', onClick: (e) => commitMenu(e.currentTarget) }, icon('down', 12))
   function updateCommitBtn() {
     const n = staged.length
+    const nothing = !n && !unstaged.length && !state.amend
+    pushMode = nothing && st.branch && !st.detached ? (!st.upstream ? 'publish' : st.ahead > 0 ? 'push' : null) : null
+    commitBtn.classList.toggle('push-mode', !!pushMode)
+    commitMore.style.display = pushMode ? 'none' : ''
+    if (pushMode) {
+      commitBtn.disabled = false
+      commitBtn.title = pushMode === 'publish' ? `Push ${st.branch} to the remote for the first time` : `Push ${st.ahead} commit${st.ahead > 1 ? 's' : ''} to ${st.upstream}`
+      clear(commitBtn).append(icon('push', 13), pushMode === 'publish' ? `Publish ${st.branch}` : `Push ${st.ahead} commit${st.ahead > 1 ? 's' : ''}`)
+      return
+    }
+    commitBtn.title = ''
     const can = !!state.commitDraft.trim() && (n > 0 || state.amend || (unstaged.length > 0))
     commitBtn.disabled = !can
     commitMore.disabled = !state.commitDraft.trim()
@@ -2794,7 +2810,7 @@ async function viewChanges() {
   )
 
   if (!st.files.length) {
-    root.append(h('div', { class: 'empty clean-note' }, icon('check', 28), h('div', null, 'Working tree clean'), h('div', { class: 'dim', style: { fontSize: '11.5px', marginTop: '4px' } }, 'Nothing to commit. Edits you make will show up here.')))
+    root.append(h('div', { class: 'empty clean-note' }, icon('check', 28), h('div', null, 'Working tree clean'), h('div', { class: 'dim', style: { fontSize: '12px', marginTop: '4px' } }, pushMode === 'push' ? `Nothing to commit · ${st.ahead} commit${st.ahead > 1 ? 's' : ''} waiting to push` : pushMode === 'publish' ? `Nothing to commit · ${st.branch} is not on the remote yet` : 'Nothing to commit. Edits you make will show up here.')))
     return root
   }
 
@@ -5289,8 +5305,7 @@ async function aiCommitModal({ staged, total, onUse, onCommit }) {
   instructions.value = prefs.instructions || ''
   const result = h('textarea', { class: 'ai-result', rows: 6, placeholder: 'The generated message appears here. You can edit it before using it.' })
   const status = h('div', { class: 'ai-status' })
-  const genBtn = h('button', { type: 'button', class: 'btn primary', onClick: () => generate() }, 'Generate')
-  const useBtn = h('button', { type: 'button', class: 'btn', disabled: true, onClick: () => finish(onUse) }, 'Use message')
+  const genBtn = h('button', { type: 'button', class: 'btn sm primary ai-gen', onClick: () => generate() }, 'Generate')
   const commitBtn = h('button', { type: 'button', class: 'btn primary', disabled: true, onClick: () => finish(onCommit) }, icon('check', 13), 'Commit')
 
   let stopTick = () => {}
@@ -5302,9 +5317,8 @@ async function aiCommitModal({ staged, total, onUse, onCommit }) {
     if (on) stopTick = aiTicker(status, agents.find((a) => a.id === agentSel.value)?.name || 'AI', 'your changes')
     else append(clear(status), [text || ''])
     append(clear(genBtn), [on ? [icon('x', 13), 'Stop'] : [result.value.trim() ? 'Regenerate' : 'Generate']])
-    genBtn.className = `btn ${on ? '' : result.value.trim() ? '' : 'primary'}`
+    genBtn.className = `btn sm ai-gen ${on ? '' : result.value.trim() ? '' : 'primary'}`
     const has = !on && !!result.value.trim()
-    useBtn.disabled = !has
     commitBtn.disabled = !has
   }
   result.addEventListener('input', () => setBusy2(false))
@@ -5334,11 +5348,14 @@ async function aiCommitModal({ staged, total, onUse, onCommit }) {
   function finish(cb) {
     const msg = result.value.trim()
     if (!msg) return
-    close()
+    close(false)
     cb(msg)
   }
-  const close = () => {
+  const close = (keep = true) => {
     gen++
+    // a generated (or edited) message goes into the commit box instead of being thrown away
+    const msg = keep && !busy ? result.value.trim() : ''
+    if (msg && onUse) onUse(msg)
     overlay.remove()
     document.removeEventListener('keydown', onKey)
   }
@@ -5355,12 +5372,12 @@ async function aiCommitModal({ staged, total, onUse, onCommit }) {
     h('div', { class: 'ai-title' }, h('div', null, h('h3', null, 'Generate commit message'), h('p', null, 'An AI agent reads your diff and drafts a message. Nothing is committed until you choose.'))),
     h('div', { class: 'ai-row' }, h('div', { class: 'field grow' }, h('label', null, 'Agent'), agentSel), h('div', { class: 'field grow' }, h('label', null, 'Changes'), scopeSel)),
     h('div', { class: 'field' }, h('label', null, 'Instructions'), instructions),
-    h('div', { class: 'field' }, h('label', null, 'Message'), aiWrap(result)),
+    h('div', { class: 'field' }, h('div', { class: 'ai-msg-head' }, h('label', null, 'Message'), genBtn), aiWrap(result)),
     status,
-    h('div', { class: 'buttons' }, h('button', { type: 'button', class: 'btn', onClick: close }, 'Cancel'), h('span', { class: 'grow' }), genBtn, useBtn, commitBtn)
+    h('div', { class: 'buttons' }, h('button', { type: 'button', class: 'btn', title: 'A generated message stays in the commit box', onClick: () => close() }, 'Close'), h('span', { class: 'grow' }), commitBtn)
   )
   const overlay = h('div', { class: 'overlay', onMousedown: (e) => e.target === overlay && !busy && close() }, box)
-  mountOverlay(overlay, close)
+  mountOverlay(overlay, () => close())
   document.addEventListener('keydown', onKey)
   status.textContent = 'Choose the agent, add instructions if you like, then press Generate.'
   genBtn.focus() // pick the agent and instructions first; Generate (or Ctrl+Enter) starts it
@@ -7080,7 +7097,6 @@ function commandPalette() {
     [st.behind ? `Pull (${st.behind} waiting)` : 'Pull', 'pull', () => run('pull', {}, { success: 'Pulled' })],
     ['Pull with rebase', 'pull', () => run('pull', { rebase: true }, { success: 'Pulled with rebase' })],
     [st.ahead ? `Push (${st.ahead} waiting)` : 'Push', 'push', () => run('push', {}, { success: 'Pushed' })],
-    ['Push with tags', 'tag', () => run('push', { tags: true }, { success: 'Pushed' })],
     ['Stash changes', 'stash', () => run('stashSave', { untracked: true }, { success: 'Stashed' }), !st.files?.length],
     ['Switch branch…', 'branch', () => quickSwitch($('.branch-chip') || $('#toolbar'))],
     ['New branch…', 'plus', () => newBranch(st.oid || 'HEAD')],

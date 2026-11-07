@@ -1157,3 +1157,8 @@ body:has(.mrd-bar) #toasts { bottom: 72px; }
   .mrd-bar > .grow { display: none; }
   .mrd-bar { justify-content: flex-end; }
 }
+
+/* AI commit: Generate sits on the Message field it fills */
+.ai-msg-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+.ai-msg-head label { margin: 0; }
+.ai-gen { min-width: 92px; justify-content: center; }
