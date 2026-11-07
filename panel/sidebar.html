@@ -1176,6 +1176,12 @@ body:has(.mrd-bar) #toasts { bottom: 72px; }
 .side-panel .repo-line .toolbar > button { height: 32px; }
 .side-panel header { padding: 8px 12px; }
 
+/* tab counts: small flat tags, each colour says what it counts */
+.tab .badge { display: inline-flex !important; align-items: center; justify-content: center; min-width: 18px !important; height: 18px !important; padding: 0 5px !important; margin-left: 6px; border-radius: 4px !important; border: 0 !important; font: 600 11px/18px var(--mono, ui-monospace, monospace) !important; font-variant-numeric: tabular-nums; background: var(--raised) !important; color: var(--t2) !important; }
+.tab .badge.tb-changes { background: color-mix(in srgb, var(--mod) 18%, transparent) !important; color: var(--mod) !important; }
+.tab .badge.tb-reviews { background: color-mix(in srgb, var(--ren) 20%, transparent) !important; color: var(--ren) !important; }
+.tab .badge.tb-stash { background: color-mix(in srgb, var(--fg) 10%, transparent) !important; color: var(--t2) !important; }
+
 </style>
   </head>
   <body class="side-panel">
@@ -2059,7 +2065,7 @@ function renderTabs() {
   for (const [id, label] of TABS) {
     const count = id === 'changes' ? st?.files.length : id === 'stash' ? st?.stashCount : id === 'reviews' ? reviewCount() : 0
     nav.append(
-      h('button', { class: `tab ${state.tab === id ? 'active' : ''}`, onClick: () => setTab(id) }, label, count ? h('span', { class: 'badge' }, count) : null)
+      h('button', { class: `tab ${state.tab === id ? 'active' : ''}`, onClick: () => setTab(id) }, label, count ? h('span', { class: `badge tb-${id}` }, count) : null)
     )
   }
   // on a narrow screen the tabs scroll: keep the chosen one in view

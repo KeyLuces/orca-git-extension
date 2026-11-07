@@ -863,7 +863,7 @@ function renderTabs() {
   for (const [id, label] of TABS) {
     const count = id === 'changes' ? st?.files.length : id === 'stash' ? st?.stashCount : id === 'reviews' ? reviewCount() : 0
     nav.append(
-      h('button', { class: `tab ${state.tab === id ? 'active' : ''}`, onClick: () => setTab(id) }, label, count ? h('span', { class: 'badge' }, count) : null)
+      h('button', { class: `tab ${state.tab === id ? 'active' : ''}`, onClick: () => setTab(id) }, label, count ? h('span', { class: `badge tb-${id}` }, count) : null)
     )
   }
   // on a narrow screen the tabs scroll: keep the chosen one in view
