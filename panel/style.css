@@ -1273,3 +1273,16 @@ body.is-loading-repo nav.tabs { opacity: .6; pointer-events: none; }
 .side-panel .repo-line .toolbar { flex-wrap: wrap; row-gap: 6px; min-width: 0; max-width: 100%; box-sizing: border-box; }
 .side-panel .repo-line .toolbar > button:not(.tb-hot) { flex: 1 1 32px !important; min-width: 30px !important; max-width: 64px; padding: 0 !important; }
 .side-panel .repo-line .toolbar > .tb-sep { display: none; }
+
+/* narrow full tab (body.compact): the same rules as the sidebar panel */
+body.compact .tb-label { display: none; }
+body.compact .repo-line .toolbar { flex-wrap: wrap; row-gap: 6px; min-width: 0; }
+body.compact .repo-line .toolbar > button:not(.tb-hot) { flex: 1 1 32px !important; min-width: 30px !important; max-width: 64px; padding: 0 !important; }
+body.compact .repo-line .toolbar > .tb-sep { display: none; }
+body.compact .toolbar .icon-btn.tb-hot { flex: 0 0 auto !important; max-width: none !important; padding: 0 10px !important; gap: 6px; overflow: visible; border-color: color-mix(in srgb, var(--add) 45%, var(--line)); background: color-mix(in srgb, var(--add) 10%, var(--card)); }
+body.compact .toolbar .icon-btn.tb-hot[data-op="pull"] { border-color: color-mix(in srgb, var(--mod) 45%, var(--line)); background: color-mix(in srgb, var(--mod) 10%, var(--card)); }
+body.compact .toolbar .icon-btn.tb-hot .tb-label { display: inline; font-size: 12px; font-weight: 500; }
+body.compact .toolbar .icon-btn.tb-hot .tb-count { margin-left: 2px; }
+body.compact .tb-arrow { display: none; }
+body.compact nav.tabs { flex-wrap: wrap; overflow: visible !important; -webkit-mask-image: none !important; mask-image: none !important; row-gap: 4px; padding: 8px 12px; }
+body.compact nav.tabs .tab { flex: none; }

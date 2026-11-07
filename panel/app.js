@@ -1845,6 +1845,10 @@ function layoutGraph(commits) {
 // Row height: compact (28) or comfortable (34) in the tab, chosen from the graph bar.
 let ROW_H = IN_TAB ? (store.get('density', 'compact') === 'comfortable' ? 34 : 28) : 40
 document.documentElement.style.setProperty('--row-h', `${ROW_H}px`)
+// A narrow full tab works like the sidebar panel: shrinking icon buttons, Push/Pull in words when work waits, every tab visible.
+const syncCompact = () => document.body.classList.toggle('compact', IN_TAB && innerWidth <= 820)
+syncCompact()
+addEventListener('resize', syncCompact)
 function setDensity(v) {
   store.set('density', v)
   ROW_H = v === 'comfortable' ? 34 : 28

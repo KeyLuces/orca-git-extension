@@ -240,6 +240,19 @@ await step('Ctrl+K runs a command; toolbar sits on the right', async () => {
   await until(() => page.$('.commit-row').then(Boolean), 'graph back')
 })
 
+await step('a narrow tab works like the sidebar: every button and tab inside, nothing cut off', async () => {
+  for (const w of [420, 560, 760]) {
+    await page.setViewport({ width: w, height: 900 })
+    await sleep(250)
+    const cut = await page.$$eval('#toolbar > button, nav.tabs .tab', (els) => els.filter((e) => { const r = e.getBoundingClientRect(); return r.width > 0 && (r.right > innerWidth - 1 || r.left < 0) }).map((e) => e.textContent.trim() || e.title))
+    if (cut.length) throw new Error(`cut off at ${w}px: ${cut.join(', ')}`)
+    if (await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1)) throw new Error(`scrolls sideways at ${w}px`)
+    if (w === 420) await shot('02f-narrow-tab')
+  }
+  await page.setViewport({ width: 1500, height: 900 })
+  await sleep(250)
+})
+
 await step('reopening comes back to the same tab; Refresh shows it worked', async () => {
   await clickText('.tab', 'Stash')
   await until(() => page.$eval('.tab.active', (t) => t.textContent.includes('Stash')), 'on Stash')
