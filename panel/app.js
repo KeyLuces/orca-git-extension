@@ -4384,7 +4384,7 @@ async function mergeRequestDialog(target, source, swapped) {
       }
       assignees.setPeople(r.people, r.me)
       reviewers.setPeople(r.people, r.me)
-      if (!assignees.value().length && r.me && remembered?.assignMe !== false) assignees.set([r.me]) // GitLab's "Assign to me"
+      // nobody is picked for you: "Assign to me" stays one click away
       if (!isGh && r.defaults) {
         if (typeof r.defaults.removeSource === 'boolean') removeSource.checked = r.defaults.removeSource // the project's setting
         squash.checked = !!r.defaults.squash
@@ -5060,6 +5060,7 @@ async function reviewDetailSheet(it, tab = 'overview') {
     const side = h(
       'aside',
       { class: 'mrd-side' },
+      h('div', { class: 'mrd-box' }, h('div', { class: 'mrd-label' }, 'Opened by'), person(d.author || it.author || '?', h('span', { class: 'dim mrd-when-small' }, ago(d.created)))),
       h('div', { class: 'mrd-box' }, h('div', { class: 'mrd-label' }, 'Approvals'), h('div', { class: 'mrd-big' }, d.approvals.required ? `${d.approvals.given} of ${d.approvals.required}` : String(d.approvals.given), h('span', { class: 'dim' }, d.approvals.required ? ' approved' : d.approvals.given === 1 ? ' approval' : ' approvals'))),
       h('div', { class: 'mrd-box' }, h('div', { class: 'mrd-label' }, 'Reviewers'), d.reviewers.length ? d.reviewers.map((r) => person(r.name, stateIcon(r.state))) : h('div', { class: 'dim' }, 'None')),
       h('div', { class: 'mrd-box' }, h('div', { class: 'mrd-label' }, 'Assignees'), d.assignees.length ? d.assignees.map((a) => person(a)) : h('div', { class: 'dim' }, 'None')),

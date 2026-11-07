@@ -1286,3 +1286,4 @@ body.compact .toolbar .icon-btn.tb-hot .tb-count { margin-left: 2px; }
 body.compact .tb-arrow { display: none; }
 body.compact nav.tabs { flex-wrap: wrap; overflow: visible !important; -webkit-mask-image: none !important; mask-image: none !important; row-gap: 4px; padding: 8px 12px; }
 body.compact nav.tabs .tab { flex: none; }
+.mrd-when-small { flex: none; font-size: 12px; }

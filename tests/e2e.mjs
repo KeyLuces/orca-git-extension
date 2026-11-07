@@ -613,8 +613,11 @@ async function createNow(branch, menuTarget = 'main', pickReviewer = false) {
   await until(() => exists('.mr-dialog'), 'MR dialog')
   await until(() => page.$$eval('.mr-dialog .btn', (b) => b.some((x) => x.textContent.includes('Create now'))), '"Create now" offered with the saved Git login')
   if (pickReviewer) {
-    // members load in the background; "me" is assigned like GitLab's "Assign to me"
-    await until(() => page.$$eval('.mr-dialog .pp-chip', (c) => c.some((x) => x.textContent.includes('Me Myself') || x.textContent.includes('me'))), 'assigned to me')
+    // nobody is picked by default; "Assign to me" adds yourself in one click
+    await sleep(800)
+    if (await page.$$eval('.mr-dialog .pp-chip', (c) => c.length > 0)) throw new Error('someone was picked by default')
+    await clickText('.mr-dialog .link-btn', 'Assign to me')
+    await until(() => page.$$eval('.mr-dialog .pp-chip', (c) => c.some((x) => x.textContent.includes('Me Myself'))), 'assigned to me')
     const inputs = await page.$$('.mr-dialog .pp-input')
     await inputs[1].click()
     await inputs[1].type('dev')
@@ -721,7 +724,7 @@ await step('Inbox (GitLab, saved Git login): to review, assigned, opened by me, 
   await until(() => page.$eval('.mr-detail .mrd-desc', (d) => d.textContent.includes('Keeps reviews in the app')).catch(() => false), 'description rendered', 20000)
   if (!(await page.$eval('.mr-detail .mrd-desc strong', (b) => b.textContent === 'reviews'))) throw new Error('markdown bold not rendered')
   const side = await page.$eval('.mr-detail .mrd-side', (x) => x.textContent)
-  if (!side.includes('1 of 2') || !side.includes('dev1') || !side.includes('backend')) throw new Error('side: ' + side)
+  if (!side.includes('1 of 2') || !side.includes('dev1') || !side.includes('backend') || !side.includes('Opened by')) throw new Error('side: ' + side)
   const thread = await page.$eval('.mr-detail .mrd-thread', (x) => x.textContent)
   if (!thread.includes('Looks good to me') || !thread.includes('src/a.js:3') || thread.includes('added 1 commit')) throw new Error('activity: ' + thread)
   await shot('11b-mr-detail')
