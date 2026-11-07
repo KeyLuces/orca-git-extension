@@ -947,6 +947,69 @@ mark.hit { background: color-mix(in srgb, var(--mod) 38%, transparent); color: v
 .sheet-host.docked .col-date { display: none; }
 .sheet-host.docked .col-author { width: 110px; }
 
+/* ---------- labels never run under the message or the next column ---------- */
+.commit-text { overflow: hidden; }
+.commit-subject { overflow: hidden; }
+.commit-subject > .ref { flex: 0 1 auto; min-width: 34px; }
+.commit-subject > .ref:first-child { flex-shrink: 0.4; }
+.commit-subject .s { flex: 1 1 60px; min-width: 40px; }
+
+/* ---------- sheet head: Back (when stacked) and Close ---------- */
+.sheet-head { gap: 8px; padding: 8px 8px 8px 10px; min-height: 44px; }
+.sheet-back { display: inline-flex; align-items: center; gap: 4px; flex: none; height: 28px; padding: 0 10px 0 6px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--t1); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
+.sheet-back:hover { background: var(--card-hi); border-color: var(--line-hi); }
+.sheet-back svg { color: var(--t2); }
+.sheet-close { width: 30px; height: 30px; flex: none; justify-content: center; border-radius: 8px; color: var(--t2); }
+.sheet-close:hover { background: color-mix(in srgb, var(--del) 16%, var(--card)); color: var(--t1); }
+.sheet-close svg { width: 16px; height: 16px; }
+
+/* ---------- toolbar buttons show the work: spinning or moving while it runs, a tick when done ---------- */
+.toolbar .icon-btn.working { border-color: color-mix(in srgb, var(--ren) 60%, var(--line)); color: var(--t1); }
+.toolbar .icon-btn.working svg { animation: tbSpin .8s linear infinite; }
+.toolbar .icon-btn.working[data-op="pull"] svg, .toolbar .icon-btn.working[data-op="fetch"] svg { animation: tbDown .7s ease-in-out infinite; }
+.toolbar .icon-btn.working[data-op="push"] svg { animation: tbUp .7s ease-in-out infinite; }
+.toolbar .icon-btn.working[data-op="stash"] svg, .toolbar .icon-btn.working[data-op="undo"] svg { animation: tbPulse .8s ease-in-out infinite; }
+.toolbar .icon-btn.working::after { content: ''; position: absolute; left: 8px; right: 8px; bottom: 2px; height: 2px; border-radius: 2px; background: linear-gradient(90deg, transparent, var(--ren), transparent); background-size: 200% 100%; animation: tbBar 1s linear infinite; }
+.toolbar .icon-btn { position: relative; }
+.toolbar .icon-btn.done { border-color: color-mix(in srgb, var(--add) 65%, var(--line)); background: color-mix(in srgb, var(--add) 14%, var(--card)); transition: background-color .4s, border-color .4s; }
+.toolbar .icon-btn.done svg { color: var(--add); animation: tbPop .35s var(--ease); }
+@keyframes tbSpin { to { transform: rotate(360deg); } }
+@keyframes tbDown { 0%, 100% { transform: translateY(-2px); } 50% { transform: translateY(2px); } }
+@keyframes tbUp { 0%, 100% { transform: translateY(2px); } 50% { transform: translateY(-2px); } }
+@keyframes tbPulse { 50% { transform: scale(.82); opacity: .6; } }
+@keyframes tbBar { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+@keyframes tbPop { 0% { transform: scale(.6); } 70% { transform: scale(1.18); } }
+@media (prefers-reduced-motion: reduce) { .toolbar .icon-btn.working svg, .toolbar .icon-btn.done svg, .toolbar .icon-btn.working::after { animation: none; } }
+
+/* ---------- pipelines: breadcrumbs, what failed, error stepping, find, wrap ---------- */
+.pipe-crumbs { gap: 6px; }
+.pipe-crumbs > svg, .pipe-crumbs > span > svg { color: var(--t3); }
+.crumb { border: 0; background: none; padding: 3px 6px; border-radius: 6px; color: var(--ren); font: inherit; font-weight: 600; cursor: pointer; }
+.crumb:hover { background: var(--hover); text-decoration: underline; }
+.pipe-failed { display: flex; align-items: center; gap: 12px; margin: 12px 16px 4px; padding: 10px 12px; border-radius: 10px; border: 1px solid color-mix(in srgb, var(--del) 45%, var(--line)); background: color-mix(in srgb, var(--del) 10%, var(--card)); }
+.pipe-failed > span:first-child { color: var(--del); }
+.pipe-logbar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 8px 16px; border-bottom: 1px solid var(--line); background: var(--raised); position: sticky; top: 0; z-index: 2; }
+.pl-errnav { display: flex; align-items: center; gap: 6px; color: var(--del); }
+.pl-errnav.ok { color: var(--add); }
+.pl-errnav b { color: var(--t1); margin-right: 2px; }
+.pl-errnav .icon-btn { width: 26px; height: 24px; justify-content: center; border: 1px solid var(--line); border-radius: 6px; background: var(--card); }
+.pl-errnav .check { margin-left: 8px; color: var(--t2); }
+.pl-counter { min-width: 44px; text-align: center; }
+.pl-find { width: 200px; height: 28px; }
+.pl-live { display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px; border-radius: 999px; background: color-mix(in srgb, var(--ren) 16%, transparent); color: var(--ren); font-size: 11px; font-weight: 700; text-transform: uppercase; }
+.pl-live i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; animation: tbPulse 1.2s ease-in-out infinite; }
+.pipe-log.wrap .pl { min-width: 0; }
+.pipe-log.wrap .pl-t { white-space: pre-wrap; word-break: break-word; }
+.pipe-log.only-bad .pl:not(.bad) { display: none; }
+.pl.hit { background: color-mix(in srgb, var(--mod) 18%, transparent); }
+.pl.cur { box-shadow: inset 3px 0 0 var(--del); background: color-mix(in srgb, var(--del) 22%, transparent); }
+.pl.hit.cur { box-shadow: inset 3px 0 0 var(--mod); }
+@media (max-width: 820px) { .pl-find { width: 100%; order: 5; } .pipe-failed { margin: 10px; } }
+.pipe-logbar .pl-find { width: 220px !important; flex: none; }
+.history-bar .graph-search { min-width: 0; flex: 1 1 140px; }
+.sheet-host.docked .history-bar { flex-wrap: wrap; }
+@media (max-width: 820px) { .pipe-logbar .pl-find { width: 100% !important; } }
+
 </style>
   </head>
   <body class="wide">
@@ -1404,10 +1467,15 @@ async function openLink(url) {
 /** Run an op with a spinner and error toast, then refresh. Returns the result, or undefined on failure. */
 async function run(op, args, { success, refresh = true, quiet = false } = {}) {
   setBusy(1)
+  setWorking(op, true)
+  // fetch, pull and push say what they changed once the view is fresh ("3 new commits", "up to date")
+  const before = SYNC_NOTE[op] && state.status ? { oid: state.status.oid, ahead: state.status.ahead || 0, behind: state.status.behind || 0, upstream: state.status.upstream } : null
+  let ok = false
   try {
     const out = await call(op, args)
-    if (success) toast(success)
-    else if (!quiet && typeof out === 'string' && out.trim() && NET_OPS.has(op)) toast(out.trim().split('\n').slice(-3).join('\n'))
+    ok = true
+    if (success && !before) toast(success)
+    else if (!before && !quiet && typeof out === 'string' && out.trim() && NET_OPS.has(op)) toast(out.trim().split('\n').slice(-3).join('\n'))
     return out ?? ''
   } catch (e) {
     toast(e?.message || String(e), 'error')
@@ -1415,6 +1483,43 @@ async function run(op, args, { success, refresh = true, quiet = false } = {}) {
   } finally {
     setBusy(-1)
     if (refresh) await refreshAll()
+    setWorking(op, false, ok)
+    if (ok && before) toast(SYNC_NOTE[op](before, state.status || {}, success, args || {}))
+  }
+}
+const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`
+const SYNC_NOTE = {
+  fetch: (b, a, done) => {
+    const n = (a.behind || 0) - b.behind
+    if (!a.upstream) return `${done || 'Fetched'} · this branch has no remote branch`
+    if (n > 0) return `${done || 'Fetched'} · ${plural(n, 'new commit')} on ${a.upstream} to pull`
+    if (a.behind) return `${done || 'Fetched'} · nothing new · ${plural(a.behind, 'commit')} still to pull`
+    return `${done || 'Fetched'} · already up to date`
+  },
+  pull: (b, a, done) => (a.oid && a.oid !== b.oid ? `${done || 'Pulled'} · ${b.behind ? plural(b.behind, 'commit') + ' · ' : ''}now at ${a.oid.slice(0, 7)}` : 'Already up to date · nothing to pull'),
+  push: (b, a, done, args) => (args.branch && args.branch !== a.branch ? done || 'Pushed' : b.ahead > 0 || !b.upstream ? `${done || 'Pushed'}${b.ahead ? ' · ' + plural(b.ahead, 'commit') : ''}` : `${done || 'Pushed'} · ${a.upstream || 'the remote'} was already up to date`)
+}
+/** Which toolbar buttons are busy (spinning) and which just finished (a short tick). */
+const working = new Set()
+const justDone = new Map()
+const OP_BTN = { fetch: 'fetch', pull: 'pull', push: 'push', stashSave: 'stash', refresh: 'refresh', undoLast: 'undo' }
+function setWorking(op, on, ok) {
+  const key = OP_BTN[op]
+  if (!key) return
+  if (on) working.add(key)
+  else {
+    working.delete(key)
+    if (ok) {
+      justDone.set(key, Date.now())
+      setTimeout(() => (justDone.delete(key), paintWorking()), 1300)
+    }
+  }
+  paintWorking()
+}
+function paintWorking() {
+  for (const b of document.querySelectorAll('#toolbar [data-op]')) {
+    b.classList.toggle('working', working.has(b.dataset.op))
+    b.classList.toggle('done', !working.has(b.dataset.op) && justDone.has(b.dataset.op))
   }
 }
 
@@ -1461,6 +1566,13 @@ function setRepo(p) {
   state.history.open = null
   clearSheets()
   if (p) store.set('lastRepo', p)
+  // come back where this repository was left: its tab, scroll position and open commit
+  if (p) {
+    const m = viewMem.get()
+    if (m.tab && TABS.some(([id]) => id === m.tab)) state.tab = m.tab
+    state.history.open = m.open || null
+    viewRestore = m.scroll || m.open ? { ...m } : null
+  }
   const s = p && snap.load(p)
   if (s) {
     state.status = s.status
@@ -1471,6 +1583,29 @@ function setRepo(p) {
     }
   }
 }
+
+/** What each repository's view looked like when it was left (tab, scroll, open commit). */
+let viewRestore = null
+const viewMem = {
+  key: () => 'view.' + String(state.repo || '').replace(/\\/g, '/').toLowerCase(),
+  get() {
+    const v = state.repo ? store.get(viewMem.key(), null) : null
+    return v && typeof v === 'object' ? v : {}
+  },
+  set(patch) {
+    if (state.repo) store.set(viewMem.key(), { ...viewMem.get(), ...patch })
+  }
+}
+let scrollSaveTimer = null
+document.addEventListener(
+  'scroll',
+  (e) => {
+    if (e.target?.id !== 'main' || viewRestore) return
+    clearTimeout(scrollSaveTimer)
+    scrollSaveTimer = setTimeout(() => viewMem.set({ scroll: Math.round($('#main').scrollTop), scrollTab: state.tab }), 300)
+  },
+  true
+)
 
 /* Per-repository snapshot (status, refs, first page of history) so a view renders instantly. */
 const snap = {
@@ -1597,12 +1732,15 @@ function renderHeader() {
     sep(),
     IN_TAB && lbl(iconBtn('stash', 'Stash changes', () => run('stashSave', { untracked: true }, { success: 'Stashed' }), { disabled: dis || !st0.files?.length }), 'Stash'),
     sep(),
-    iconBtn('refresh', 'Refresh', () => refreshAll(true), { disabled: !state.repo }),
+    iconBtn('refresh', 'Refresh', () => manualRefresh(), { disabled: !state.repo }),
     iconBtn('undo', 'Undo the last action (commit, reset, merge, rebase…)', undoLast, { disabled: dis }),
     IN_TAB && iconBtn('search', 'Commands (Ctrl+K)', () => commandPalette(), { disabled: dis }),
     iconBtn('settings', 'Git settings (identity, HTTPS, remotes)', () => setTab('settings'), { disabled: !state.repo }),
     !IN_TAB && iconBtn('expand', 'Open Git Control in a full tab', openTab, { disabled: dis })
   ])
+  const ops = { 'Fetch all (prune)': 'fetch', Pull: 'pull', Push: 'push', 'Stash changes': 'stash', Refresh: 'refresh', 'Undo the last action (commit, reset, merge, rebase…)': 'undo' }
+  for (const b of tb.querySelectorAll('button')) if (ops[b.title]) b.dataset.op = ops[b.title]
+  paintWorking()
 
   const bl = clear($('#branchLine'))
   if (!st) return
@@ -1629,6 +1767,22 @@ async function openTab() {
   } finally {
     setBusy(-1)
   }
+}
+
+/** Refresh from the button or F5: the icon spins, then a short tick and what changed. */
+async function manualRefresh() {
+  if (working.has('refresh')) return
+  const before = state.status ? state.status.oid + '|' + (state.status.files?.length || 0) + '|' + (state.status.ahead || 0) + '|' + (state.status.behind || 0) : ''
+  setWorking('refresh', true)
+  let ok = false
+  try {
+    await refreshAll(true)
+    ok = true
+  } finally {
+    setWorking('refresh', false, ok)
+  }
+  const after = state.status ? state.status.oid + '|' + (state.status.files?.length || 0) + '|' + (state.status.ahead || 0) + '|' + (state.status.behind || 0) : ''
+  if (ok) toast(after === before ? 'Refreshed · no changes' : 'Refreshed · updated', 'ok', 1800)
 }
 
 /** Ask the AI agent (Settings → Plugins → Git Control) to resolve the current conflicts in a terminal. */
@@ -1754,6 +1908,8 @@ function setTab(id) {
   clearSheets()
   if (id !== 'history') state.history.open = null
   store.set('tab', id)
+  viewRestore = null
+  viewMem.set({ tab: id, scroll: 0, scrollTab: id, open: id === 'history' ? state.history.open : null })
   renderTabs()
   renderView({ force: true })
 }
@@ -1896,6 +2052,20 @@ async function renderView({ force = false } = {}) {
   if (loading) main.prepend(loading)
   if (state.sheets.length) placeSheet(state.sheets[state.sheets.length - 1].el)
   main.scrollTop = keepScroll
+  applyViewRestore()
+}
+/** Once the remembered tab has its content: scroll back and reopen the commit that was open. */
+function applyViewRestore() {
+  const m = viewRestore
+  if (!m) return
+  const main = $('#main')
+  if (state.tab === 'history' && !state.history.commits.length) return // wait for the list
+  viewRestore = null
+  if (m.scroll && (m.scrollTab || m.tab) === state.tab) main.scrollTop = m.scroll
+  if (state.tab === 'history' && m.open && dockMode() && !state.sheets.length) {
+    const c = state.history.commits.find((x) => x.hash === m.open)
+    if (c) openDock(c)
+  }
 }
 
 function emptyRepo() {
@@ -1909,10 +2079,16 @@ function emptyRepo() {
 }
 
 function openSheet(title, body, actions = []) {
+  const under = state.sheets[state.sheets.length - 1]
+  // stacked on another sheet: Back returns to it (Esc too); Close shuts them all
+  const back = under && h('button', { class: 'sheet-back', title: 'Back (Esc)', 'aria-label': 'Back', onClick: closeSheet }, icon('left', 14), h('span', { class: 'sheet-back-t' }, under.dock ? 'Details' : 'Back'))
+  const closeAll = () => {
+    while (state.sheets.length) closeSheet()
+  }
   const el = h(
     'div',
     { class: 'sheet' },
-    h('div', { class: 'sheet-head' }, h('div', { class: 'sheet-title', title }, title), ...actions, h('span', { class: 'sheet-sep' }), iconBtn('x', 'Close (Esc)', closeSheet, { class: 'icon-btn sheet-close' })),
+    h('div', { class: 'sheet-head' }, back, h('div', { class: 'sheet-title', title }, title), ...actions, actions.length > 0 && h('span', { class: 'sheet-sep' }), iconBtn('x', under ? 'Close all' : 'Close (Esc)', under ? closeAll : closeSheet, { class: 'icon-btn sheet-close' })),
     h('div', { class: 'sheet-body' }, body)
   )
   document.querySelectorAll('.sheet').forEach((x) => x.remove())
@@ -1924,6 +2100,7 @@ function closeSheet() {
   gone?.el.remove()
   if (gone?.dock) {
     state.history.open = null
+    viewMem.set({ open: null })
     document.querySelectorAll('#main .commit-row.selected').forEach((r) => r.classList.remove('selected'))
   }
   const prev = state.sheets[state.sheets.length - 1]
@@ -1951,6 +2128,7 @@ function syncDock() {
 async function openDock(c) {
   const H = state.history
   H.open = c.hash
+  viewMem.set({ open: c.hash })
   document.querySelectorAll('#main .commit-row.selected').forEach((r) => r.classList.remove('selected'))
   document.querySelector(`#main .commit-row[data-hash="${c.hash}"]`)?.classList.add('selected')
   document.querySelector('#main .commit-inline')?.remove()
@@ -3053,9 +3231,11 @@ function toggleInline(c, row) {
   list.querySelector('.commit-row.selected')?.classList.remove('selected')
   if (H.open === c.hash) {
     H.open = null
+    viewMem.set({ open: null })
     return
   }
   H.open = c.hash
+  viewMem.set({ open: c.hash })
   row.classList.add('selected')
   const el = inlineDetail(c)
   row.after(el)
@@ -5764,7 +5944,8 @@ async function openPipelines({ branch, sha, openId } = {}) {
       h(
         'div',
         { class: 'history-bar' },
-        h('button', { class: 'btn sm', onClick: showList }, icon('left', 12), 'All pipelines'),
+        h('button', { class: 'crumb', onClick: showList }, 'Pipelines'),
+        icon('right', 12),
         pipeBadge(p.state),
         h('b', null, p.name),
         h('span', { class: 'dim' }, [p.sha?.slice(0, 7), dur(p.duration)].filter(Boolean).join(' · ')),
@@ -5774,6 +5955,14 @@ async function openPipelines({ branch, sha, openId } = {}) {
         running && h('button', { class: 'btn sm danger', onClick: async (e) => (await confirmBox(`Cancel pipeline ${p.name}?`, 'Running jobs are stopped.', 'Cancel pipeline', true)) && act('cancel', 'Pipeline canceled', {}, e.currentTarget) }, icon('x', 12), 'Cancel'),
         h('button', { class: 'btn sm', onClick: () => openLink(p.url) }, icon('open', 12), 'Open')
       ),
+      failed.length > 0 &&
+        h(
+          'div',
+          { class: 'pipe-failed' },
+          icon('alert', 15),
+          h('div', { class: 'grow' }, h('b', null, `${plural(failed.length, 'job')} failed`), h('div', { class: 'dim' }, failed.map((j) => j.name).join(', '))),
+          h('button', { class: 'btn sm primary', onClick: () => showLog(p, failed[0], data) }, 'Show the error')
+        ),
       h(
         'div',
         { class: 'pipe-stages' },
@@ -5823,23 +6012,101 @@ async function openPipelines({ branch, sha, openId } = {}) {
     })
     pre.append(frag)
     const errors = lines.filter((l) => BAD.test(l)).length
+    // step through the error lines (n / total), or show only them; find any text; wrap long lines
+    const bads = () => [...pre.querySelectorAll('.pl.bad:not(.hide)')]
+    let at = -1
+    const counter = h('span', { class: 'dim mono pl-counter' }, errors ? `${errors}` : '')
+    const goErr = (d) => {
+      const list = bads()
+      if (!list.length) return
+      at = (at + d + list.length) % list.length
+      pre.querySelector('.pl.cur')?.classList.remove('cur')
+      list[at].classList.add('cur')
+      list[at].scrollIntoView({ block: 'center' })
+      counter.textContent = `${at + 1} / ${list.length}`
+    }
+    const onlyErr = h('input', { type: 'checkbox' })
+    onlyErr.addEventListener('change', () => {
+      pre.classList.toggle('only-bad', onlyErr.checked)
+      store.set('pipeOnlyErrors', onlyErr.checked)
+    })
+    const wrap = h('input', { type: 'checkbox', checked: store.get('pipeWrap', true) })
+    pre.classList.toggle('wrap', wrap.checked)
+    wrap.addEventListener('change', () => (pre.classList.toggle('wrap', wrap.checked), store.set('pipeWrap', wrap.checked)))
+    let findT = null
+    const find = h('input', { type: 'text', class: 'pl-find', placeholder: 'Find in log…', spellcheck: 'false' })
+    const found = h('span', { class: 'dim mono' })
+    find.addEventListener('input', () => {
+      clearTimeout(findT)
+      findT = setTimeout(() => {
+        const q = find.value.trim().toLowerCase()
+        let n = 0
+        let first = null
+        for (const row of pre.children) {
+          const hit = q && row.lastChild.textContent.toLowerCase().includes(q)
+          row.classList.toggle('hit', !!hit)
+          if (hit && !n++) first = row
+        }
+        found.textContent = q ? (n ? plural(n, 'line') : 'no match') : ''
+        first?.scrollIntoView({ block: 'center' })
+      }, 200)
+    })
+    find.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return
+      const hits = [...pre.querySelectorAll('.pl.hit')]
+      if (!hits.length) return
+      const cur = hits.findIndex((x) => x.classList.contains('cur'))
+      pre.querySelector('.pl.cur')?.classList.remove('cur')
+      const next = hits[(cur + (e.shiftKey ? -1 : 1) + hits.length) % hits.length]
+      next.classList.add('cur')
+      next.scrollIntoView({ block: 'center' })
+    })
+    const live = j.state === 'running' || j.state === 'pending'
     append(clear(body), [
       h(
         'div',
-        { class: 'history-bar' },
-        h('button', { class: 'btn sm', onClick: () => showPipeline(p, data) }, icon('left', 12), p.name),
+        { class: 'history-bar pipe-crumbs' },
+        h('button', { class: 'crumb', onClick: showList }, 'Pipelines'),
+        icon('right', 12),
+        h('button', { class: 'crumb', onClick: () => showPipeline(p, data) }, p.name),
+        icon('right', 12),
         pipeBadge(j.state),
         h('b', null, j.name),
+        live && h('span', { class: 'pl-live' }, h('i'), 'live'),
         h('span', { class: 'grow' }),
-        errors > 0 && h('button', { class: 'btn sm', title: 'Jump to the first error line', onClick: () => pre.querySelector('.pl.bad')?.scrollIntoView({ block: 'center' }) }, icon('alert', 12), `${errors} error line${errors > 1 ? 's' : ''}`),
+        j.state === 'failed' && h('button', { class: 'btn sm', onClick: async (e) => { const b = e.currentTarget; b.disabled = true; append(clear(b), [h('span', { class: 'spinner' }), 'Sending…']); try { await call('pipelineAct', { id: p.id, action: 'retryJob', job: j.id }); toast(`Retrying ${j.name}`); later(() => showPipeline({ ...p, state: 'pending' }, data), 1200) } catch (err) { toast(err.message, 'error'); b.disabled = false; append(clear(b), [icon('refresh', 12), 'Retry job']) } } }, icon('refresh', 12), 'Retry job'),
+        false && h('button', { class: 'btn sm', title: 'Jump to the first error line', onClick: () => pre.querySelector('.pl.bad')?.scrollIntoView({ block: 'center' }) }, icon('alert', 12), `${errors} error line${errors > 1 ? 's' : ''}`),
         h('button', { class: 'btn sm', onClick: () => copy(r.log).then(() => toast('Log copied')) }, icon('copy', 12), 'Copy log'),
         h('button', { class: 'btn sm', onClick: () => openLink(j.url) }, icon('open', 12), 'Open')
+      ),
+      h(
+        'div',
+        { class: 'pipe-logbar' },
+        errors > 0
+          ? h('div', { class: 'pl-errnav' }, icon('alert', 13), h('b', null, plural(errors, 'error line')), h('button', { class: 'icon-btn', title: 'Previous error', onClick: () => goErr(-1) }, icon('left', 13)), counter, h('button', { class: 'icon-btn', title: 'Next error', onClick: () => goErr(1) }, icon('right', 13)), h('label', { class: 'check' }, onlyErr, 'Errors only'))
+          : h('div', { class: 'pl-errnav ok' }, icon('check', 13), live ? 'No errors so far' : 'No error lines found'),
+        h('span', { class: 'grow' }),
+        find,
+        found,
+        h('label', { class: 'check' }, wrap, 'Wrap')
       ),
       r.truncated && h('div', { class: 'dim pipe-note' }, 'Showing the last part of a long log.'),
       pre
     ])
+    if (store.get('pipeOnlyErrors', false) && errors) (onlyErr.checked = true), pre.classList.add('only-bad')
+    // a running job: follow its log (stays at the bottom unless scrolled up)
+    if (live) {
+      const stick = () => pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 40
+      later(async () => {
+        const wasBottom = stick()
+        const keep = pre.scrollTop
+        await showLog(p, { ...j }, data)
+        const np = body.querySelector('.pipe-log')
+        if (np && !wasBottom) np.scrollTop = keep
+      }, 5000)
+    }
     // show where it went wrong: the first error line, else the end
-    requestAnimationFrame(() => (firstBad >= 0 ? pre.children[firstBad]?.scrollIntoView({ block: 'center' }) : (pre.scrollTop = pre.scrollHeight)))
+    requestAnimationFrame(() => (firstBad >= 0 && !live ? goErr(1) : (pre.scrollTop = pre.scrollHeight)))
   }
 
   showList()
@@ -6315,7 +6582,7 @@ function commandPalette() {
     ['Go to the checked-out commit', 'current', () => goToHead()],
     ['Search commits', 'search', () => (setTab('history'), setTimeout(() => searchBox?.focus(), 50))],
     ['Undo the last action', 'undo', () => undoLast()],
-    ['Refresh', 'refresh', () => refreshAll(true)],
+    ['Refresh', 'refresh', () => manualRefresh()],
     [ROW_H > 28 ? 'Compact rows' : 'Comfortable rows', 'rows', () => setDensity(ROW_H > 28 ? 'compact' : 'comfortable')],
     ['Keyboard shortcuts', 'keyboard', () => shortcutsHelp()],
     ...TABS.map(([id, label, ic]) => [`Go to ${label}`, ic, () => setTab(id)])
@@ -6390,7 +6657,7 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && state.sheets.length && !document.querySelector('.overlay, .menu')) closeSheet()
   if (e.key === 'F5' || ((e.ctrlKey || e.metaKey) && e.key === 'r')) {
     e.preventDefault()
-    refreshAll(true)
+    manualRefresh()
   }
 })
 

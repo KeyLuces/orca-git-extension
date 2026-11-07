@@ -213,8 +213,8 @@ await step('split view: a commit opens docked beside the graph; arrows follow; E
   await page.$$eval('.sheet.dock .item', (r) => r.find((x) => x.textContent.includes('b.txt')).click())
   await until(() => page.$('.sheet .dv .l').then(Boolean), 'file diff sheet')
   await shot('02b-file-diff')
-  await clickSel('.sheet .sheet-close')
-  await until(() => page.$('.sheet.dock').then(Boolean), 'back to the docked details')
+  await clickSel('.sheet .sheet-back')
+  await until(() => page.$('.sheet.dock').then(Boolean), 'Back returns to the docked details')
   // ↓ moves to the next (older) commit and the pane follows
   const before = await page.$eval('.sheet.dock .sheet-title', (e) => e.textContent)
   await page.mouse.move(5, 5)
@@ -238,6 +238,18 @@ await step('Ctrl+K runs a command; toolbar sits on the right', async () => {
   await until(() => page.$eval('.tab.active', (t) => t.textContent.includes('Reflog')), 'went to Reflog')
   await clickText('.tab', 'Graph')
   await until(() => page.$('.commit-row').then(Boolean), 'graph back')
+})
+
+await step('reopening comes back to the same tab; Refresh shows it worked', async () => {
+  await clickText('.tab', 'Stash')
+  await until(() => page.$eval('.tab.active', (t) => t.textContent.includes('Stash')), 'on Stash')
+  await page.reload()
+  await until(() => page.$eval('.tab.active', (t) => t.textContent.includes('Stash')).catch(() => false), 'reopened on Stash')
+  await clickText('.tab', 'Graph')
+  await until(() => page.$('.commit-row').then(Boolean), 'graph back')
+  await clickSel('[title="Refresh"]')
+  await until(() => page.$('#toolbar [data-op="refresh"].done').then(Boolean), 'refresh button ticks when done')
+  await until(() => page.$$eval('.toast', (t) => t.some((x) => /Refreshed/.test(x.textContent))), 'refresh says what changed')
 })
 
 await step('search finds everything as you type (message, file, author, hash) and highlights it', async () => {

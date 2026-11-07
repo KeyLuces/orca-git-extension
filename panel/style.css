@@ -938,3 +938,66 @@ mark.hit { background: color-mix(in srgb, var(--mod) 38%, transparent); color: v
 /* docked: the message gets the room; the date moves into the row's tooltip and the pane */
 .sheet-host.docked .col-date { display: none; }
 .sheet-host.docked .col-author { width: 110px; }
+
+/* ---------- labels never run under the message or the next column ---------- */
+.commit-text { overflow: hidden; }
+.commit-subject { overflow: hidden; }
+.commit-subject > .ref { flex: 0 1 auto; min-width: 34px; }
+.commit-subject > .ref:first-child { flex-shrink: 0.4; }
+.commit-subject .s { flex: 1 1 60px; min-width: 40px; }
+
+/* ---------- sheet head: Back (when stacked) and Close ---------- */
+.sheet-head { gap: 8px; padding: 8px 8px 8px 10px; min-height: 44px; }
+.sheet-back { display: inline-flex; align-items: center; gap: 4px; flex: none; height: 28px; padding: 0 10px 0 6px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--t1); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
+.sheet-back:hover { background: var(--card-hi); border-color: var(--line-hi); }
+.sheet-back svg { color: var(--t2); }
+.sheet-close { width: 30px; height: 30px; flex: none; justify-content: center; border-radius: 8px; color: var(--t2); }
+.sheet-close:hover { background: color-mix(in srgb, var(--del) 16%, var(--card)); color: var(--t1); }
+.sheet-close svg { width: 16px; height: 16px; }
+
+/* ---------- toolbar buttons show the work: spinning or moving while it runs, a tick when done ---------- */
+.toolbar .icon-btn.working { border-color: color-mix(in srgb, var(--ren) 60%, var(--line)); color: var(--t1); }
+.toolbar .icon-btn.working svg { animation: tbSpin .8s linear infinite; }
+.toolbar .icon-btn.working[data-op="pull"] svg, .toolbar .icon-btn.working[data-op="fetch"] svg { animation: tbDown .7s ease-in-out infinite; }
+.toolbar .icon-btn.working[data-op="push"] svg { animation: tbUp .7s ease-in-out infinite; }
+.toolbar .icon-btn.working[data-op="stash"] svg, .toolbar .icon-btn.working[data-op="undo"] svg { animation: tbPulse .8s ease-in-out infinite; }
+.toolbar .icon-btn.working::after { content: ''; position: absolute; left: 8px; right: 8px; bottom: 2px; height: 2px; border-radius: 2px; background: linear-gradient(90deg, transparent, var(--ren), transparent); background-size: 200% 100%; animation: tbBar 1s linear infinite; }
+.toolbar .icon-btn { position: relative; }
+.toolbar .icon-btn.done { border-color: color-mix(in srgb, var(--add) 65%, var(--line)); background: color-mix(in srgb, var(--add) 14%, var(--card)); transition: background-color .4s, border-color .4s; }
+.toolbar .icon-btn.done svg { color: var(--add); animation: tbPop .35s var(--ease); }
+@keyframes tbSpin { to { transform: rotate(360deg); } }
+@keyframes tbDown { 0%, 100% { transform: translateY(-2px); } 50% { transform: translateY(2px); } }
+@keyframes tbUp { 0%, 100% { transform: translateY(2px); } 50% { transform: translateY(-2px); } }
+@keyframes tbPulse { 50% { transform: scale(.82); opacity: .6; } }
+@keyframes tbBar { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+@keyframes tbPop { 0% { transform: scale(.6); } 70% { transform: scale(1.18); } }
+@media (prefers-reduced-motion: reduce) { .toolbar .icon-btn.working svg, .toolbar .icon-btn.done svg, .toolbar .icon-btn.working::after { animation: none; } }
+
+/* ---------- pipelines: breadcrumbs, what failed, error stepping, find, wrap ---------- */
+.pipe-crumbs { gap: 6px; }
+.pipe-crumbs > svg, .pipe-crumbs > span > svg { color: var(--t3); }
+.crumb { border: 0; background: none; padding: 3px 6px; border-radius: 6px; color: var(--ren); font: inherit; font-weight: 600; cursor: pointer; }
+.crumb:hover { background: var(--hover); text-decoration: underline; }
+.pipe-failed { display: flex; align-items: center; gap: 12px; margin: 12px 16px 4px; padding: 10px 12px; border-radius: 10px; border: 1px solid color-mix(in srgb, var(--del) 45%, var(--line)); background: color-mix(in srgb, var(--del) 10%, var(--card)); }
+.pipe-failed > span:first-child { color: var(--del); }
+.pipe-logbar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 8px 16px; border-bottom: 1px solid var(--line); background: var(--raised); position: sticky; top: 0; z-index: 2; }
+.pl-errnav { display: flex; align-items: center; gap: 6px; color: var(--del); }
+.pl-errnav.ok { color: var(--add); }
+.pl-errnav b { color: var(--t1); margin-right: 2px; }
+.pl-errnav .icon-btn { width: 26px; height: 24px; justify-content: center; border: 1px solid var(--line); border-radius: 6px; background: var(--card); }
+.pl-errnav .check { margin-left: 8px; color: var(--t2); }
+.pl-counter { min-width: 44px; text-align: center; }
+.pl-find { width: 200px; height: 28px; }
+.pl-live { display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px; border-radius: 999px; background: color-mix(in srgb, var(--ren) 16%, transparent); color: var(--ren); font-size: 11px; font-weight: 700; text-transform: uppercase; }
+.pl-live i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; animation: tbPulse 1.2s ease-in-out infinite; }
+.pipe-log.wrap .pl { min-width: 0; }
+.pipe-log.wrap .pl-t { white-space: pre-wrap; word-break: break-word; }
+.pipe-log.only-bad .pl:not(.bad) { display: none; }
+.pl.hit { background: color-mix(in srgb, var(--mod) 18%, transparent); }
+.pl.cur { box-shadow: inset 3px 0 0 var(--del); background: color-mix(in srgb, var(--del) 22%, transparent); }
+.pl.hit.cur { box-shadow: inset 3px 0 0 var(--mod); }
+@media (max-width: 820px) { .pl-find { width: 100%; order: 5; } .pipe-failed { margin: 10px; } }
+.pipe-logbar .pl-find { width: 220px !important; flex: none; }
+.history-bar .graph-search { min-width: 0; flex: 1 1 140px; }
+.sheet-host.docked .history-bar { flex-wrap: wrap; }
+@media (max-width: 820px) { .pipe-logbar .pl-find { width: 100% !important; } }
