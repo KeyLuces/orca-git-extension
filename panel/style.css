@@ -884,3 +884,57 @@ mark.hit { background: color-mix(in srgb, var(--mod) 38%, transparent); color: v
 .sheet-grip { position: absolute; left: -3px; top: 0; bottom: 0; width: 7px; cursor: col-resize; z-index: 3; }
 .sheet-grip:hover, .sheet-grip:active { background: color-mix(in srgb, var(--ren) 45%, transparent); }
 @media (max-width: 820px) { .sheet-grip { display: none; } .sheet-host > .sheet { width: 100% !important; } }
+
+/* ---------- toolbar on the right: where you are on the left, what you can do on the right ---------- */
+@media (min-width: 821px) {
+  .repo-line { display: contents; }
+  header > .toolbar, .toolbar { order: 3; margin-left: auto; }
+  #branchLine { order: 2; }
+}
+.tb-sep { flex: none; width: 1px; height: 18px; margin: 0 4px; background: var(--line); }
+.tb-count { display: inline-flex; align-items: center; justify-content: center; min-width: 17px; height: 17px; padding: 0 5px; border-radius: 999px; background: var(--ren); color: var(--ref-head-ink, #10131a); font-size: 10.5px; font-weight: 700; line-height: 1; }
+.toolbar .icon-btn.tb-hot { border-color: color-mix(in srgb, var(--ren) 55%, var(--line)); background: color-mix(in srgb, var(--ren) 14%, var(--card)); color: var(--t1); }
+.icon-btn.tb-hot:not(.toolbar *) { color: var(--ren); }
+
+/* ---------- graph rows: density, keyboard selection, quick actions ---------- */
+.commit-row { height: var(--row-h, 28px); contain-intrinsic-size: auto var(--row-h, 28px); position: relative; }
+.commit-row.kbd { box-shadow: inset 2px 0 0 var(--ren); background: var(--hover); }
+.row-actions { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); display: none; gap: 2px; padding: 0 4px 0 18px; background: linear-gradient(90deg, transparent, var(--row-bg, var(--bg)) 16px); }
+.commit-row:hover .row-actions, .commit-row.kbd .row-actions { display: flex; }
+.commit-row:hover, .commit-row.kbd { --row-bg: color-mix(in srgb, var(--fg) 5%, var(--bg)); }
+.commit-row.selected { --row-bg: color-mix(in srgb, var(--ren) 14%, var(--bg)); }
+.ra-btn { width: 24px; height: 22px; padding: 0; border-radius: 6px; background: var(--card); border: 1px solid var(--line); color: var(--t2); }
+.ra-btn:hover { color: var(--t1); border-color: var(--line-hi); background: var(--card-hi); }
+@media (hover: none) { .row-actions { display: none !important; } }
+.density-btn.on { color: var(--ren); border-color: color-mix(in srgb, var(--ren) 45%, var(--line)); }
+.history-bar .density-btn { height: 28px; width: 30px; border: 1px solid var(--line); background: var(--card); border-radius: 8px; }
+
+/* the day of the rows at the top, pinned while the list scrolls */
+.date-float-wrap { position: sticky; top: 4px; height: 0; z-index: 4; display: flex; justify-content: center; pointer-events: none; }
+.date-float { margin-top: 2px; padding: 3px 10px; border-radius: 999px; background: var(--raised); border: 1px solid var(--line); box-shadow: var(--shadow); color: var(--t1); font-size: 11.5px; font-weight: 600; opacity: 0; transform: translateY(-4px); transition: opacity .15s, transform .15s; }
+.date-float.on { opacity: 1; transform: none; }
+
+/* ---------- split view: docked details beside the graph ---------- */
+.sheet-host.docked > #main { margin-right: var(--dock-w, 0px); }
+.sheet.dock { box-shadow: none; animation: none; }
+.sheet.dock .sheet-body > div:not(.inline-skeleton) { padding-bottom: 12px; }
+
+/* ---------- empty states say what to do next ---------- */
+.empty-actions { display: flex; justify-content: center; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+
+/* ---------- command palette ---------- */
+.pal-overlay { align-items: flex-start; padding-top: 12vh; }
+.palette { width: min(560px, calc(100vw - 32px)); display: flex; flex-direction: column; background: var(--raised); border: 1px solid var(--line-hi); border-radius: 12px; box-shadow: var(--shadow); overflow: hidden; }
+.pal-input { border: 0 !important; border-bottom: 1px solid var(--line) !important; border-radius: 0 !important; padding: 14px 16px !important; font-size: 14px; background: transparent !important; box-shadow: none !important; }
+.pal-list { max-height: min(50vh, 380px); overflow: auto; padding: 6px; }
+.pal-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px; border: 0; border-radius: 8px; background: transparent; color: var(--t1); text-align: left; font: inherit; cursor: pointer; }
+.pal-item svg { color: var(--t2); }
+.pal-item.on { background: var(--sel); }
+.pal-item.on svg { color: var(--ren); }
+.pal-none { padding: 14px; color: var(--t2); text-align: center; }
+.pal-foot { padding: 7px 12px; border-top: 1px solid var(--line); color: var(--t3); font-size: 11px; }
+.kbd-help { display: grid; grid-template-columns: auto 1fr; gap: 8px 14px; align-items: center; margin: 10px 0 4px; }
+.kbd-help kbd { justify-self: start; padding: 2px 7px; border-radius: 6px; border: 1px solid var(--line-hi); border-bottom-width: 2px; background: var(--card); font: 11.5px var(--mono, ui-monospace, monospace); color: var(--t1); }
+/* docked: the message gets the room; the date moves into the row's tooltip and the pane */
+.sheet-host.docked .col-date { display: none; }
+.sheet-host.docked .col-author { width: 110px; }

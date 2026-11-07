@@ -34,6 +34,10 @@ const clear = (el) => {
 }
 
 const ICONS = {
+  menu: '<path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h16"/>',
+  swap: '<path d="m16 3 4 4-4 4"/><path d="M20 7H4"/><path d="m8 21-4-4 4-4"/><path d="M4 17h16"/>',
+  rows: '<rect width="18" height="7" x="3" y="3" rx="1"/><rect width="18" height="7" x="3" y="14" rx="1"/>',
+  keyboard: '<rect width="20" height="16" x="2" y="4" rx="2"/><path d="M6 8h.01"/><path d="M10 8h.01"/><path d="M14 8h.01"/><path d="M18 8h.01"/><path d="M7 16h10"/>',
   branch: '<line x1="6" x2="6" y1="3" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>',
   refresh: '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>',
   pull: '<path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>',
@@ -481,8 +485,7 @@ function setRepo(p) {
   state.refs = null
   resetHistory()
   state.history.open = null
-  state.sheets = []
-  document.querySelectorAll(".sheet-host > .sheet").forEach((x) => x.remove())
+  clearSheets()
   if (p) store.set('lastRepo', p)
   const s = p && snap.load(p)
   if (s) {
@@ -596,19 +599,33 @@ function renderHeader() {
   $('#repoName').textContent = state.repo ? basename(st?.toplevel || state.repo) : 'No repository'
   $('#repoBtn').title = state.repo || 'Choose a repository'
   clear($('#repoCaret')).append(icon('down', 12))
+  const side = $('#sideToggle')
+  if (side && !side.querySelector('svg')) clear(side).append(icon('menu', 16))
 
   const tb = clear($('#toolbar'))
   const dis = !state.repo || !st
   // In the full tab the main actions carry a label, like a toolbar; in the narrow panel icons only.
   const lbl = (b, text) => (IN_TAB && b.append(h('span', { class: 'tb-label' }, text)), b)
+  // Pull/Push carry how many commits wait (↓ to pull, ↑ to push) and stand out while any do.
+  const counted = (b, n, title) => {
+    if (n > 0) {
+      b.append(h('span', { class: 'tb-count', title }, String(n)))
+      b.classList.add('tb-hot')
+    }
+    return b
+  }
   const st0 = st || {}
+  const sep = () => IN_TAB && h('span', { class: 'tb-sep' })
   append(tb, [
     lbl(iconBtn('fetch', 'Fetch all (prune)', () => run('fetch', {}, { success: 'Fetched' }), { disabled: dis }), 'Fetch'),
-    lbl(iconBtn('pull', 'Pull', (e) => pullMenu(e.currentTarget), { disabled: dis }), st0.behind ? `Pull ${st0.behind}` : 'Pull'),
-    lbl(iconBtn('push', 'Push', (e) => pushMenu(e.currentTarget), { disabled: dis }), st0.ahead ? `Push ${st0.ahead}` : 'Push'),
+    counted(lbl(iconBtn('pull', 'Pull', (e) => pullMenu(e.currentTarget), { disabled: dis }), 'Pull'), st0.behind, `Pull: ${st0.behind} commit${st0.behind > 1 ? 's' : ''} on ${st0.upstream || 'the remote'}`),
+    counted(lbl(iconBtn('push', 'Push', (e) => pushMenu(e.currentTarget), { disabled: dis }), 'Push'), st0.ahead, `Push: ${st0.ahead} commit${st0.ahead > 1 ? 's' : ''} not on ${st0.upstream || 'the remote'} yet`),
+    sep(),
     IN_TAB && lbl(iconBtn('stash', 'Stash changes', () => run('stashSave', { untracked: true }, { success: 'Stashed' }), { disabled: dis || !st0.files?.length }), 'Stash'),
+    sep(),
     iconBtn('refresh', 'Refresh', () => refreshAll(true), { disabled: !state.repo }),
     iconBtn('undo', 'Undo the last action (commit, reset, merge, rebase…)', undoLast, { disabled: dis }),
+    IN_TAB && iconBtn('search', 'Commands (Ctrl+K)', () => commandPalette(), { disabled: dis }),
     iconBtn('settings', 'Git settings (identity, HTTPS, remotes)', () => setTab('settings'), { disabled: !state.repo }),
     !IN_TAB && iconBtn('expand', 'Open Git Control in a full tab', openTab, { disabled: dis })
   ])
@@ -623,14 +640,8 @@ function renderHeader() {
       h('span', { class: 'ellipsis' }, st.branch || `detached @ ${(st.oid || '').slice(0, 7)}`),
       icon('down', 11)
     ),
-    st.upstream
-      ? h(
-          'span',
-          { class: 'sync', title: `Tracking ${st.upstream}` },
-          h('span', { class: 'row', style: { gap: '2px' } }, icon('push', 11), st.ahead),
-          h('span', { class: 'row', style: { gap: '2px' } }, icon('pull', 11), st.behind)
-        )
-      : st.branch && h('span', { class: 'sync' }, 'not published'),
+    // ahead/behind live on the Pull and Push buttons; here only what they cannot say
+    !st.upstream && st.branch && h('span', { class: 'sync', title: 'This branch has no remote branch yet: Push publishes it' }, 'not published'),
     ciBadge()
   ])
 }
@@ -766,8 +777,8 @@ function renderTabs() {
 }
 function setTab(id) {
   state.tab = id
-  state.sheets = []
-  document.querySelectorAll(".sheet-host > .sheet").forEach((x) => x.remove())
+  clearSheets()
+  if (id !== 'history') state.history.open = null
   store.set('tab', id)
   renderTabs()
   renderView({ force: true })
@@ -935,9 +946,61 @@ function openSheet(title, body, actions = []) {
   placeSheet(el)
 }
 function closeSheet() {
-  state.sheets.pop()?.el.remove()
+  const gone = state.sheets.pop()
+  gone?.el.remove()
+  if (gone?.dock) {
+    state.history.open = null
+    document.querySelectorAll('#main .commit-row.selected').forEach((r) => r.classList.remove('selected'))
+  }
   const prev = state.sheets[state.sheets.length - 1]
   if (prev) placeSheet(prev.el)
+  syncDock()
+}
+/** Drop every sheet (tab or repository switch). */
+function clearSheets() {
+  state.sheets = []
+  document.querySelectorAll('.sheet-host > .sheet').forEach((x) => x.remove())
+  syncDock()
+}
+
+/* ---------- split view: on a wide graph the commit details dock to the right ---------- */
+const dockMode = () => IN_TAB && state.tab === 'history' && window.innerWidth >= 1000
+/** While the details are docked the graph makes room for them instead of sliding under. */
+function syncDock() {
+  const host = $('#main')?.parentElement
+  if (!host) return
+  const d = state.sheets.find((s) => s.dock)
+  host.classList.toggle('docked', !!d)
+  if (d) host.style.setProperty('--dock-w', `${(d.el.isConnected ? d.el.getBoundingClientRect().width : 0) || store.get('sheetWidth', 0) || Math.min(560, host.clientWidth * 0.45)}px`)
+}
+/** Show a commit in the docked pane (opening it if needed); the list keeps its place. */
+async function openDock(c) {
+  const H = state.history
+  H.open = c.hash
+  document.querySelectorAll('#main .commit-row.selected').forEach((r) => r.classList.remove('selected'))
+  document.querySelector(`#main .commit-row[data-hash="${c.hash}"]`)?.classList.add('selected')
+  document.querySelector('#main .commit-inline')?.remove()
+  let top = state.sheets[state.sheets.length - 1]
+  if (!top?.dock) {
+    clearSheets()
+    openSheet('', null)
+    top = state.sheets[state.sheets.length - 1]
+    top.dock = true
+    top.el.classList.add('dock')
+  }
+  const title = top.el.querySelector('.sheet-title')
+  title.textContent = `${c.hash.slice(0, 7)} · ${c.subject || ''}`
+  title.title = c.subject || ''
+  const body = clear(top.el.querySelector('.sheet-body'))
+  body.append(h('div', { class: 'inline-skeleton', style: { margin: '12px' } }, h('span'), h('span'), h('span')))
+  syncDock()
+  try {
+    const full = await commitDetails(c.hash)
+    if (H.open !== c.hash || !top.el.isConnected) return
+    clear(body).append(commitBody(full))
+  } catch (e) {
+    if (H.open === c.hash && top.el.isConnected) clear(body).append(h('div', { class: 'dim', style: { padding: '12px' } }, e.message))
+  }
 }
 /**
  * A sheet sits beside the scrolling area, not inside it, so it stays whole while the graph scrolls
@@ -956,7 +1019,7 @@ function placeSheet(el) {
       e.preventDefault()
       grip.setPointerCapture(e.pointerId)
       const right = host.getBoundingClientRect().right
-      const move = (ev) => (el.style.width = `${Math.max(320, Math.min(right - ev.clientX, host.clientWidth - 120))}px`)
+      const move = (ev) => ((el.style.width = `${Math.max(320, Math.min(right - ev.clientX, host.clientWidth - 120))}px`), syncDock())
       const up = () => {
         grip.removeEventListener('pointermove', move)
         store.set('sheetWidth', el.getBoundingClientRect().width)
@@ -967,6 +1030,7 @@ function placeSheet(el) {
     el.prepend(grip)
   }
   if (el.parentElement !== host) host.append(el)
+  syncDock()
 }
 
 /* =========================================================================
@@ -1600,7 +1664,16 @@ function layoutGraph(commits) {
   return rows
 }
 
-const ROW_H = IN_TAB ? 28 : 40
+// Row height: compact (28) or comfortable (34) in the tab, chosen from the graph bar.
+let ROW_H = IN_TAB ? (store.get('density', 'compact') === 'comfortable' ? 34 : 28) : 40
+document.documentElement.style.setProperty('--row-h', `${ROW_H}px`)
+function setDensity(v) {
+  store.set('density', v)
+  ROW_H = v === 'comfortable' ? 34 : 28
+  document.documentElement.style.setProperty('--row-h', `${ROW_H}px`)
+  rowCache.clear()
+  renderView({ force: true })
+}
 const LANE_W = IN_TAB ? 14 : 11
 const MAX_LANES = 40 // drawing width cap; lanes past it are clipped, never squashed together
 const laneColor = (i) => LANE_COLORS[i % LANE_COLORS.length]
@@ -1888,10 +1961,28 @@ async function viewHistory() {
     renderView()
   }
   const headBtn = h('button', { class: 'btn sm', title: 'Scroll to the checked-out commit', onClick: () => goToHead() }, icon('current', 12), 'HEAD')
-  root.append(h('div', { class: 'history-bar' }, search, seg, headBtn))
+  const dense = IN_TAB && iconBtn('rows', ROW_H > 28 ? 'Compact rows' : 'Comfortable rows', () => setDensity(ROW_H > 28 ? 'compact' : 'comfortable'), { class: `icon-btn density-btn ${ROW_H > 28 ? 'on' : ''}` })
+  root.append(h('div', { class: 'history-bar' }, search, seg, headBtn, dense))
+  if (IN_TAB) root.append(h('div', { class: 'date-float-wrap' }, h('div', { class: 'date-float', id: 'dateFloat' })))
 
   if (!H.commits.length) {
-    root.append(h('div', { class: 'empty' }, icon('history', 28), h('div', null, H.search ? `Nothing matches “${H.search}”` : 'No commits yet'), H.search && h('div', { class: 'dim' }, 'Searched messages, authors, changed files, hashes, branches and tags' + (H.all ? '.' : ' on this branch. Try All for every branch.'))))
+    root.append(
+      h(
+        'div',
+        { class: 'empty' },
+        icon('history', 28),
+        h('div', null, H.search ? `Nothing matches “${H.search}”` : 'No commits yet'),
+        H.search && h('div', { class: 'dim' }, 'Searched messages, authors, changed files, hashes, branches and tags' + (H.all ? '.' : ' on this branch.')),
+        H.search &&
+          h(
+            'div',
+            { class: 'empty-actions' },
+            !H.all && h('button', { class: 'btn sm primary', onClick: () => setAll(true) }, 'Search all branches'),
+            h('button', { class: 'btn sm', onClick: () => ((search.value = ''), runSearch('')) }, 'Clear search')
+          ),
+        !H.search && h('div', { class: 'empty-actions' }, h('button', { class: 'btn sm primary', onClick: () => setTab('changes') }, icon('commit', 12), 'Make the first commit'))
+      )
+    )
     return root
   }
   // The graph is only meaningful for an unfiltered log.
@@ -1913,7 +2004,7 @@ async function viewHistory() {
     }
     row.classList.toggle('selected', H.open === c.hash) // toggleInline changes it in place
     frag.append(row)
-    if (H.open === c.hash) frag.append(inlineDetail(c))
+    if (H.open === c.hash && !dockMode()) frag.append(inlineDetail(c))
   })
   if (rowCache.size > 4000) rowCache.clear()
   list.append(frag)
@@ -1937,14 +2028,15 @@ async function viewHistory() {
   function buildRow(c, i) {
     const row = h(
         'div',
-        { class: `commit-row ${H.open === c.hash ? 'selected' : ''}`, 'data-hash': c.hash, onClick: () => toggleInline(c, row), onContextmenu: (e) => commitContextMenu(e, c) },
+        { class: `commit-row ${H.open === c.hash ? 'selected' : ''}`, 'data-hash': c.hash, 'data-time': c.time, onClick: () => (dockMode() ? openDock(c) : toggleInline(c, row)), onContextmenu: (e) => commitContextMenu(e, c) },
         rows ? graphSvg(rows[i], width, c.parents.length > 1, c.refs.some((r) => r === 'HEAD' || r.startsWith('HEAD -> '))) : h('span', { style: { width: '8px' } }),
         IN_TAB
           ? [
               h('div', { class: 'commit-text' }, h('div', { class: 'commit-subject' }, refPills(c.refs, rows && rows[i] ? rows[i].color : null), h('span', { class: 's', title: c.subject }, marked(c.subject, H.search)), matchNote(c))),
               h('div', { class: 'col-author ellipsis', title: c.email }, marked(c.author, H.search)),
               h('div', { class: 'col-date', title: fullDate(c.time) }, new Date(c.time * 1000).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })),
-              h('div', { class: 'col-hash mono' }, H.search && c.hash.toLowerCase().startsWith(H.search.toLowerCase()) ? marked(c.hash.slice(0, Math.max(7, H.search.length)), H.search) : c.hash.slice(0, 7))
+              h('div', { class: 'col-hash mono' }, H.search && c.hash.toLowerCase().startsWith(H.search.toLowerCase()) ? marked(c.hash.slice(0, Math.max(7, H.search.length)), H.search) : c.hash.slice(0, 7)),
+              rowActions(c)
             ]
           : h(
               'div',
@@ -4215,7 +4307,7 @@ async function mergeRequestDialog(target, source, swapped) {
   const form = h(
     'div',
     { class: 'mr-form' },
-    h('div', { class: 'mr-route' }, h('span', { class: 'ref' }, icon('branch', 10), h('span', { class: 'ref-t' }, info.source)), icon('right', 14), h('span', { class: 'ref' }, icon('branch', 10), h('span', { class: 'ref-t' }, info.target)), h('button', { type: 'button', class: 'icon-btn', disabled: !(info.reverse > 0), title: info.reverse > 0 ? `Swap: ${info.target} → ${info.source} (${info.reverse} commit${info.reverse > 1 ? 's' : ''})` : `Can't swap: ${info.target} has nothing that ${info.source} lacks`, onClick: () => info.reverse > 0 && (close(), mergeRequestDialog(info.source, info.target, true)) }, '⇄')),
+    h('div', { class: 'mr-route' }, h('span', { class: 'ref' }, icon('branch', 10), h('span', { class: 'ref-t' }, info.source)), icon('right', 14), h('span', { class: 'ref' }, icon('branch', 10), h('span', { class: 'ref-t' }, info.target)), h('button', { type: 'button', class: 'icon-btn', disabled: !(info.reverse > 0), title: info.reverse > 0 ? `Swap: ${info.target} → ${info.source} (${info.reverse} commit${info.reverse > 1 ? 's' : ''})` : `Can't swap: ${info.target} has nothing that ${info.source} lacks`, onClick: () => info.reverse > 0 && (close(), mergeRequestDialog(info.source, info.target, true)) }, icon('swap', 14))),
     info.needsPush && h('div', { class: 'dim mr-note' }, icon('push', 12), `${info.source} ${info.upstream ? 'has commits not on' : 'is not on'} ${info.remote} yet; it is pushed first.`),
     h(
       'div',
@@ -5125,6 +5217,200 @@ syncTheme()
 new MutationObserver(syncTheme).observe(document.documentElement, { attributes: true, attributeFilter: ['style', 'data-theme'] })
 new MutationObserver(syncTheme).observe(document.head, { childList: true, subtree: true, characterData: true })
 window.matchMedia?.('(prefers-color-scheme: light)').addEventListener?.('change', syncTheme)
+
+/* =========================================================================
+   graph: row quick actions, date chip, keyboard, command palette
+   ========================================================================= */
+/** Buttons that appear on the hovered (or keyboard-selected) row; the full menu stays on right-click. */
+function rowActions(c) {
+  const act = (name, title, fn) => iconBtn(name, title, (e) => (e.stopPropagation(), fn(e)), { class: 'icon-btn ra-btn' })
+  return h(
+    'div',
+    { class: 'row-actions', onClick: (e) => e.stopPropagation(), onContextmenu: (e) => e.stopPropagation() },
+    act('commit', 'Checkout this commit', () => checkoutCommit(c.hash)),
+    act('branch', 'New branch here', () => newBranch(c.hash)),
+    act('copy', 'Copy hash', () => copy(c.hash)),
+    act('more', 'More…', async (e) => {
+      const anchor = e.currentTarget
+      const full = { ...c, ...(await call('commitShow', { hash: c.hash }).catch(() => ({ message: c.subject || '' }))), refs: c.refs, parents: c.parents }
+      commitMenu(anchor, full)
+    })
+  )
+}
+
+/** The day of the first visible row, pinned over the list while it scrolls ("Today", "Yesterday", "Nov 5"). */
+function dayLabel(t) {
+  const d = new Date(t * 1000)
+  const today = new Date()
+  const days = Math.round((new Date(today.getFullYear(), today.getMonth(), today.getDate()) - new Date(d.getFullYear(), d.getMonth(), d.getDate())) / 86400000)
+  if (days === 0) return 'Today'
+  if (days === 1) return 'Yesterday'
+  return d.toLocaleDateString([], { weekday: days < 7 ? 'short' : undefined, month: 'short', day: 'numeric', year: d.getFullYear() === today.getFullYear() ? undefined : 'numeric' })
+}
+let dateTick = 0
+function updateDateFloat() {
+  const chip = document.getElementById('dateFloat')
+  if (!chip || state.tab !== 'history') return
+  const main = $('#main')
+  const bar = main.querySelector('.history-bar')
+  const topY = Math.max(bar ? bar.getBoundingClientRect().bottom : 0, main.getBoundingClientRect().top) + 2
+  let first = null
+  for (const r of main.querySelectorAll('.commit-row[data-time]')) {
+    if (r.getBoundingClientRect().bottom > topY) {
+      first = r
+      break
+    }
+  }
+  const show = first && main.scrollTop > ROW_H * 3
+  chip.classList.toggle('on', !!show)
+  if (show) chip.textContent = dayLabel(+first.dataset.time)
+}
+$('#main')?.addEventListener(
+  'scroll',
+  () => {
+    if (dateTick) return
+    dateTick = requestAnimationFrame(() => ((dateTick = 0), updateDateFloat()))
+  },
+  { passive: true }
+)
+
+/** ↑/↓ (or j/k) move through the graph; Enter opens; / searches; Esc closes. Ctrl+K: commands. */
+document.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'k') {
+    if (!state.repo || document.querySelector('.overlay')) return
+    e.preventDefault()
+    return commandPalette()
+  }
+  if (!IN_TAB || state.tab !== 'history' || e.ctrlKey || e.metaKey || e.altKey) return
+  if (e.target.closest?.('input, textarea, select, [contenteditable], .overlay, .menu') || document.querySelector('.overlay, .menu')) return
+  const H = state.history
+  if (e.key === '/') {
+    e.preventDefault()
+    searchBox?.focus()
+    return searchBox?.select()
+  }
+  const down = e.key === 'ArrowDown' || e.key === 'j'
+  const up = e.key === 'ArrowUp' || e.key === 'k'
+  if (down || up) {
+    const rows = [...document.querySelectorAll('#main .commit-row[data-hash]')]
+    if (!rows.length) return
+    e.preventDefault()
+    let cur = rows.findIndex((r) => r.classList.contains('kbd'))
+    if (cur < 0) cur = rows.findIndex((r) => r.classList.contains('selected'))
+    const next = rows[cur < 0 ? 0 : Math.max(0, Math.min(rows.length - 1, cur + (down ? 1 : -1)))]
+    rows.forEach((r) => r.classList.remove('kbd'))
+    next.classList.add('kbd')
+    next.scrollIntoView({ block: 'nearest' })
+    // docked: the details follow the selection; inline: Enter opens it
+    if (dockMode() && state.sheets.some((s) => s.dock)) {
+      const c = H.commits.find((x) => x.hash === next.dataset.hash)
+      if (c) openDock(c)
+    }
+    return
+  }
+  if (e.key === 'Enter') {
+    const row = document.querySelector('#main .commit-row.kbd') || document.querySelector('#main .commit-row.selected')
+    if (!row) return
+    e.preventDefault()
+    row.click()
+    return
+  }
+  if (e.key === 'Escape' && !state.sheets.length && H.open) {
+    document.querySelector('#main .commit-inline')?.remove()
+    document.querySelector('#main .commit-row.selected')?.classList.remove('selected')
+    H.open = null
+  }
+})
+// the mouse takes over from the keyboard selection
+document.addEventListener('mousemove', () => document.querySelector('#main .commit-row.kbd')?.classList.remove('kbd'), { passive: true })
+
+/** Ctrl+K: type what to do (push, new branch, stash, a tab…) and press Enter. */
+function commandPalette() {
+  closeOverlays()
+  const st = state.status || {}
+  const cmds = [
+    ['Fetch all', 'fetch', () => run('fetch', {}, { success: 'Fetched' })],
+    [st.behind ? `Pull (${st.behind} waiting)` : 'Pull', 'pull', () => run('pull', {}, { success: 'Pulled' })],
+    ['Pull with rebase', 'pull', () => run('pull', { rebase: true }, { success: 'Pulled with rebase' })],
+    [st.ahead ? `Push (${st.ahead} waiting)` : 'Push', 'push', () => run('push', {}, { success: 'Pushed' })],
+    ['Push with tags', 'tag', () => run('push', { tags: true }, { success: 'Pushed' })],
+    ['Stash changes', 'stash', () => run('stashSave', { untracked: true }, { success: 'Stashed' }), !st.files?.length],
+    ['Switch branch…', 'branch', () => quickSwitch($('.branch-chip') || $('#toolbar'))],
+    ['New branch…', 'plus', () => newBranch(st.oid || 'HEAD')],
+    ['Merge request…', 'pr', () => mergeRequestDialog()],
+    ['Go to the checked-out commit', 'current', () => goToHead()],
+    ['Search commits', 'search', () => (setTab('history'), setTimeout(() => searchBox?.focus(), 50))],
+    ['Undo the last action', 'undo', () => undoLast()],
+    ['Refresh', 'refresh', () => refreshAll(true)],
+    [ROW_H > 28 ? 'Compact rows' : 'Comfortable rows', 'rows', () => setDensity(ROW_H > 28 ? 'compact' : 'comfortable')],
+    ['Keyboard shortcuts', 'keyboard', () => shortcutsHelp()],
+    ...TABS.map(([id, label, ic]) => [`Go to ${label}`, ic, () => setTab(id)])
+  ].filter((c) => !c[3])
+  const input = h('input', { type: 'text', class: 'pal-input', placeholder: 'Type a command…', spellcheck: 'false' })
+  const list = h('div', { class: 'pal-list', role: 'listbox' })
+  let sel = 0
+  let shown = cmds
+  const done = () => {
+    overlay.remove()
+    document.removeEventListener('keydown', onKey, true)
+  }
+  const runCmd = (c) => {
+    done()
+    c?.[2]()
+  }
+  const draw = () => {
+    const q = input.value.trim().toLowerCase()
+    shown = q ? cmds.filter((c) => q.split(/\s+/).every((w) => c[0].toLowerCase().includes(w))) : cmds
+    sel = Math.min(sel, Math.max(0, shown.length - 1))
+    clear(list)
+    shown.forEach((c, i) =>
+      list.append(h('button', { type: 'button', class: `pal-item ${i === sel ? 'on' : ''}`, role: 'option', onMousemove: () => sel !== i && ((sel = i), draw()), onClick: () => runCmd(c) }, icon(c[1], 14), h('span', null, c[0])))
+    )
+    if (!shown.length) list.append(h('div', { class: 'pal-none' }, 'No matching command'))
+    list.querySelector('.on')?.scrollIntoView({ block: 'nearest' })
+  }
+  const onKey = (e) => {
+    if (!overlay.isConnected) return
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      e.stopPropagation()
+      done()
+    } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault()
+      sel = (sel + (e.key === 'ArrowDown' ? 1 : -1) + shown.length) % Math.max(1, shown.length)
+      draw()
+    } else if (e.key === 'Enter') {
+      e.preventDefault()
+      runCmd(shown[sel])
+    }
+  }
+  input.addEventListener('input', () => ((sel = 0), draw()))
+  const overlay = h('div', { class: 'overlay pal-overlay', onMousedown: (e) => e.target === overlay && done() }, h('div', { class: 'palette' }, input, list, h('div', { class: 'pal-foot' }, '↑↓ choose · Enter run · Esc close')))
+  mountOverlay(overlay, done)
+  document.addEventListener('keydown', onKey, true)
+  draw()
+  input.focus()
+}
+
+function shortcutsHelp() {
+  const rows = [
+    ['Ctrl+K', 'Commands'],
+    ['/', 'Search commits'],
+    ['↑ ↓ or j k', 'Move through the graph'],
+    ['Enter', 'Open the commit'],
+    ['Esc', 'Close'],
+    ['F5 / Ctrl+R', 'Refresh']
+  ]
+  const box = h('div', { class: 'dialog kbd-dialog' }, h('h3', null, 'Keyboard shortcuts'), h('div', { class: 'kbd-help' }, rows.map(([k, v]) => [h('kbd', null, k), h('span', null, v)])), h('div', { class: 'buttons' }, h('button', { class: 'btn primary', onClick: () => done() }, 'Close')))
+  const done = () => {
+    overlay.remove()
+    document.removeEventListener('keydown', onKey, true)
+  }
+  const onKey = (e) => e.key === 'Escape' && overlay.isConnected && (e.preventDefault(), e.stopPropagation(), done())
+  const overlay = h('div', { class: 'overlay', onMousedown: (e) => e.target === overlay && done() }, box)
+  mountOverlay(overlay, done)
+  document.addEventListener('keydown', onKey, true)
+}
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && state.sheets.length && !document.querySelector('.overlay, .menu')) closeSheet()

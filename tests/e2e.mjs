@@ -203,16 +203,41 @@ await step('opens the graph with every branch and marks the checked-out one', as
   await shot('01-graph')
 })
 
-await step('opens commit details inline and closes them', async () => {
+await step('split view: a commit opens docked beside the graph; arrows follow; Esc closes', async () => {
   await clickText('.commit-row', 'Add b')
-  await until(() => page.$eval('.commit-inline .inline-files', (e) => e.textContent.includes('b.txt')), 'inline files list b.txt')
-  await shot('02-inline-details')
-  await page.$$eval('.commit-inline .inline-files .item', (r) => r.find((x) => x.textContent.includes('b.txt')).click())
+  await until(() => page.$eval('.sheet.dock', (e) => e.textContent.includes('b.txt')).catch(() => false), 'docked details list b.txt')
+  // the graph makes room instead of sliding under the pane
+  const room = await page.$eval('#main', (m) => parseFloat(getComputedStyle(m).marginRight))
+  if (!(room > 200)) throw new Error(`graph did not make room for the docked pane (margin ${room})`)
+  await shot('02-docked-details')
+  await page.$$eval('.sheet.dock .item', (r) => r.find((x) => x.textContent.includes('b.txt')).click())
   await until(() => page.$('.sheet .dv .l').then(Boolean), 'file diff sheet')
   await shot('02b-file-diff')
   await clickSel('.sheet .sheet-close')
-  await clickSel('.commit-inline [title="Close"]')
-  await until(() => page.$('.commit-inline').then((x) => !x), 'inline details close')
+  await until(() => page.$('.sheet.dock').then(Boolean), 'back to the docked details')
+  // ↓ moves to the next (older) commit and the pane follows
+  const before = await page.$eval('.sheet.dock .sheet-title', (e) => e.textContent)
+  await page.mouse.move(5, 5)
+  await page.evaluate(() => document.activeElement?.blur())
+  await page.keyboard.press('ArrowDown')
+  await until(async () => (await page.$eval('.sheet.dock .sheet-title', (e) => e.textContent)) !== before, 'pane follows the arrow key')
+  await page.keyboard.press('Escape')
+  await until(() => page.$('.sheet').then((x) => !x), 'docked pane closes')
+  if (!(await page.$eval('#main', (m) => parseFloat(getComputedStyle(m).marginRight) === 0))) throw new Error('graph kept the room after closing')
+})
+
+await step('Ctrl+K runs a command; toolbar sits on the right', async () => {
+  const tb = await page.$eval('#toolbar', (t) => t.getBoundingClientRect().right)
+  const vw = await page.evaluate(() => innerWidth)
+  if (vw - tb > 40) throw new Error(`toolbar is not on the right (right edge ${tb} of ${vw})`)
+  await page.keyboard.down('Control'); await page.keyboard.press('KeyK'); await page.keyboard.up('Control')
+  await until(() => page.$('.palette .pal-input').then(Boolean), 'palette opens')
+  await page.keyboard.type('reflog')
+  await shot('02d-palette')
+  await page.keyboard.press('Enter')
+  await until(() => page.$eval('.tab.active', (t) => t.textContent.includes('Reflog')), 'went to Reflog')
+  await clickText('.tab', 'Graph')
+  await until(() => page.$('.commit-row').then(Boolean), 'graph back')
 })
 
 await step('search finds everything as you type (message, file, author, hash) and highlights it', async () => {
