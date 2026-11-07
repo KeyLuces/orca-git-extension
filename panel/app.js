@@ -679,10 +679,13 @@ function renderHeader() {
   // In the full tab the main actions carry a label, like a toolbar; in the narrow panel icons only.
   const lbl = (b, text) => (IN_TAB && b.append(h('span', { class: 'tb-label' }, text)), b)
   // Pull/Push carry how many commits wait (↓ to pull, ↑ to push) and stand out while any do.
+  const diverged = st?.ahead > 0 && st?.behind > 0
   const counted = (b, n, title) => {
     if (n > 0) {
-      b.append(h('span', { class: 'tb-count', title }, String(n)))
+      const up = b.title === 'Push'
+      b.append(h('span', { class: `tb-count ${up ? 'ab-up' : 'ab-down'}`, title: diverged ? `${title}. The branch and its remote have gone separate ways: pull before pushing` : title }, `${up ? '↑' : '↓'}${n}`))
       b.classList.add('tb-hot')
+      if (diverged) b.classList.add('diverged')
     }
     return b
   }
@@ -2761,10 +2764,19 @@ async function viewBranches() {
 function trackInfo(b) {
   if (b.gone) return h('span', { class: 'pill', title: 'Upstream was deleted' }, 'gone')
   if (!b.upstream) return null
-  const parts = []
-  if (b.ahead) parts.push(`↑${b.ahead}`)
-  if (b.behind) parts.push(`↓${b.behind}`)
-  return parts.length ? h('span', { class: 'dim mono', title: b.upstream }, parts.join(' ')) : null
+  if (!b.ahead && !b.behind) return null
+  const div = b.ahead && b.behind
+  const why = div
+    ? `${b.ahead} to push and ${b.behind} to pull: ${b.name} and ${b.upstream} have gone separate ways. Pull (merge or rebase) before pushing`
+    : b.ahead
+      ? `${b.ahead} commit${b.ahead > 1 ? 's' : ''} to push to ${b.upstream}`
+      : `${b.behind} commit${b.behind > 1 ? 's' : ''} to pull from ${b.upstream}`
+  return h(
+    'span',
+    { class: `sync-ab mono ${div ? 'diverged' : ''}`, title: why },
+    b.ahead > 0 && h('span', { class: 'ab-up' }, `↑${b.ahead}`),
+    b.behind > 0 && h('span', { class: 'ab-down' }, `↓${b.behind}`)
+  )
 }
 
 function localBranchRow(b) {

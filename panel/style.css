@@ -1055,3 +1055,13 @@ mark.hit { background: color-mix(in srgb, var(--mod) 38%, transparent); color: v
 .tip.on { opacity: 1; transform: none; }
 html.light .tip { background: #fff; }
 @media (prefers-reduced-motion: reduce) { .tip { transition: none; } }
+
+/* ahead/behind: to push green, to pull amber, gone separate ways red */
+.sync-ab { display: inline-flex; gap: 6px; font-size: 12px; font-variant-numeric: tabular-nums; }
+.ab-up { color: var(--add); }
+.ab-down { color: var(--mod); }
+.tb-count.ab-up { color: var(--add); }
+.tb-count.ab-down { color: var(--mod); }
+.sync-ab.diverged .ab-up, .sync-ab.diverged .ab-down, .toolbar .icon-btn.diverged .tb-count { color: var(--del); }
+.toolbar .icon-btn.tb-hot { border-color: var(--line-hi); }
+.toolbar .icon-btn.tb-hot.diverged { border-color: color-mix(in srgb, var(--del) 50%, var(--line)); }
