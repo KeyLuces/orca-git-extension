@@ -3428,7 +3428,7 @@ function commitMenu(anchor, c) {
         { label: 'Push', icon: 'push', onClick: () => run('push', b === cur ? {} : { branch: b }, { success: `Pushed ${b}` }) },
         { label: 'Rename…', icon: 'edit', onClick: () => renameBranch(b) },
         { label: 'Show only this branch', icon: 'history', onClick: () => showBranchLog(b) },
-        b !== cur && cur && { label: `Merge request → ${b}…`, icon: 'pr', cls: 'mr-item', onClick: () => mergeRequestDialog(b) },
+        b !== cur && mrBoth(b, cur),
         b !== cur && { label: 'Delete…', icon: 'trash', danger: true, onClick: () => deleteBranch(b) }
       ]
     })),
@@ -3458,7 +3458,7 @@ function commitMenu(anchor, c) {
     { label: 'Create tag here…', icon: 'tag', onClick: () => newTag(c.hash) },
     { label: 'New worktree here…', icon: 'worktree', onClick: () => addWorktree({ base: c.hash }) },
     '-',
-    !isHead && { label: `Merge into ${cur}…`, icon: 'merge', onClick: () => mergeRef(local[0] || c.hash) },
+    !isHead && cur && { label: mergeLabel(local[0] || remote.find((r) => !r.endsWith('/HEAD')) || short, cur), icon: 'merge', onClick: () => mergeRef(local[0] || c.hash) },
     mrItem(local, remote, cur),
     !isHead && { label: `Rebase ${cur} onto this…`, icon: 'merge', onClick: () => rebaseOnto(local[0] || c.hash) },
     !isHead && { label: 'Cherry-pick', icon: 'commit', onClick: () => run('cherryPick', { hash: c.hash, mainline: isMerge }, { success: 'Cherry-picked' }) },
@@ -3872,8 +3872,8 @@ function localBranchRow(b) {
     const b = { ...b0, current: b0.name === cur }
     return menu(anchor, [
           !b.current && { label: 'Checkout', icon: 'right', onClick: () => checkout(b.name) },
-          !b.current && cur && { label: `Merge into ${cur}`, icon: 'merge', onClick: () => mergeRef(b.name) },
-          !b.current && cur && { label: `Merge request → ${b.name}…`, icon: 'pr', cls: 'mr-item', onClick: () => mergeRequestDialog(b.name) },
+          !b.current && cur && { label: mergeLabel(b.name, cur), icon: 'merge', onClick: () => mergeRef(b.name) },
+          !b.current && mrBoth(b.name, cur),
           !b.current && cur && { label: `Rebase ${cur} onto this`, icon: 'merge', onClick: () => rebaseOnto(b.name) },
           { label: 'New branch from here…', icon: 'plus', onClick: () => newBranch(b.name) },
           { label: 'New worktree…', icon: 'worktree', onClick: () => addWorktree({ branch: b.name }) },
@@ -3909,8 +3909,8 @@ function remoteBranchRow(b, local) {
         return menu(e.currentTarget, [
           // Always go through the remote: when a local branch exists, checkout() asks how to bring it up to date.
           { label: hasLocal ? `Checkout ${b.name}…` : `Checkout as ${short}`, icon: 'right', onClick: () => checkout(b.name, { track: true }) },
-          cur && { label: `Merge into ${cur}`, icon: 'merge', onClick: () => mergeRef(b.name) },
-          cur && b.name.replace(/^[^/]+\//, '') !== cur && { label: `Merge request → ${b.name.replace(/^[^/]+\//, '')}…`, icon: 'pr', cls: 'mr-item', onClick: () => mergeRequestDialog(b.name) },
+          cur && { label: mergeLabel(b.name, cur), icon: 'merge', onClick: () => mergeRef(b.name) },
+          mrBoth(b.name.replace(/^[^/]+\//, ''), cur),
           cur && { label: `Rebase ${cur} onto this`, icon: 'merge', onClick: () => rebaseOnto(b.name) },
           { label: 'New branch from here…', icon: 'plus', onClick: () => newBranch(b.name) },
           { label: 'New worktree…', icon: 'worktree', onClick: () => addWorktree({ newBranch: short, base: b.name }) },
@@ -5233,13 +5233,30 @@ async function aiCommitModal({ staged, total, onUse, onCommit }) {
 /* =========================================================================
    Merge requests: one button pushes the branch and opens the MR/PR
    ========================================================================= */
-/** Top-level "Merge request" for a commit: current branch → each branch at that commit. */
+/** A branch name short enough for a menu line: the middle gives way, both ends stay readable. */
+const nm = (b, max = 30) => (b.length > max ? b.slice(0, Math.ceil(max / 2) - 1) + '…' + b.slice(-Math.floor(max / 2) + 1) : b)
+/** Merge in menus, always written source → target, the way git and GitLab say it. */
+const mergeLabel = (src, dst) => `Merge ${nm(src)} → ${nm(dst)}…`
+/** Merge request with another branch, in either direction, each written source → target. */
+function mrBoth(other, cur) {
+  if (!cur || !other || other === cur) return null
+  return {
+    label: 'Merge request',
+    icon: 'pr',
+    cls: 'mr-item',
+    items: [
+      { label: `${nm(cur)} → ${nm(other)}…`, icon: 'pr', onClick: () => mergeRequestDialog(other) },
+      { label: `${nm(other)} → ${nm(cur)}…`, icon: 'pr', onClick: () => mergeRequestDialog(cur, other) }
+    ]
+  }
+}
+/** Top-level "Merge request" for a commit: between the current branch and the branches at it. */
 function mrItem(local, remote, cur) {
   if (!cur) return null
   const targets = [...new Set([...local, ...remote.filter((r) => !r.endsWith('/HEAD')).map((r) => r.replace(/^[^/]+\//, ''))])].filter((b) => b !== cur)
   if (!targets.length) return null
-  if (targets.length === 1) return { label: `Merge request → ${targets[0]}…`, icon: 'pr', cls: 'mr-item', onClick: () => mergeRequestDialog(targets[0]) }
-  return { label: 'Merge request', icon: 'pr', cls: 'mr-item', items: targets.map((b) => ({ label: `→ ${b}…`, icon: 'pr', onClick: () => mergeRequestDialog(b) })) }
+  if (targets.length === 1) return mrBoth(targets[0], cur)
+  return { label: 'Merge request', icon: 'pr', cls: 'mr-item', items: targets.flatMap((b) => [{ label: `${nm(cur)} → ${nm(b)}…`, icon: 'pr', onClick: () => mergeRequestDialog(b) }, { label: `${nm(b)} → ${nm(cur)}…`, icon: 'pr', onClick: () => mergeRequestDialog(cur, b) }]) }
 }
 /**
  * Pick people (assignees, reviewers): chips plus a search box with a list of the project's members.
