@@ -3,9 +3,8 @@
   "manifestVersion": 2,
   "execution": "trusted-worker",
   "id": "git-control",
-  "publisher": "satangbudsai",
   "name": "Git Control",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "A Git client inside Orca: commit graph, commits, branches, stashes and worktrees, plus GitHub and GitLab merge requests and pipelines, with your existing Git login. In a full tab and the right sidebar.",
   "license": "MIT",
   "author": {

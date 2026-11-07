@@ -12,7 +12,7 @@ mkdirSync(OUT, { recursive: true })
 const CHROME = process.env.CHROME || 'C:/Program Files/Google/Chrome/Application/chrome.exe'
 
 const slides = [
-  { file: 'graph', eyebrow: 'Commit graph', title: 'See every branch at a glance', body: 'Each branch keeps its own colour. Click a commit and its details open beside the graph; ↑ ↓ step through them.', points: ['Search messages, files, authors and tags as you type', 'Right-click any commit for checkout, merge, rebase or revert'] },
+  { file: 'graph', cover: true, eyebrow: 'Commit graph', title: 'See every branch at a glance', body: 'Each branch keeps its own colour. Click a commit and its details open beside the graph; ↑ ↓ step through them.', points: ['Search messages, files, authors and tags as you type', 'Right-click any commit for checkout, merge, rebase or revert'] },
   { file: 'commit', eyebrow: 'Commit', title: 'Commit with the diff in view', body: 'Changed files on the left, the selected diff on the right. Stage whole files or single hunks.', points: ['AI message drafts the commit message', 'Nothing left to commit? The button becomes Push'] },
   { file: 'merge-request', eyebrow: 'Review & MR', title: 'Review merge requests without leaving Orca', body: 'Read the description, reviewers, approvals and comments, then approve, comment or request changes.', points: ['GitHub and GitLab', 'Uses the Git login you already have'] },
   { file: 'new-merge-request', eyebrow: 'New merge request', title: 'Open a merge request in one step', body: 'Title and description filled in like GitLab, reviewers picked from the project, the branch pushed for you.', points: ['Pick the direction: source → target', 'Create now, or open it in the browser'] },
@@ -20,12 +20,36 @@ const slides = [
   { file: 'commands', eyebrow: 'Keyboard', title: 'Every action by name', body: 'Ctrl+K finds fetch, pull, push, stash, new branch or any tab. The graph moves with ↑ ↓, Enter and Esc.', points: ['Fetch, Pull and Push say what changed', 'Remembers where you left each project'] }
 ]
 
+const icon = () => readFileSync(path.join(PLUGIN, 'assets/icon.png')).toString('base64')
+const cover = (s, img) => `<!doctype html><html><head><meta charset="utf-8"><style>
+  * { box-sizing: border-box; margin: 0; }
+  html, body { width: 1440px; height: 900px; overflow: hidden; }
+  body { background: #0a0a0d; color: #efe9de; font-family: "Segoe UI", system-ui, sans-serif; position: relative; text-align: center; }
+  .glow { position: absolute; left: 50%; top: 380px; width: 1100px; height: 520px; transform: translateX(-50%); background: radial-gradient(closest-side, rgba(143,176,240,.16), transparent); }
+  .head { position: absolute; left: 0; right: 0; top: 64px; display: flex; flex-direction: column; align-items: center; }
+  .head img { width: 72px; height: 72px; border-radius: 18px; margin-bottom: 22px; box-shadow: 0 10px 30px rgba(0,0,0,.6); }
+  h1 { font-size: 56px; font-weight: 650; letter-spacing: -0.02em; line-height: 1.05; }
+  h1 span { color: #8fb0f0; }
+  p { margin-top: 16px; font-size: 20px; color: #a9a3b8; }
+  .chips { margin-top: 22px; display: flex; gap: 10px; justify-content: center; }
+  .chips b { font-weight: 500; font-size: 14px; color: #d8d2e4; padding: 6px 14px; border-radius: 999px; border: 1px solid rgba(239,233,222,.14); background: rgba(255,255,255,.03); }
+  .win { position: absolute; left: 50%; top: 392px; width: 1180px; transform: translateX(-50%); border-radius: 14px 14px 0 0; overflow: hidden; border: 1px solid rgba(239,233,222,.12); border-bottom: 0; box-shadow: 0 -10px 80px rgba(0,0,0,.7); background: #0d0d10; }
+  .bar { height: 34px; display: flex; align-items: center; gap: 8px; padding: 0 14px; background: #16161b; border-bottom: 1px solid rgba(239,233,222,.07); }
+  .bar b { width: 11px; height: 11px; border-radius: 50%; background: #3a3946; }
+  .win img { display: block; width: 1180px; }
+</style></head><body>
+  <div class="glow"></div>
+  <div class="head"><img src="data:image/png;base64,${icon()}"><h1>Git Control <span>for Orca</span></h1><p>Commit graph, merge requests and pipelines for GitHub and GitLab, right inside Orca.</p>
+  <div class="chips"><b>Commit graph</b><b>Review &amp; MR</b><b>CI pipelines</b><b>Ctrl+K commands</b></div></div>
+  <div class="win"><div class="bar"><b></b><b></b><b></b></div><img src="data:image/png;base64,${img}"></div>
+</body></html>`
+
 const page = (s, img) => `<!doctype html><html><head><meta charset="utf-8"><style>
   * { box-sizing: border-box; margin: 0; }
   html, body { width: 1440px; height: 900px; overflow: hidden; }
-  body { background: #15141f; color: #efe9de; font-family: "Segoe UI", system-ui, sans-serif; position: relative; }
+  body { background: #0a0a0d; color: #efe9de; font-family: "Segoe UI", system-ui, sans-serif; position: relative; }
   /* one quiet tone step, no hue gradients: a deeper panel behind the screenshot */
-  .stage { position: absolute; left: 520px; top: 0; right: 0; bottom: 0; background: #1b1a28; }
+  .stage { position: absolute; left: 520px; top: 0; right: 0; bottom: 0; background: #101014; }
   .rail { position: absolute; left: 520px; top: 0; bottom: 0; width: 1px; background: rgba(239, 233, 222, .08); }
   .text { position: absolute; left: 72px; top: 0; bottom: 0; width: 392px; display: flex; flex-direction: column; justify-content: center; }
   .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 56px; font-size: 15px; font-weight: 600; letter-spacing: .01em; color: #efe9de; }
@@ -37,8 +61,8 @@ const page = (s, img) => `<!doctype html><html><head><meta charset="utf-8"><styl
   li { display: flex; gap: 12px; align-items: flex-start; font-size: 15px; line-height: 1.45; color: #d8d2e4; }
   li i { flex: none; width: 8px; height: 8px; margin-top: 7px; border-radius: 50%; background: #b49be8; }
   /* the app window, rising past the bottom and right edge */
-  .win { position: absolute; left: 580px; top: 96px; width: 1100px; border-radius: 14px; overflow: hidden; border: 1px solid rgba(239, 233, 222, .12); box-shadow: 0 30px 80px rgba(0, 0, 0, .55); background: #101014; }
-  .bar { height: 34px; display: flex; align-items: center; gap: 8px; padding: 0 14px; background: #191922; border-bottom: 1px solid rgba(239, 233, 222, .07); }
+  .win { position: absolute; left: 580px; top: 96px; width: 1100px; border-radius: 14px; overflow: hidden; border: 1px solid rgba(239, 233, 222, .12); box-shadow: 0 30px 80px rgba(0, 0, 0, .55); background: #0d0d10; }
+  .bar { height: 34px; display: flex; align-items: center; gap: 8px; padding: 0 14px; background: #16161b; border-bottom: 1px solid rgba(239, 233, 222, .07); }
   .bar b { width: 11px; height: 11px; border-radius: 50%; background: #3a3946; }
   .win img { display: block; width: 1100px; }
 </style></head><body>
@@ -59,7 +83,7 @@ try {
   await tab.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 })
   for (const s of slides) {
     const img = readFileSync(path.join(SRC, `${s.file}.png`)).toString('base64')
-    await tab.setContent(page(s, img), { waitUntil: 'load' })
+    await tab.setContent((s.cover ? cover : page)(s, img), { waitUntil: 'load' })
     await tab.screenshot({ path: path.join(OUT, `${s.file}.png`) })
     console.log('promo', s.file)
   }
