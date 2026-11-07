@@ -5,8 +5,8 @@
   "id": "git-control",
   "publisher": "satangbudsai",
   "name": "Git Control",
-  "version": "0.5.0",
-  "description": "A lightweight Git client inside Orca: a full-tab history graph with changes, branches, merge/rebase, stash, worktrees, git config, right-click menus, and AI commit messages and conflict resolution.",
+  "version": "0.6.0",
+  "description": "A Git client inside Orca: commit graph, commits, branches, stashes and worktrees, plus GitHub and GitLab merge requests and pipelines, with your existing Git login. In a full tab and the right sidebar.",
   "license": "MIT",
   "author": {
     "name": "SatangBudsai"
@@ -17,6 +17,38 @@
     "path": "assets/cover.jpg",
     "alt": "Git Control: a blue and lavender paper Git history sculpture with ivory commit nodes and revision cards on a dark studio backdrop"
   },
+  "screenshots": [
+    {
+      "path": "assets/screenshots/graph.png",
+      "alt": "The commit graph with coloured branches and a merge commit's details docked on the right",
+      "caption": "Commit graph with details beside it"
+    },
+    {
+      "path": "assets/screenshots/commit.png",
+      "alt": "The Commit tab with changed files on the left and a file diff on the right",
+      "caption": "Stage and commit with the diff in view"
+    },
+    {
+      "path": "assets/screenshots/merge-request.png",
+      "alt": "A GitLab merge request page with description, reviewers, approvals and activity",
+      "caption": "Read a merge request, then approve or comment"
+    },
+    {
+      "path": "assets/screenshots/new-merge-request.png",
+      "alt": "The new merge request dialog with title, description, assignees and reviewers",
+      "caption": "Open a merge request with your Git login"
+    },
+    {
+      "path": "assets/screenshots/pipeline.png",
+      "alt": "A failed GitLab CI job log with its error lines highlighted",
+      "caption": "Step through a failed pipeline's errors"
+    },
+    {
+      "path": "assets/screenshots/commands.png",
+      "alt": "The command palette listing Pull, Pull with rebase and Push",
+      "caption": "Every action by name with Ctrl+K"
+    }
+  ],
   "engines": {
     "orca": ">=1.4.248"
   },
