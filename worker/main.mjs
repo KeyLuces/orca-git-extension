@@ -44,7 +44,7 @@ async function git(cwd, args, opts = {}) {
   }
 }
 
-function gitOnce(cwd, args, { input, timeout = LOCAL_TIMEOUT, okCodes = [0], signal, env } = {}) {
+function gitOnce(cwd, args, { input, timeout = LOCAL_TIMEOUT, okCodes = [0], signal, env, raw } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn('git', args, {
       cwd: cwd || undefined,
@@ -80,7 +80,7 @@ function gitOnce(cwd, args, { input, timeout = LOCAL_TIMEOUT, okCodes = [0], sig
     child.on('close', (code) => {
       clearTimeout(timer)
       signal?.removeEventListener('abort', onAbort)
-      const stdout = Buffer.concat(out).toString('utf8')
+      const stdout = raw ? Buffer.concat(out) : Buffer.concat(out).toString('utf8')
       const stderr = Buffer.concat(err).toString('utf8').trim()
       if (killedFor) reject(new GitError(killedFor))
       else if (okCodes.includes(code)) resolve(stdout)
@@ -283,6 +283,24 @@ async function diff(repo, { file, staged, untracked, context = 3 }) {
   if (staged) args.push('--cached')
   args.push('--', f)
   return trunc(await git(repo, args))
+}
+// An image file at a revision ('' = the working tree, ':' = the index, else a commit-ish), as a data URL
+// for the diff preview. Only common image types, at most 3 MB (it travels as base64).
+const IMAGE_TYPES = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp', ico: 'image/x-icon', avif: 'image/avif', svg: 'image/svg+xml' }
+async function fileImage(repo, { ref = '', file }) {
+  const f = String(file || '')
+  const type = IMAGE_TYPES[f.split('.').pop().toLowerCase()]
+  if (!type) throw new GitError('not an image')
+  let buf
+  if (ref === '') {
+    buf = readFileSync(await workPath(repo, f))
+  } else {
+    const r = String(ref)
+    if (r.startsWith('-')) throw new GitError('bad revision')
+    buf = await git(repo, ['show', r === ':' ? `:${f}` : `${r}:${f}`], { raw: true })
+  }
+  if (buf.length > 3 * 1024 * 1024) throw new GitError('Image is larger than 3 MB: open it in the editor to view')
+  return { src: `data:${type};base64,${buf.toString('base64')}`, size: buf.length }
 }
 const devNull = () => (process.platform === 'win32' ? 'NUL' : '/dev/null')
 
@@ -2000,6 +2018,7 @@ async function workPath(repo, file) {
 const ops = {
   status: (r) => status(r),
   diff: (r, a) => diff(r, a),
+  fileImage: (r, a) => fileImage(r, a),
   stage: (r, a) => git(r, ['add', '-A', '--', ...files(a.files)]),
   stageAll: (r) => git(r, ['add', '-A']),
   unstage: async (r, a) => {
@@ -2545,7 +2564,7 @@ const ops = {
   }
 }
 
-const READ_ONLY_OPS = new Set([
+const READ_ONLY_OPS = new Set(['fileImage', 
   'status', 'diff', 'log', 'commitShow', 'commitFileDiff', 'refs', 'worktrees', 'stashList', 'stashShow', 'remotes',
   'configList', 'blame', 'showFile', 'treeFiles', 'compare', 'compareFileDiff', 'reflog', 'cleanPreview', 'submodules',
   'aheadBehind', 'rebaseTodo', 'lastMessage', 'formatPatch', 'ciStatus', 'pipelines', 'pipelineJobs', 'jobLog', 'readWorkFile', 'branchCleanup', 'undoInfo'

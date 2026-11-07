@@ -339,6 +339,19 @@ await step('stages and commits a new file from the Commit tab', async () => {
   await until(() => page.$eval('.commit-box .split .btn:first-child', (x) => /^(Push [0-9]+ commit|Publish )/.test(x.textContent.trim())), 'commit button turns into Push')
 })
 
+await step('an image change shows a picture preview, not "binary file"', async () => {
+  writeFileSync(path.join(repo, 'logo.png'), readFileSync(path.join(PLUGIN, 'assets/icon.png')))
+  await refresh()
+  await tab('Commit')
+  await until(() => page.evaluate(() => [...document.querySelectorAll('.view .item')].some((x) => x.textContent.includes('logo.png'))), 'image listed')
+  await page.evaluate(() => [...document.querySelectorAll('.view .item')].find((x) => x.textContent.includes('logo.png')).click())
+  await until(() => page.evaluate(() => { const i = document.querySelector('.img-preview img'); return i && i.naturalWidth === 256 }), 'image preview loaded')
+  await until(() => page.evaluate(() => /256 × 256/.test(document.querySelector('.img-meta')?.textContent || '')), 'size shown')
+  await shot('image-preview')
+  rmSync(path.join(repo, 'logo.png'))
+  await refresh()
+})
+
 await step('creates a branch from the sidebar', async () => {
   await clickSel('#side [title="New branch"]')
   await dialogOpen()

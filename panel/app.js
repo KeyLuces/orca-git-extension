@@ -1298,7 +1298,7 @@ function pairLines(lines) {
  * side by side (remembered), changed words marked, optional wrapping.
  * hunkActions: [{ label, icon, run(patch) }] on every hunk; onLine({ path, side, line, text }) makes lines clickable.
  */
-function renderDiff(text, hunkActions, { onLine } = {}) {
+function renderDiff(text, hunkActions, { onLine, images } = {}) {
   if (!text.trim()) return h('div', { class: 'empty' }, 'No changes to show (binary or identical file)')
   const files = parseDiff(text)
   const patches = hunkActions?.length ? splitHunks(text) : []
@@ -1364,7 +1364,7 @@ function renderDiff(text, hunkActions, { onLine } = {}) {
           h('span', { class: 'dv-count' }, h('span', { class: 'a' }, `+${f.add}`), h('span', { class: 'd' }, `−${f.del}`))
         )
       )
-      if (f.binary) frag.append(h('div', { class: 'dv-note' }, 'Binary file: no text to compare'))
+      if (f.binary) frag.append((images && imagePreview(f, images)) || h('div', { class: 'dv-note' }, 'Binary file: no text to compare'))
       const lineCount = f.hunks.reduce((t, hk) => t + hk.lines.length, 0)
       let budget = expanded.has(f) ? Infinity : MAX_LINES
       for (const hk of f.hunks) {
@@ -1454,7 +1454,37 @@ function splitWrap(root, hint) {
   root.classList.remove('view')
   return h('div', { class: 'view changes-split' }, root, pane)
 }
-async function showDiff(title, loader, actions = [], hunkActions) {
+// Before/after preview of a changed image. images = { old, new }: the revision of each side
+// ('' working tree, ':' index, a commit), or null when that side does not exist.
+const IMAGE_RE = /\.(png|jpe?g|gif|webp|bmp|ico|avif|svg)$/i
+function imagePreview(f, images) {
+  if (!IMAGE_RE.test(f.path)) return null
+  const oldRef = f.badges.includes('new') ? null : images.old
+  const newRef = f.badges.includes('deleted') ? null : images.new
+  const side = (label, ref, file) => {
+    const box = h('div', { class: 'img-side' }, h('div', { class: 'img-label ' + (/Before|Deleted/.test(label) ? 'del' : 'add') }, label), h('div', { class: 'img-frame' }, h('div', { class: 'inline-skeleton' }, h('span'), h('span'))))
+    const meta = h('div', { class: 'img-meta dim' })
+    box.append(meta)
+    call('fileImage', { ref, file }).then(
+      ({ src, size }) => {
+        const img = h('img', { src, alt: file })
+        img.onload = () => (meta.textContent = `${img.naturalWidth} × ${img.naturalHeight} · ${size < 1024 ? size + ' B' : size < 1048576 ? (size / 1024).toFixed(1) + ' KB' : (size / 1048576).toFixed(1) + ' MB'}`)
+        img.onclick = () => openRepoFile(file)
+        img.title = 'Open in the editor'
+        clear(box.querySelector('.img-frame')).append(img)
+      },
+      (e) => clear(box.querySelector('.img-frame')).append(h('div', { class: 'dv-note' }, e.message))
+    )
+    return box
+  }
+  const sides = []
+  if (oldRef != null) sides.push(side(newRef == null ? 'Deleted' : 'Before', oldRef, f.oldPath || f.path))
+  if (newRef != null) sides.push(side(oldRef == null ? 'Added' : 'After', newRef, f.path))
+  if (!sides.length) return null
+  return h('div', { class: 'img-preview' + (sides.length > 1 ? ' two' : '') }, ...sides)
+}
+
+async function showDiff(title, loader, actions = [], hunkActions, images) {
   // In the Commit and Stash tabs the diff opens beside the list, not over it.
   const pane = IN_TAB && (state.tab === 'changes' || state.tab === 'stash') ? document.querySelector('#main .diff-pane') : null
   let sheet
@@ -1493,7 +1523,8 @@ async function showDiff(title, loader, actions = [], hunkActions) {
               await pollStatus(true)
               load()
             }
-          }))
+          })),
+          { images }
         )
       )
     } catch (e) {
@@ -1697,7 +1728,7 @@ async function viewChanges() {
       root.append(
         fileRow(f, {
           staged: true,
-          onClick: () => showDiff(f.path, () => call('diff', { file: f.path, staged: true }), [iconBtn('minus', 'Unstage file', () => (closeSheet(), run('unstage', { files: [f.path] })))], HUNK_UNSTAGE),
+          onClick: () => showDiff(f.path, () => call('diff', { file: f.path, staged: true }), [iconBtn('minus', 'Unstage file', () => (closeSheet(), run('unstage', { files: [f.path] })))], HUNK_UNSTAGE, { old: 'HEAD', new: ':' }),
           actions: [iconBtn('more', 'More', (e) => fileMenu(e.currentTarget, f)), iconBtn('minus', 'Unstage', () => run('unstage', { files: [f.path] }))]
         })
       )
@@ -1715,7 +1746,8 @@ async function viewChanges() {
               f.path,
               () => call('diff', { file: f.path, untracked: f.untracked }),
               [iconBtn('undo', 'Discard file', () => discard([f], true)), iconBtn('plus', 'Stage file', () => (closeSheet(), run('stage', { files: [f.path] })))],
-              f.untracked ? undefined : HUNK_STAGE
+              f.untracked ? undefined : HUNK_STAGE,
+              { old: f.untracked ? null : ':', new: '' }
             ),
           actions: [
             iconBtn('more', 'More', (e) => fileMenu(e.currentTarget, f)),
@@ -2349,7 +2381,7 @@ function commitBody(c, { inline = false } = {}) {
     filesBox.append(
       h(
         'div',
-        { class: 'item', title: f.orig ? `${f.orig} → ${f.path}` : f.path, onClick: () => showDiff(`${basename(f.path)} @ ${short}`, () => call('commitFileDiff', { hash: c.hash, file: f.path })) },
+        { class: 'item', title: f.orig ? `${f.orig} → ${f.path}` : f.path, onClick: () => showDiff(`${basename(f.path)} @ ${short}`, () => call('commitFileDiff', { hash: c.hash, file: f.path }), [], undefined, { old: c.parents?.length ? c.parents[0] : null, new: c.hash }) },
         h('span', { class: `status-letter s-${f.status}` }, f.status),
         h('span', { class: 'file-name' }, basename(f.path)),
         h('span', { class: 'file-dir grow' }, dirname(f.path)),
@@ -3195,7 +3227,7 @@ async function viewStash() {
     root.append(
       h(
         'div',
-        { class: 'item', title: s.subject, onClick: (e) => (root.querySelectorAll('.item.sel').forEach((x) => x.classList.remove('sel')), e.currentTarget.classList.add('sel'), showDiff(s.subject, () => call('stashShow', { ref: s.ref }), [iconBtn('check', 'Apply', () => (closeSheet(), run('stashApply', { ref: s.ref }, { success: 'Applied' })))])) },
+        { class: 'item', title: s.subject, onClick: (e) => (root.querySelectorAll('.item.sel').forEach((x) => x.classList.remove('sel')), e.currentTarget.classList.add('sel'), showDiff(s.subject, () => call('stashShow', { ref: s.ref }), [iconBtn('check', 'Apply', () => (closeSheet(), run('stashApply', { ref: s.ref }, { success: 'Applied' })))], undefined, { old: s.ref + '^1', new: s.ref })) },
         icon('stash', 13),
         h(
           'div',
@@ -3717,7 +3749,7 @@ function compareSheet(a, b) {
       wrap.append(
         h(
           'div',
-          { class: 'item', title: f.orig ? `${f.orig} → ${f.path}` : f.path, onClick: () => showDiff(basename(f.path), () => call('compareFileDiff', { a, b, file: f.path })) },
+          { class: 'item', title: f.orig ? `${f.orig} → ${f.path}` : f.path, onClick: () => showDiff(basename(f.path), () => call('compareFileDiff', { a, b, file: f.path }), [], undefined, { old: a, new: b }) },
           h('span', { class: `status-letter s-${f.status}` }, f.status),
           h('span', { class: 'file-name' }, basename(f.path)),
           h('span', { class: 'file-dir grow' }, dirname(f.path))
