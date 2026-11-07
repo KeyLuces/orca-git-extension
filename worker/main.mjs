@@ -1574,8 +1574,12 @@ async function gitlabInbox(h, where, via) {
   const q = 'merge_requests?state=opened&scope=all&per_page=50'
   const u = encodeURIComponent(me.username)
   const here = where?.kind === 'gitlab' && where.host === h.host ? `projects/${projectPath(where.path)}/merge_requests?state=opened&per_page=50` : null
-  const soft = (p) => gitlabGet(h, via, p).catch(() => null)
+  // each list is tried twice (a slow or flaky company network); a list that still fails is reported,
+  // never silently shown as empty
+  const once = (p) => gitlabGet(h, via, p).then((r) => (Array.isArray(r) ? r : Promise.reject(new Error('no list'))))
+  const soft = (p) => once(p).catch(() => new Promise((res) => setTimeout(res, 800)).then(() => once(p))).catch(() => null)
   const [rev, asg, mine, repo] = await Promise.all([soft(`${q}&reviewer_username=${u}`), soft(`${q}&assignee_username=${u}`), soft(`${q}&author_username=${u}`), here ? soft(here) : []])
+  if (rev === null && asg === null && mine === null) throw new GitError(`could not list merge requests on ${h.host} (it did not answer); showing the last list`)
   return collect([[rev, 'review'], [asg, 'assigned'], [mine, 'mine'], [repo, 'repo']], (m) => ({
     provider: 'gitlab',
     host: h.host,

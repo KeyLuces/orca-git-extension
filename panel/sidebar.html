@@ -5917,6 +5917,11 @@ async function loadReviews(force) {
   const repo = state.repo
   reviewsLoading ||= request('reviews.list', { repo }, 90000)
     .then((r) => {
+      // a host that did not answer this time keeps its last list (and its error shows above it)
+      const failed = new Set((r.errors || []).map((e) => String(e).split(': ')[0]))
+      const prev = state.reviews?.items || []
+      const kept = prev.filter((it) => failed.has(it.host) && !r.items.some((x) => x.url === it.url))
+      if (kept.length) r = { ...r, items: [...r.items, ...kept].sort((a, b) => b.updated - a.updated) }
       state.reviews = { ...r, repo, at: Date.now() }
       store.set('reviewsCache', state.reviews)
       renderTabs()
