@@ -19,8 +19,8 @@
   "screenshots": [
     {
       "path": "assets/promo/graph.png",
-      "alt": "The commit graph with coloured branches and a merge commit's details docked on the right",
-      "caption": "Commit graph with details beside it"
+      "alt": "Git Control for Orca: what it does, from the commit graph and merge requests to CI pipelines",
+      "caption": "Everything Git Control does"
     },
     {
       "path": "assets/promo/commit.png",

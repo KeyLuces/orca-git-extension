@@ -21,27 +21,32 @@ const slides = [
 ]
 
 const icon = () => readFileSync(path.join(PLUGIN, 'assets/icon.png')).toString('base64')
-const cover = (s, img) => `<!doctype html><html><head><meta charset="utf-8"><style>
+const FEATS = [["Commit graph","Every branch in its own colour; click a commit to see its details beside it.","<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><circle cx=\"6\" cy=\"5\" r=\"2.2\"/><circle cx=\"6\" cy=\"19\" r=\"2.2\"/><circle cx=\"18\" cy=\"9\" r=\"2.2\"/><path d=\"M6 7.2v9.6M18 11.2c0 4-6 3-11 6\"/></svg>"],["Commit & stage","Stage files or single hunks with the diff in view. AI drafts the message.","<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><circle cx=\"12\" cy=\"12\" r=\"3.5\"/><path d=\"M3 12h5.5M15.5 12H21\"/></svg>"],["Branches & tags","Checkout, merge, rebase, cherry-pick, revert and reset from a right-click.","<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M20 12 12 20l-8-8V4h8z\"/><circle cx=\"8.5\" cy=\"8.5\" r=\"1.4\"/></svg>"],["Review & MR","Read merge requests like on GitHub or GitLab, then approve, comment or request changes.","<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><circle cx=\"6\" cy=\"6\" r=\"2.2\"/><circle cx=\"6\" cy=\"18\" r=\"2.2\"/><circle cx=\"18\" cy=\"18\" r=\"2.2\"/><path d=\"M6 8.2v7.6M18 15.8V9a3 3 0 0 0-3-3h-4\"/><path d=\"m13 4-2 2 2 2\"/></svg>"],["Open a merge request","Title, description and reviewers filled in; the branch is pushed for you.","<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M12 5v14M5 12h14\"/></svg>"],["CI pipelines","See jobs by stage, jump to error lines, retry a job or the whole pipeline.","<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4 6h10M4 12h16M4 18h7\"/><circle cx=\"18\" cy=\"6\" r=\"2\"/><circle cx=\"15\" cy=\"18\" r=\"2\"/></svg>"],["Fetch, Pull, Push","Counts of what waits, animated while running, with a note of what changed.","<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M7 4v13M3.5 13.5 7 17l3.5-3.5M17 20V7M13.5 10.5 17 7l3.5 3.5\"/></svg>"],["Stash, worktrees, undo","Stash, worktrees and reflog tabs. Undo the last commit, reset, merge or rebase.","<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M9 14 4 9l5-5\"/><path d=\"M4 9h10a6 6 0 0 1 0 12h-3\"/></svg>"]]
+const cover = () => `<!doctype html><html><head><meta charset="utf-8"><style>
   * { box-sizing: border-box; margin: 0; }
   html, body { width: 1440px; height: 900px; overflow: hidden; }
-  body { background: #0a0a0d; color: #efe9de; font-family: "Segoe UI", system-ui, sans-serif; position: relative; text-align: center; }
-  .glow { position: absolute; left: 50%; top: 380px; width: 1100px; height: 520px; transform: translateX(-50%); background: radial-gradient(closest-side, rgba(143,176,240,.16), transparent); }
-  .head { position: absolute; left: 0; right: 0; top: 64px; display: flex; flex-direction: column; align-items: center; }
-  .head img { width: 72px; height: 72px; border-radius: 18px; margin-bottom: 22px; box-shadow: 0 10px 30px rgba(0,0,0,.6); }
-  h1 { font-size: 56px; font-weight: 650; letter-spacing: -0.02em; line-height: 1.05; }
+  body { background: #0a0a0d; color: #efe9de; font-family: "Segoe UI", system-ui, sans-serif; position: relative; }
+  .glow { position: absolute; left: 50%; top: -160px; width: 1200px; height: 560px; transform: translateX(-50%); background: radial-gradient(closest-side, rgba(143,176,240,.13), transparent); }
+  .head { position: relative; padding-top: 70px; display: flex; flex-direction: column; align-items: center; text-align: center; }
+  .head img { width: 76px; height: 76px; border-radius: 19px; margin-bottom: 24px; box-shadow: 0 10px 30px rgba(0,0,0,.6); }
+  h1 { font-size: 58px; font-weight: 650; letter-spacing: -0.02em; line-height: 1.05; }
   h1 span { color: #8fb0f0; }
-  p { margin-top: 16px; font-size: 20px; color: #a9a3b8; }
-  .chips { margin-top: 22px; display: flex; gap: 10px; justify-content: center; }
-  .chips b { font-weight: 500; font-size: 14px; color: #d8d2e4; padding: 6px 14px; border-radius: 999px; border: 1px solid rgba(239,233,222,.14); background: rgba(255,255,255,.03); }
-  .win { position: absolute; left: 50%; top: 392px; width: 1180px; transform: translateX(-50%); border-radius: 14px 14px 0 0; overflow: hidden; border: 1px solid rgba(239,233,222,.12); border-bottom: 0; box-shadow: 0 -10px 80px rgba(0,0,0,.7); background: #0d0d10; }
-  .bar { height: 34px; display: flex; align-items: center; gap: 8px; padding: 0 14px; background: #16161b; border-bottom: 1px solid rgba(239,233,222,.07); }
-  .bar b { width: 11px; height: 11px; border-radius: 50%; background: #3a3946; }
-  .win img { display: block; width: 1180px; }
+  .sub { margin-top: 16px; font-size: 20px; color: #a9a3b8; }
+  .grid { position: absolute; left: 96px; right: 96px; top: 372px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px; }
+  .card { height: 200px; padding: 24px 22px; border-radius: 14px; background: #111116; border: 1px solid rgba(239,233,222,.08); }
+  .card i { display: flex; width: 40px; height: 40px; border-radius: 10px; align-items: center; justify-content: center; background: rgba(143,176,240,.1); color: #8fb0f0; margin-bottom: 16px; }
+  .card:nth-child(even) i { background: rgba(180,155,232,.12); color: #b49be8; }
+  .card svg { width: 22px; height: 22px; }
+  .card h3 { font-size: 18px; font-weight: 600; margin-bottom: 8px; }
+  .card p { font-size: 14.5px; line-height: 1.5; color: #a9a3b8; }
+  .foot { position: absolute; left: 0; right: 0; bottom: 44px; text-align: center; font-size: 15px; color: #7d7890; }
+  .foot b { color: #d8d2e4; font-weight: 600; }
 </style></head><body>
   <div class="glow"></div>
-  <div class="head"><img src="data:image/png;base64,${icon()}"><h1>Git Control <span>for Orca</span></h1><p>Commit graph, merge requests and pipelines for GitHub and GitLab, right inside Orca.</p>
-  <div class="chips"><b>Commit graph</b><b>Review &amp; MR</b><b>CI pipelines</b><b>Ctrl+K commands</b></div></div>
-  <div class="win"><div class="bar"><b></b><b></b><b></b></div><img src="data:image/png;base64,${img}"></div>
+  <div class="head"><img src="data:image/png;base64,${icon()}"><h1>Git Control <span>for Orca</span></h1>
+  <p class="sub">A full Git client inside Orca, for GitHub and GitLab.</p></div>
+  <div class="grid">${FEATS.map(([t, d, svg]) => `<div class="card"><i>${svg}</i><h3>${t}</h3><p>${d}</p></div>`).join('')}</div>
+  <div class="foot">Uses the Git login you already have &nbsp;·&nbsp; <b>Ctrl+K</b> for every command &nbsp;·&nbsp; Light and dark themes</div>
 </body></html>`
 
 const page = (s, img) => `<!doctype html><html><head><meta charset="utf-8"><style>

@@ -4,7 +4,7 @@ A Git client inside Orca: the commit graph, commits, branches, stashes, merge re
 GitHub and GitLab, in one editor tab and a sidebar panel. It runs your installed `git` and signs in with
 the Git login you already have (or `gh` / `glab` when they are set up), so there are no tokens to create.
 
-![Git Control: the commit graph with a merge commit's details docked beside it](assets/promo/graph.png)
+![Git Control for Orca: commit graph, commits, branches, merge requests, CI pipelines and more](assets/promo/graph.png)
 
 ## Get started
 
