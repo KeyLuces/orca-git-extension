@@ -48,8 +48,10 @@ const server = http.createServer((rq, rs) => {
         const q = decodeURIComponent(u.split('q=')[1])
         return send(200, { items: [{ html_url: `${B}/o/r/pull/7`, number: 7, title: 'PR ' + q, repository_url: `${B}/repos/o/r`, user: { login: 'me' }, updated_at: '2026-01-01T00:00:00Z', draft: false }] })
       }
-      if (u === '/repos/o/r/pulls/7') return e.accept === 'application/vnd.github.diff' ? send(200, 'diff --git a/x b/x\n', 'text/plain') : send(200, { title: 'T', body: 'B', head: { ref: 'feature', sha: 'abc123' }, base: { ref: 'main' } })
+      if (u === '/repos/o/r/pulls/7') return e.accept === 'application/vnd.github.diff' ? send(200, 'diff --git a/x b/x\n', 'text/plain') : send(200, { title: 'T', body: 'B', state: 'open', mergeable: true, mergeable_state: 'clean', user: { login: 'dev' }, head: { ref: 'feature', sha: 'abc123', repo: { full_name: 'o/r' } }, base: { ref: 'main', repo: { full_name: 'o/r' } } })
       if (e.method === 'POST' && u === '/repos/o/r/pulls/7/reviews') return send(200, { id: 1 })
+      if (e.method === 'PUT' && u === '/repos/o/r/pulls/7/merge') return send(200, { merged: true, sha: 'm1' })
+      if (e.method === 'DELETE' && u === '/repos/o/r/git/refs/heads/feature') return send(204, '')
       if (e.method === 'GET' && u.startsWith('/repos/o/r/pulls/7/reviews')) return send(200, [{ user: { login: 'ann' }, state: 'CHANGES_REQUESTED', body: 'Fix x', submitted_at: '2026-01-01T00:00:00Z' }, { user: { login: 'ann' }, state: 'APPROVED', body: '', submitted_at: '2026-01-02T00:00:00Z' }, { user: { login: 'bob' }, state: 'COMMENTED', body: 'hm', submitted_at: '2026-01-02T00:00:00Z' }])
       if (e.method === 'GET' && u.startsWith('/repos/o/r/issues/7/comments')) return send(200, [{ user: { login: 'bob' }, body: 'Nice', created_at: '2026-01-01T01:00:00Z' }])
       if (e.method === 'GET' && u.startsWith('/repos/o/r/pulls/7/comments')) return send(200, [{ user: { login: 'bob' }, body: 'rename', path: 'x.js', line: 4, created_at: '2026-01-01T02:00:00Z' }])
@@ -66,6 +68,7 @@ const server = http.createServer((rq, rs) => {
       if (u === `${P}/projects/42/merge_requests/3/changes`) return send(200, { title: 'MR', description: 'D', source_branch: 'feature', target_branch: 'main', changes: [{ old_path: 'a.txt', new_path: 'b.txt', diff: '@@ -1 +1 @@\n-a\n+b\n' }], diff_refs: { base_sha: 'b1', start_sha: 's1', head_sha: 'h1' } })
       if (e.method === 'POST' && u === `${P}/projects/42/merge_requests/3/notes`) return send(201, { id: 1 })
       if (e.method === 'POST' && u === `${P}/projects/42/merge_requests/3/approve`) return send(201, {})
+      if (e.method === 'PUT' && u === `${P}/projects/42/merge_requests/3/merge`) return send(200, { state: 'merged' })
       if (e.method === 'POST' && u === `${P}/projects/42/merge_requests/3/unapprove`) return send(404, { message: '404 Not Found' })
       if (e.method === 'POST' && u === `${P}/projects/42/merge_requests/3/discussions`) return send(201, { id: 'x' })
       if (u === `${P}/projects/42/merge_requests/3`) return send(200, { head_pipeline: { status: 'success' }, title: 'MR', description: 'D', state: 'opened', author: { username: 'me' }, source_branch: 'feature', target_branch: 'main', sha: 'abc', reviewers: [{ username: 'ann' }, { username: 'bob' }], assignees: [], labels: ['x'], changes_count: '1' })
@@ -142,12 +145,29 @@ try {
   const it = inbox.items.find((x) => x.host === `127.0.0.1:${port}`)
   ok(it && ['review', 'assigned', 'mine', 'repo'].every((r) => it.roles.includes(r)), 'inbox roles', JSON.stringify(inbox))
   ok(it?.ci === 'passed', 'inbox item CI', it?.ci)
+  ok(it?.me === 'me' && typeof it.approvedCount === 'number', 'inbox item knows me and approvals', JSON.stringify([it?.me, it?.approvedCount, it?.myApproved]))
   // review actions
   for (const action of ['approve', 'changes', 'comment']) {
     log.length = 0
     const r = await call('reviews.act', { ...it, action, body: action === 'approve' ? '' : 'Looks off' }).catch((e) => e)
     ok(r?.ok, `review ${action}`, r?.message)
     if (KIND === 'github') ok(log.find((x) => x.url.endsWith('/reviews'))?.body?.event === { approve: 'APPROVE', changes: 'REQUEST_CHANGES', comment: 'COMMENT' }[action], `github ${action} event`)
+  }
+  // merge with options; GitLab: revoke approval too
+  log.length = 0
+  const mg = await call('reviews.act', { ...it, action: 'merge', options: { squash: true, removeSource: true } }).catch((e) => e)
+  ok(mg?.ok && mg.state === 'merged', 'merge', mg?.message)
+  const put = log.find((x) => x.method === 'PUT')
+  if (KIND === 'github') {
+    ok(put?.url === '/repos/o/r/pulls/7/merge' && put.body?.merge_method === 'squash' && put.body?.sha === 'abc123', 'github merge request', JSON.stringify(put))
+    ok(log.some((x) => x.method === 'DELETE' && x.url === '/repos/o/r/git/refs/heads/feature'), 'github deletes the head branch')
+    const un = await call('reviews.act', { ...it, action: 'unapprove' }).then(() => null, (e) => e)
+    ok(un && /GitHub does not let you take back/.test(un.message), 'github revoke explains')
+  } else {
+    ok(put?.url.endsWith('/merge_requests/3/merge') && put.body?.squash === true && put.body?.should_remove_source_branch === true && !put.body.merge_when_pipeline_succeeds, 'gitlab merge request', JSON.stringify(put))
+    log.length = 0
+    await call('reviews.act', { ...it, action: 'merge', options: { auto: true } }).catch(() => null)
+    ok(log.find((x) => x.method === 'PUT')?.body?.merge_when_pipeline_succeeds === true, 'gitlab auto-merge flag')
   }
   const noText = await call('reviews.act', { ...it, action: 'changes', body: '' }).then(() => null, (e) => e)
   ok(noText && /comment first/.test(noText.message), 'changes requires text')
@@ -158,6 +178,7 @@ try {
   const ann = det.reviewers.find((x) => x.name === 'ann')
   ok(ann?.state === 'approved', 'reviewer state from the latest review', JSON.stringify(det.reviewers))
   ok(det.approvals.given === 1, 'approvals given', JSON.stringify(det.approvals))
+  ok(det.me === 'me' && det.merge && typeof det.merge.ready === 'boolean', 'detail merge info', JSON.stringify([det.me, det.merge]))
   if (KIND === 'github') {
     ok(!det.reviewers.some((x) => x.name === 'bob'), 'a comment-only review is not a reviewer state', JSON.stringify(det.reviewers))
     ok(det.comments.some((c) => c.file === 'x.js' && c.line === 4) && det.comments.some((c) => c.kind === 'changes'), 'github comments (line + review)', JSON.stringify(det.comments))

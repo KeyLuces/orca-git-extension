@@ -1542,6 +1542,8 @@ async function githubInbox(h, where, via) {
   const here = where?.kind === 'github' && where.host === h.host && /^[\w.-]+\/[\w.-]+$/.test(where.path) ? where.path : null
   const base = { provider: 'github', host: h.host, protocol: h.protocol, via }
   if (via === 'cli') {
+    const meR = await runProc('gh', ['api', 'user', '--jq', '.login'], { timeout: 20_000, env: h.host === 'github.com' ? undefined : { GH_HOST: h.host } }).catch(() => null)
+    base.me = meR?.code === 0 ? meR.stdout.trim() : ''
     const fields = 'number,title,url,repository,author,updatedAt,isDraft'
     const env = h.host === 'github.com' ? undefined : { GH_HOST: h.host }
     const search = (...q) => runProc('gh', ['search', 'prs', ...q, '--state=open', '--json', fields, '--limit', '50'], { timeout: 30_000, env })
@@ -1566,6 +1568,7 @@ async function githubInbox(h, where, via) {
   // the saved Git login: @me works only for user tokens, so ask who that is first
   const me = await forgeApi(h, 'GET', '/user')
   if (!me?.login) throw new GitError(`could not tell who is signed in to ${h.host}`)
+  base.me = me.login
   const q = (s) => forgeApi(h, 'GET', `/search/issues?per_page=50&q=${encodeURIComponent(`is:pr is:open ${s}`)}`).then((r) => r?.items || [])
   const [rev, asg, mine, repo] = await Promise.all([q(`review-requested:${me.login}`), q(`assignee:${me.login}`), q(`author:${me.login}`), here ? q(`repo:${here}`) : []])
   return collect([[rev, 'review'], [asg, 'assigned'], [mine, 'mine'], [repo, 'repo']], (p) => ({
@@ -1603,6 +1606,7 @@ async function gitlabInbox(h, where, via) {
     host: h.host,
     protocol: h.protocol,
     via,
+    me: me.username,
     url: m.web_url,
     number: m.iid,
     projectId: m.project_id,
@@ -1655,7 +1659,13 @@ async function reviewsList(orca, repo) {
   )
   providers.forEach((p) => delete p._h)
   items.sort((a, b) => b.updated - a.updated)
-  await Promise.all(items.slice(0, 25).map(async (it) => (it.ci = await reviewCi(it).catch(() => null))))
+  await Promise.all(
+    items.slice(0, 40).map(async (it) => {
+      const [ci, ap] = await Promise.all([reviewCi(it).catch(() => null), reviewApprovals(it).catch(() => null)])
+      it.ci = ci
+      if (ap) Object.assign(it, ap)
+    })
+  )
   return { items, providers, errors, repoPath: where?.path || null, repoHost: where?.host || null }
 }
 
@@ -1679,13 +1689,34 @@ async function itemTarget(it) {
 }
 const cliFail = (r, what) => new GitError((r.stderr || r.stdout).trim() || what)
 
+/** My approval and the approval count of one pull/merge request, for the list. */
+async function reviewApprovals(it) {
+  const { w, via } = await itemTarget(it)
+  if (w.kind === 'github') {
+    const list = await forgeCall(w, via, 'GET', `/repos/${w.path}/pulls/${w.number}/reviews?per_page=100`)
+    const latest = new Map()
+    for (const r of Array.isArray(list) ? list : []) if (r.user?.login && r.state !== 'COMMENTED' && r.state !== 'PENDING') latest.set(r.user.login, r.state)
+    return { myApproved: !!it.me && latest.get(it.me) === 'APPROVED', approvedCount: [...latest.values()].filter((s) => s === 'APPROVED').length, approvalsRequired: null }
+  }
+  const a = await gitlabGet(w, via, `${w.mr}/approvals`)
+  if (!a || Array.isArray(a)) return null
+  const by = (a.approved_by || []).map((x) => x.user?.username).filter(Boolean)
+  return { myApproved: a.user_has_approved ?? (!!it.me && by.includes(it.me)), approvedCount: by.length, approvalsRequired: a.approvals_required ?? null }
+}
+
 /** Approve, request changes or comment on a pull/merge request. */
 async function reviewAct(it) {
   const { action } = it
   const text = String(it.body || '').trim()
-  if (!['approve', 'changes', 'comment'].includes(action)) throw new GitError('unknown review action')
-  if (action !== 'approve' && !text) throw new GitError('Write a comment first')
+  if (!['approve', 'unapprove', 'merge', 'changes', 'comment'].includes(action)) throw new GitError('unknown review action')
+  if ((action === 'changes' || action === 'comment') && !text) throw new GitError('Write a comment first')
   const { w, via } = await itemTarget(it)
+  if (action === 'merge') return reviewMerge(w, via, it)
+  if (action === 'unapprove') {
+    if (w.kind === 'github') throw new GitError('GitHub does not let you take back an approval: request changes or comment instead')
+    await forgeCall(w, via, 'POST', `/${w.mr}/unapprove`)
+    return { ok: true }
+  }
   if (w.kind === 'github') {
     if (via === 'cli') {
       const flag = { approve: '--approve', changes: '--request-changes', comment: '--comment' }[action]
@@ -1715,6 +1746,26 @@ async function reviewAct(it) {
 }
 
 /**
+ * Merge a pull/merge request. GitLab: squash, delete the source branch, or auto-merge once the
+ * pipeline passes. GitHub: merge or squash, then delete the head branch when asked.
+ */
+async function reviewMerge(w, via, it) {
+  const o = it.options || {}
+  if (w.kind === 'github') {
+    const pr = await forgeCall(w, via, 'GET', `/repos/${w.path}/pulls/${w.number}`)
+    const r = await forgeCall(w, via, 'PUT', `/repos/${w.path}/pulls/${w.number}/merge`, { merge_method: o.squash ? 'squash' : 'merge', sha: pr?.head?.sha })
+    if (r && r.merged === false) throw new GitError(r.message || 'GitHub did not merge it')
+    if (o.removeSource && pr?.head?.ref && pr.head.repo?.full_name === pr.base?.repo?.full_name)
+      await forgeCall(w, via, 'DELETE', `/repos/${w.path}/git/refs/heads/${pr.head.ref.split('/').map(encodeURIComponent).join('/')}`).catch(() => null)
+    return { ok: true, state: 'merged' }
+  }
+  const body = { squash: !!o.squash, should_remove_source_branch: !!o.removeSource }
+  if (o.auto) body.merge_when_pipeline_succeeds = true
+  const r = await forgeCall(w, via, 'PUT', `/${w.mr}/merge`, body)
+  return { ok: true, state: r?.state === 'merged' ? 'merged' : o.auto ? 'auto' : r?.state || 'merged' }
+}
+
+/**
  * One pull/merge request in full, for the detail page: description, people and their review state,
  * approvals, comments (with file and line for inline ones) and commits. Same shape for GitHub and GitLab.
  */
@@ -1725,14 +1776,16 @@ async function reviewDetail(it) {
   if (w.kind === 'github') {
     const get = (p) => forgeCall(w, via, 'GET', p)
     const base = `/repos/${w.path}`
-    const [pr, reviews, issueComments, lineComments, commits] = await Promise.all([
+    const [pr, reviews, issueComments, lineComments, commits, meU] = await Promise.all([
       get(`${base}/pulls/${w.number}`),
       soft(get(`${base}/pulls/${w.number}/reviews?per_page=100`)),
       soft(get(`${base}/issues/${w.number}/comments?per_page=100`)),
       soft(get(`${base}/pulls/${w.number}/comments?per_page=100`)),
-      soft(get(`${base}/pulls/${w.number}/commits?per_page=100`))
+      soft(get(`${base}/pulls/${w.number}/commits?per_page=100`)),
+      soft(get('/user'))
     ])
     if (!pr) throw new GitError('could not read the pull request')
+    const meG = meU?.login || it.me || ''
     // each person's latest review decides their state
     const latest = new Map()
     for (const r of Array.isArray(reviews) ? reviews : []) {
@@ -1765,17 +1818,24 @@ async function reviewDetail(it) {
       approvals: { given: [...latest.values()].filter((s) => s === 'approved').length, required: null },
       stats: { files: pr.changed_files ?? null, add: pr.additions ?? null, del: pr.deletions ?? null },
       mergeable: pr.mergeable_state || null,
+      me: meG,
+      myApproved: !!meG && latest.get(meG) === 'approved',
+      canApprove: !!meG && pr.user?.login !== meG,
+      canUnapprove: false,
+      merge: ghMergeInfo(pr),
       comments,
       commits: (Array.isArray(commits) ? commits : []).map((c) => ({ sha: c.sha, subject: String(c.commit?.message || '').split('\n')[0], author: c.commit?.author?.name || c.author?.login || '', at: t(c.commit?.author?.date) }))
     }
   }
-  const [mr, approvals, notes, commits] = await Promise.all([
+  const [mr, approvals, notes, commits, meU] = await Promise.all([
     gitlabGet(w, via, w.mr),
     soft(gitlabGet(w, via, `${w.mr}/approvals`)),
     soft(gitlabGet(w, via, `${w.mr}/notes?sort=asc&order_by=created_at&per_page=100`)),
-    soft(gitlabGet(w, via, `${w.mr}/commits?per_page=100`))
+    soft(gitlabGet(w, via, `${w.mr}/commits?per_page=100`)),
+    soft(gitlabGet(w, via, 'user'))
   ])
   if (!mr) throw new GitError('could not read the merge request')
+  const meL = meU?.username || it.me || ''
   const approvedBy = new Set((approvals?.approved_by || []).map((a) => a.user?.username).filter(Boolean))
   const reviewers = (mr.reviewers || []).map((u) => ({ name: u.username, state: approvedBy.has(u.username) ? 'approved' : 'pending' }))
   for (const u of approvedBy) if (!reviewers.some((r) => r.name === u)) reviewers.push({ name: u, state: 'approved' })
@@ -1797,11 +1857,57 @@ async function reviewDetail(it) {
     approvals: { given: approvedBy.size, required: approvals ? (approvals.approvals_required ?? null) : null },
     stats: { files: mr.changes_count != null ? parseInt(mr.changes_count, 10) || null : null, add: null, del: null },
     mergeable: mr.detailed_merge_status || mr.merge_status || null,
+    me: meL,
+    myApproved: approvals?.user_has_approved ?? (!!meL && approvedBy.has(meL)),
+    canApprove: approvals?.user_can_approve ?? (!!meL && mr.author?.username !== meL),
+    canUnapprove: true,
+    merge: glMergeInfo(mr, approvals),
     comments: (Array.isArray(notes) ? notes : [])
       .filter((n) => !n.system)
       .map((n) => ({ author: n.author?.username || '', body: n.body || '', at: t(n.created_at), file: n.position?.new_path || null, line: n.position?.new_line || null })),
     commits: (Array.isArray(commits) ? commits : []).map((c) => ({ sha: c.id, subject: c.title || String(c.message || '').split('\n')[0], author: c.author_name || '', at: t(c.created_at) }))
   }
+}
+
+/** Can it be merged now, and if not why (in GitLab's words); the merge options' defaults. */
+function glMergeInfo(mr, approvals) {
+  const st = mr.detailed_merge_status || ''
+  const pipe = mr.head_pipeline?.status || mr.pipeline?.status || null
+  const ci = pipe === 'success' ? 'passed' : pipe === 'failed' ? 'failed' : ['running', 'pending', 'created', 'waiting_for_resource', 'preparing', 'scheduled'].includes(pipe) ? 'running' : pipe ? pipe : null
+  const why = {
+    draft_status: 'Mark it as ready first: it is a draft',
+    not_approved: `Needs approval${approvals?.approvals_left ? ` (${approvals.approvals_left} more)` : ''}`,
+    conflict: 'Merge conflicts must be resolved first',
+    broken_status: 'Merge conflicts must be resolved first',
+    need_rebase: 'The source branch must be rebased onto the target first',
+    discussions_not_resolved: 'All threads must be resolved first',
+    ci_must_pass: 'The pipeline must pass first',
+    ci_still_running: 'The pipeline is still running',
+    blocked_status: 'Blocked by another merge request',
+    not_open: 'It is not open',
+    requested_changes: 'A reviewer requested changes',
+    jira_association_missing: 'A Jira issue must be linked first',
+    checking: 'GitLab is still checking whether it can be merged',
+    unchecked: 'GitLab is still checking whether it can be merged'
+  }[st]
+  const can = mr.user?.can_merge !== false
+  const ready = mr.state === 'opened' && (st ? st === 'mergeable' : !mr.has_conflicts && mr.merge_status !== 'cannot_be_merged')
+  return {
+    ready: ready && can,
+    // GitLab merges a running pipeline's MR when it passes: offered when only the pipeline is in the way
+    canAuto: can && mr.state === 'opened' && (st === 'ci_still_running' || (ready && ci === 'running')),
+    autoSet: !!mr.merge_when_pipeline_succeeds,
+    reason: !can ? 'You are not allowed to merge here' : ready ? null : why || (mr.has_conflicts ? 'Merge conflicts must be resolved first' : 'GitLab says it cannot be merged yet'),
+    ci,
+    squash: !!mr.squash || mr.squash_on_merge === true,
+    removeSource: !!(mr.force_remove_source_branch ?? mr.should_remove_source_branch)
+  }
+}
+function ghMergeInfo(pr) {
+  const st = pr.mergeable_state || ''
+  const why = { dirty: 'Merge conflicts must be resolved first', blocked: 'Blocked: needs approvals or passing checks', behind: 'The branch is out of date with the base branch', draft: 'Mark it as ready first: it is a draft', unknown: 'GitHub is still checking whether it can be merged', unstable: null, clean: null, has_hooks: null }[st]
+  const ready = pr.state === 'open' && !pr.merged && pr.mergeable !== false && !pr.draft && !why
+  return { ready, canAuto: false, autoSet: !!pr.auto_merge, reason: ready ? null : pr.draft ? 'Mark it as ready first: it is a draft' : why || 'GitHub says it cannot be merged yet', ci: null, squash: false, removeSource: true }
 }
 
 /** A pull/merge request's title, description and diff, from its service. */

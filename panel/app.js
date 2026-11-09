@@ -4626,8 +4626,16 @@ function reviewCount() {
   const d = state.reviews
   if (!d || d.repo !== state.repo) return 0
   const all = !d.repoPath || store.get('reviewsAllRepos', false)
-  return d.items.filter((it) => it.roles.some((r) => r !== 'repo') && (all || inThisRepo(it, d))).length
+  return d.items.filter((it) => needsMe(it) && (all || inThisRepo(it, d))).length
 }
+/** Waiting for me: I am asked to review it or it is assigned to me, it is not mine, and I have not approved it yet. */
+const isMine = (it) => it.roles.includes('mine') || (!!it.me && it.author === it.me)
+const needsMe = (it) => (it.roles.includes('review') || it.roles.includes('assigned')) && !isMine(it) && !it.myApproved
+const RV_TABS = [
+  ['todo', 'To review', needsMe],
+  ['mine', 'Opened by me', isMine],
+  ['all', 'All open', () => true]
+]
 async function loadReviews(force) {
   if (!force && state.reviews && state.reviews.repo === state.repo && Date.now() - state.reviews.at < 120000) return state.reviews
   const repo = state.repo
@@ -4648,6 +4656,7 @@ async function loadReviews(force) {
 }
 
 async function viewReviews() {
+  state.rvSel ||= new Set()
   const root = h('div', { class: 'view reviews' })
   // Show at once: the last list (even from an earlier session) while a fresh one loads behind it.
   if (!state.reviews) state.reviews = store.get('reviewsCache', null)
@@ -4662,24 +4671,23 @@ async function viewReviews() {
     p.catch(() => {})
   }
   const data = state.reviews
-  const filter = state.reviewFilter || 'all'
+  const filter = RV_TABS.some(([k]) => k === state.reviewFilter) ? state.reviewFilter : 'todo'
   const allRepos = !data.repoPath || store.get('reviewsAllRepos', false)
+  const scoped = data.items.filter((it) => allRepos || inThisRepo(it, data))
   const where = data.repoPath && h(
     'div',
     { class: 'segmented' },
     data.repoPath && h('button', { class: allRepos ? '' : 'on', title: `${data.repoHost}/${data.repoPath}`, onClick: () => (store.set('reviewsAllRepos', false), renderView({ force: true })) }, icon('branch', 11), data.repoPath.split('/').pop()),
     h('button', { class: allRepos ? 'on' : '', title: 'Every repository on GitHub and GitLab you are signed in to', onClick: () => (store.set('reviewsAllRepos', true), renderView({ force: true })) }, 'All repos')
   )
+  // GitLab-style tabs with counts: To review (waiting for me), Opened by me, All open
   const seg = h(
     'div',
-    { class: 'segmented rv-filter' },
-    [
-      ['all', 'All'],
-      ['review', 'To review'],
-      ['assigned', 'Assigned to me'],
-      ['mine', 'Opened by me'],
-      ['repo', 'All open']
-    ].map(([k, l]) => h('button', { class: filter === k ? 'on' : '', onClick: () => ((state.reviewFilter = k), renderView({ force: true })) }, l))
+    { class: 'segmented rv-filter rv-tabs' },
+    RV_TABS.map(([k, l, fn]) => {
+      const n = scoped.filter(fn).length
+      return h('button', { class: filter === k ? 'on' : '', onClick: () => ((state.reviewFilter = k), state.rvSel.clear(), renderView({ force: true })) }, l, h('span', { class: `rv-n ${k === 'todo' && n ? 'hot' : ''}` }, String(n)))
+    })
   )
   root.append(
     h(
@@ -4718,22 +4726,165 @@ async function viewReviews() {
   }
   for (const e of data.errors || []) root.append(h('div', { class: 'banner' }, h('div', { class: 'row' }, icon('alert'), h('span', null, e))))
 
-  // "All" = everything that involves me; "All open" = every open one in this repository.
-  // By default only this repository's (same host and project as its remote); "All repos" widens it.
-  const items = data.items.filter((it) => (filter === 'all' ? it.roles.some((r) => r !== 'repo') : it.roles.includes(filter)) && (allRepos || inThisRepo(it, data)))
-  root.append(h('div', { class: 'section-head' }, filter === 'assigned' ? 'Assigned to you' : filter === 'review' ? 'Waiting for your review' : 'Open for you', h('span', { class: 'count' }, items.length)))
-  if (!items.length) root.append(h('div', { class: 'empty' }, icon('check', 28), h('div', null, allRepos ? 'Nothing waiting for you' : `Nothing here for ${data.repoPath.split('/').pop()}`), !allRepos && h('button', { class: 'btn sm', style: { marginTop: '10px' }, onClick: () => (store.set('reviewsAllRepos', true), renderView({ force: true })) }, 'Show all repos')))
-  for (const it of items) root.append(reviewRow(it))
+  const fn = RV_TABS.find(([k]) => k === filter)[2]
+  const items = scoped.filter(fn)
+  for (const u of [...state.rvSel]) if (!items.some((it) => it.url === u)) state.rvSel.delete(u)
+  const selAll = h('input', { type: 'checkbox', class: 'rv-check', title: 'Select all', 'aria-label': 'Select all' })
+  selAll.checked = items.length > 0 && items.every((it) => state.rvSel.has(it.url))
+  selAll.indeterminate = !selAll.checked && items.some((it) => state.rvSel.has(it.url))
+  selAll.addEventListener('change', () => {
+    for (const it of items) selAll.checked ? state.rvSel.add(it.url) : state.rvSel.delete(it.url)
+    root.querySelectorAll('.review-row').forEach((r) => r.classList.toggle('sel', state.rvSel.has(r.dataset.url)))
+    root.querySelectorAll('.review-row .rv-check').forEach((c) => (c.checked = state.rvSel.has(c.closest('.review-row').dataset.url)))
+    drawBulk()
+  })
+  root.append(
+    h(
+      'div',
+      { class: 'section-head rv-head' },
+      items.length > 0 && selAll,
+      { todo: 'Waiting for your review', mine: 'Opened by you', all: 'All open' }[filter],
+      h('span', { class: 'count' }, items.length)
+    )
+  )
+  if (!items.length)
+    root.append(
+      h(
+        'div',
+        { class: 'empty' },
+        icon('check', 28),
+        h('div', null, filter === 'todo' ? 'Nothing waiting for your review' : filter === 'mine' ? 'You have no open merge requests here' : 'No open merge requests'),
+        !allRepos && h('button', { class: 'btn sm', style: { marginTop: '10px' }, onClick: () => (store.set('reviewsAllRepos', true), renderView({ force: true })) }, 'Show all repos')
+      )
+    )
+  const list = h('div', { class: 'rv-list' })
+  for (const it of items) list.append(reviewRow(it, { onSelect: () => ((selAll.checked = items.every((x) => state.rvSel.has(x.url))), (selAll.indeterminate = !selAll.checked && items.some((x) => state.rvSel.has(x.url))), drawBulk()), filter }))
+  root.append(list)
+
+  // the bulk bar: shows when one or more are selected
+  const bulk = h('div', { class: 'rv-bulk' })
+  function drawBulk() {
+    const sel = items.filter((it) => state.rvSel.has(it.url))
+    clear(bulk)
+    bulk.classList.toggle('on', sel.length > 0)
+    if (!sel.length) return
+    const approvable = sel.filter((it) => !isMine(it) && !it.myApproved)
+    bulk.append(
+      h('span', { class: 'rv-bulk-n' }, `${sel.length} selected`),
+      h('button', { class: 'btn sm', onClick: () => (state.rvSel.clear(), renderView({ force: true })) }, 'Clear'),
+      h('span', { class: 'grow' }),
+      h('button', { class: 'btn sm', disabled: !approvable.length, title: approvable.length ? '' : 'Nothing selected that you can approve', onClick: () => bulkAct('approve', approvable) }, icon('check', 12), `Approve${approvable.length ? ' ' + approvable.length : ''}`),
+      h('button', { class: 'btn sm primary', onClick: () => bulkAct('merge', sel) }, icon('merge', 12), `Merge ${sel.length}`)
+    )
+  }
+  async function bulkAct(action, list) {
+    const noun = list.length === 1 ? 'merge request' : 'merge requests'
+    if (action === 'merge' && !(await confirmBox(`Merge ${list.length} ${noun}?`, list.map((it) => `${it.repo} ${mrRef(it)} ${it.title}`).join('\n') + '\n\nEach one is merged with its project\'s default options. Those that cannot be merged yet are skipped and say why.', 'Merge'))) return
+    if (action === 'approve' && !(await confirmBox(`Approve ${list.length} ${noun}?`, list.map((it) => `${it.repo} ${mrRef(it)} ${it.title}`).join('\n'), 'Approve'))) return
+    bulk.querySelectorAll('button').forEach((b) => (b.disabled = true))
+    await runReviewActions(list, action, root)
+  }
+  root.append(bulk)
+  drawBulk()
   return root
 }
 
-function reviewRow(it) {
+/** Approve or merge several, one after another, animating each row; then the list is read again. */
+async function runReviewActions(list, action, root) {
+  let done = 0
+  const failed = []
+  for (const it of list) {
+    const row = root?.querySelector(`.review-row[data-url="${CSS.escape(it.url)}"]`)
+    row?.classList.add('rv-busy')
+    try {
+      await doReviewAction(it, action)
+      done++
+      state.rvSel.delete(it.url)
+      if (row) await rowDone(row, action, it)
+    } catch (e) {
+      failed.push(`${mrRef(it)}: ${e.message}`)
+      row?.classList.remove('rv-busy')
+      row?.classList.add('rv-shake')
+      setTimeout(() => row?.classList.remove('rv-shake'), 600)
+    }
+  }
+  if (done) toast(`${{ approve: 'Approved', unapprove: 'Approval revoked', merge: 'Merged' }[action]} ${done} ${done === 1 ? mrNounShort(list[0]) : 'merge requests'}`)
+  if (failed.length) toast(failed.join('\n'), 'error', 9000)
+  await refreshReviewsAfterAction()
+}
+const mrNounShort = (it) => (it.provider === 'github' ? 'pull request' : 'merge request')
+
+/** One action on one item. Merge reads the item first, so it is merged only when it can be, with its defaults. */
+async function doReviewAction(it, action, options) {
+  if (action === 'merge' && !options) {
+    const d = await request('reviews.detail', { ...it, ci: undefined }, 90000)
+    if (d.state !== 'open') throw new Error(`it is already ${d.state}`)
+    if (!d.merge?.ready) throw new Error(d.merge?.reason || 'it cannot be merged yet')
+    options = { squash: d.merge.squash, removeSource: d.merge.removeSource }
+  }
+  const r = await request('reviews.act', { ...it, ci: undefined, action, options }, 90000)
+  // the list changes at once; the real data follows
+  const items = state.reviews?.items
+  if (items) {
+    const i = items.findIndex((x) => x.url === it.url)
+    if (i >= 0) {
+      if (action === 'merge' && r?.state !== 'auto') items.splice(i, 1)
+      else if (action === 'approve') items[i] = { ...items[i], myApproved: true, approvedCount: (items[i].approvedCount || 0) + 1 }
+      else if (action === 'unapprove') items[i] = { ...items[i], myApproved: false, approvedCount: Math.max(0, (items[i].approvedCount || 1) - 1) }
+    }
+  }
+  return r
+}
+
+/** The row says what happened (a check, a colour), then leaves the list when it no longer belongs there. */
+async function rowDone(row, action, it) {
+  row.classList.remove('rv-busy')
+  row.classList.add('rv-done', `rv-done-${action}`)
+  const badge = row.querySelector('.rv-result')
+  if (badge) append(clear(badge), [icon(action === 'merge' ? 'merge' : 'check', 12), { approve: 'Approved', unapprove: 'Revoked', merge: 'Merged' }[action]])
+  await new Promise((r) => setTimeout(r, 650))
+  const stays = action !== 'merge' && (state.reviewFilter === 'all' || (state.reviewFilter === 'mine' && isMine(it)))
+  if (stays) return
+  row.style.height = row.offsetHeight + 'px'
+  row.offsetHeight // start the collapse from the current height
+  row.classList.add('rv-leave')
+  await new Promise((r) => setTimeout(r, 320))
+  row.remove()
+}
+
+/** After any action: read the list again from GitHub/GitLab (with a retry, as they take a moment). */
+async function refreshReviewsAfterAction() {
+  if (state.tab === 'reviews') renderView({ force: true })
+  renderTabs()
+  await new Promise((r) => setTimeout(r, 700))
+  await loadReviews(true).catch(() => {})
+  if (state.tab === 'reviews') renderView({ force: true })
+}
+
+function reviewRow(it, { onSelect, filter } = {}) {
   const open = () => openLink(it.url)
   const noun = it.provider === 'github' ? 'pull request' : 'merge request'
   const show = () => reviewDetailSheet(it)
-  return h(
+  const check = h('input', { type: 'checkbox', class: 'rv-check', 'aria-label': `Select ${mrRef(it)}`, onClick: (e) => e.stopPropagation() })
+  check.checked = state.rvSel.has(it.url)
+  check.addEventListener('change', () => {
+    check.checked ? state.rvSel.add(it.url) : state.rvSel.delete(it.url)
+    row.classList.toggle('sel', check.checked)
+    onSelect?.()
+  })
+  const act = (action) => async (e) => {
+    e.stopPropagation()
+    const b = e.currentTarget
+    if (action === 'merge' && !(await confirmBox(`Merge ${mrRef(it)}?`, `${it.repo} ${mrRef(it)}\n${it.title}\n\nMerged with the project's default options.`, 'Merge'))) return
+    b.disabled = true
+    clear(b).append(h('span', { class: 'spinner' }))
+    await runReviewActions([it], action, row.closest('.view'))
+  }
+  const approvals = it.approvedCount != null && h('span', { class: `rv-appr ${it.approvalsRequired && it.approvedCount >= it.approvalsRequired ? 'ok' : ''}`, title: 'Approvals' }, icon('check', 10), it.approvalsRequired ? `${it.approvedCount}/${it.approvalsRequired}` : String(it.approvedCount))
+  const row = h(
     'div',
-    { class: 'review-row', role: 'button', tabindex: 0, title: `Open ${mrRef(it)}`, onClick: show, onKeydown: (e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), show()) },
+    { class: `review-row ${state.rvSel.has(it.url) ? 'sel' : ''}`, 'data-url': it.url, role: 'button', tabindex: 0, title: `Open ${mrRef(it)}`, onClick: show, onKeydown: (e) => (e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget && (e.preventDefault(), show()) },
+    check,
     h('span', { class: 'review-icon' }, icon('merge', 15)),
     h(
       'div',
@@ -4746,7 +4897,9 @@ function reviewRow(it) {
         it.roles.includes('review') && h('span', { class: 'pill role' }, 'Review requested'),
         it.roles.includes('assigned') && h('span', { class: 'pill role' }, 'Assigned'),
         it.roles.includes('mine') && h('span', { class: 'pill role' }, 'Mine'),
-        it.ci && h('span', { class: `ci ci-${it.ci}`, title: `CI: ${it.ci}` }, ciIcon(it.ci), it.ci)
+        it.ci && h('span', { class: `ci ci-${it.ci}`, title: `CI: ${it.ci}` }, ciIcon(it.ci), it.ci),
+        approvals,
+        it.myApproved && h('span', { class: 'pill rv-mine-ok' }, icon('check', 10), 'You approved')
       ),
       h(
         'div',
@@ -4759,10 +4912,14 @@ function reviewRow(it) {
     h(
       'div',
       { class: 'review-actions' },
+      h('span', { class: 'rv-result' }),
+      !isMine(it) && !it.myApproved && h('button', { class: 'btn sm rv-approve', title: `Approve ${mrRef(it)}`, onClick: act('approve') }, icon('check', 12), 'Approve'),
+      h('button', { class: 'btn sm rv-merge', title: `Merge ${mrRef(it)} (when it can be merged)`, onClick: act('merge') }, icon('merge', 12), 'Merge'),
       h('button', { class: 'icon-btn', title: `Open the ${noun} in the browser`, onClick: (e) => (e.stopPropagation(), open()) }, icon('open', 14)),
       h('span', { class: 'review-chev', 'aria-hidden': 'true' }, icon('right', 14))
     )
   )
+  return row
 }
 
 async function actOnReview(it, action, body, btn) {
@@ -4775,8 +4932,10 @@ async function actOnReview(it, action, body, btn) {
     await request('reviews.act', { ...it, ci: undefined, action, body }, 90000)
     toast({ approve: 'Approved', changes: 'Changes requested', comment: 'Comment posted' }[action] + `: ${it.title}`)
     if (action === 'approve' || action === 'changes') {
-      await loadReviews(true).catch(() => {})
-      if (state.tab === 'reviews') renderView({ force: true })
+      const its = state.reviews?.items
+      const i = its ? its.findIndex((x) => x.url === it.url) : -1
+      if (i >= 0 && action === 'approve') its[i] = { ...its[i], myApproved: true, approvedCount: (its[i].approvedCount || 0) + 1 }
+      refreshReviewsAfterAction()
     }
     return true
   } catch (e) {
@@ -5059,7 +5218,8 @@ async function reviewDetailSheet(it, tab = 'overview') {
     const left = h(
       'div',
       { class: 'mrd-main' },
-      h('div', { class: 'mrd-desc' }, h('div', { class: 'mrd-label' }, 'Description'), d.body.trim() ? mdRender(d.body) : h('div', { class: 'dim' }, 'No description'))
+      h('div', { class: 'mrd-desc' }, h('div', { class: 'mrd-label' }, 'Description'), d.body.trim() ? mdRender(d.body) : h('div', { class: 'dim' }, 'No description')),
+      mergeWidget()
     )
     const activity = h(
       'div',
@@ -5107,6 +5267,84 @@ async function reviewDetailSheet(it, tab = 'overview') {
     )
     return h('div', { class: 'mrd-overview' }, left, side, activity)
   }
+  // Like GitLab's merge widget: pipeline, then approvals (Approve / Revoke), then Merge with its options.
+  function mergeWidget() {
+    const m = d.merge || {}
+    const ci = m.ci || it.ci
+    const open = d.state === 'open'
+    const rowEl = (cls, ic, ...kids) => h('div', { class: `mrw-row ${cls}` }, h('span', { class: 'mrw-ic' }, ic), ...kids)
+    const busy = (b, text) => ((b.disabled = true), clear(b).append(h('span', { class: 'spinner' }), text))
+    async function act(b, action, options, text) {
+      const keep = [...b.childNodes]
+      busy(b, text)
+      try {
+        const r = await doReviewAction(it, action, options)
+        widget.classList.add(`mrw-done-${action}`)
+        toast(`${{ approve: 'Approved', unapprove: 'Approval revoked', merge: r?.state === 'auto' ? 'Set to merge when the pipeline passes' : 'Merged' }[action]}: ${it.title}`)
+        await new Promise((res) => setTimeout(res, 600))
+        refreshReviewsAfterAction()
+        if (state.sheets.includes(sheet)) (closeSheet(), reviewDetailSheet(it))
+      } catch (e) {
+        toast(e.message, 'error')
+        b.disabled = false
+        clear(b).append(...keep)
+        widget.classList.add('rv-shake')
+        setTimeout(() => widget.classList.remove('rv-shake'), 600)
+      }
+    }
+    const rows = []
+    if (ci)
+      rows.push(
+        rowEl(`ci-${ci}`, ciIcon(ci), h('span', { class: 'grow' }, h('b', null, `Pipeline ${PIPE_LABEL[ci]?.toLowerCase() || ci}`), d.headSha && h('span', { class: 'dim mono' }, ` for ${d.headSha.slice(0, 8)}`)), h('button', { class: 'btn sm', onClick: () => go('pipeline') }, 'View pipeline'))
+      )
+    const approvedBy = d.reviewers.filter((r) => r.state === 'approved').map((r) => r.name)
+    const need = d.approvals.required
+    const apText = approvedBy.length
+      ? [h('b', null, `Approved by ${approvedBy.join(', ')}`), need ? h('span', { class: 'dim' }, ` · ${d.approvals.given} of ${need} required`) : null]
+      : need
+        ? [h('b', null, `Requires ${need} approval${need > 1 ? 's' : ''}`), h('span', { class: 'dim' }, ' · none yet')]
+        : [h('b', null, 'Approval is optional')]
+    const apOk = need ? d.approvals.given >= need : approvedBy.length > 0
+    rows.push(
+      rowEl(
+        apOk ? 'ok' : '',
+        icon(apOk ? 'check' : 'user', 13),
+        open && d.canApprove && !d.myApproved && h('button', { class: 'btn sm primary mrw-approve', onClick: (e) => act(e.currentTarget, 'approve', null, 'Approving…') }, 'Approve'),
+        open && d.myApproved && d.canUnapprove && h('button', { class: 'btn sm mrw-revoke', onClick: (e) => act(e.currentTarget, 'unapprove', null, 'Revoking…') }, 'Revoke approval'),
+        h('span', { class: 'grow' }, ...apText, d.myApproved && h('span', { class: 'mrw-you' }, ' · you approved'))
+      )
+    )
+    if (!open) rows.push(rowEl(d.state === 'merged' ? 'merged' : '', icon(d.state === 'merged' ? 'merge' : 'x', 13), h('span', { class: 'grow' }, h('b', null, d.state === 'merged' ? 'Merged' : 'Closed'))))
+    else {
+      const squash = h('input', { type: 'checkbox' })
+      squash.checked = !!m.squash
+      const remove = h('input', { type: 'checkbox' })
+      remove.checked = !!m.removeSource
+      const opts = () => ({ squash: squash.checked, removeSource: remove.checked })
+      const target = d.target ? ` into ${d.target}` : ''
+      const can = m.ready || m.canAuto
+      rows.push(
+        rowEl(
+          `mrw-merge ${m.ready ? 'ok' : m.autoSet ? 'auto' : 'blocked'}`,
+          icon('merge', 13),
+          h(
+            'div',
+            { class: 'grow mrw-merge-body' },
+            h('div', null, m.autoSet ? h('b', null, 'Set to merge when the pipeline passes') : m.ready ? h('b', null, `Ready to merge${target}`) : h('b', null, 'Merge blocked'), !m.ready && !m.autoSet && m.reason && h('span', { class: 'dim' }, ` · ${m.reason}`)),
+            can && h('div', { class: 'mrw-opts' }, h('label', { class: 'check' }, remove, 'Delete source branch'), h('label', { class: 'check' }, squash, 'Squash commits'))
+          ),
+          m.ready
+            ? h('button', { class: 'btn primary mrw-merge-btn', onClick: async (e) => (await confirmBox(`Merge ${mrRef(it)}${target}?`, `${it.title}${squash.checked ? '\nCommits are squashed into one.' : ''}${remove.checked ? `\nThe branch ${d.source} is deleted afterwards.` : ''}`, 'Merge')) && act(e.currentTarget, 'merge', opts(), 'Merging…') }, 'Merge')
+            : m.canAuto && !m.autoSet
+              ? h('button', { class: 'btn primary mrw-merge-btn', title: 'GitLab merges it as soon as the pipeline passes', onClick: (e) => act(e.currentTarget, 'merge', { ...opts(), auto: true }, 'Setting…') }, 'Set to auto-merge')
+              : !m.autoSet && h('button', { class: 'btn mrw-merge-btn', disabled: true, title: m.reason || '' }, 'Merge')
+        )
+      )
+    }
+    const widget = h('div', { class: 'mrw' }, ...rows)
+    return widget
+  }
+
   function commitsPane() {
     if (!d.commits.length) return h('div', { class: 'empty' }, 'No commits')
     return h(
@@ -5136,25 +5374,10 @@ async function reviewDetailSheet(it, tab = 'overview') {
   const bar = h(
     'div',
     { class: 'mrd-bar' },
-    h('span', { class: 'dim grow' }, own ? `Your own ${mrNoun(it)}` : d.state !== 'open' ? `This ${mrNoun(it)} is ${d.state}` : 'Read it through, then decide'),
+    h('span', { class: 'dim grow' }, own ? `Your own ${mrNoun(it)}` : d.state !== 'open' ? `This ${mrNoun(it)} is ${d.state}` : 'Approve and merge are in the box under the description'),
     h('button', { class: 'btn', onClick: () => aiReviewModal(it) }, 'AI review'),
     d.state === 'open' && h('button', { class: 'btn', onClick: () => reviewDialog(it, 'comment') }, icon('edit', 12), 'Comment'),
-    d.state === 'open' && !own && h('button', { class: 'btn', onClick: () => reviewDialog(it, 'changes') }, 'Request changes'),
-    d.state === 'open' &&
-      !own &&
-      h(
-        'button',
-        {
-          class: 'btn primary',
-          onClick: async (e) => {
-            const b = e.currentTarget
-            if (!(await confirmBox(`Approve this ${mrNoun(it)}?`, `${it.repo} ${mrRef(it)}\n${it.title}`, 'Approve'))) return
-            if (await actOnReview(it, 'approve', '', b)) state.sheets.includes(sheet) && (closeSheet(), reviewDetailSheet(it))
-          }
-        },
-        icon('check', 12),
-        'Approve'
-      )
+    d.state === 'open' && !own && h('button', { class: 'btn', onClick: () => reviewDialog(it, 'changes') }, 'Request changes')
   )
   append(clear(body), [head, tabs, pane, bar])
   go(tab === 'commits' ? 'commits' : 'overview')

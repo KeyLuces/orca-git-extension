@@ -145,9 +145,13 @@ try {
             reviewers: [{ username: 'satang' }, { username: 'niran' }],
             assignees: [{ username: 'mali' }],
             changes_count: '6',
-            head_pipeline: { status: 'success' }
+            head_pipeline: { status: 'success' },
+            detailed_merge_status: 'not_approved',
+            squash: true,
+            force_remove_source_branch: true,
+            user: { can_merge: true }
           })
-        if (sub === '/approvals') return send({ approvals_required: 2, approved_by: [{ user: { username: 'niran' } }] })
+        if (sub === '/approvals') return send({ approvals_required: 2, approvals_left: 1, approved_by: [{ user: { username: 'niran' } }], user_has_approved: false, user_can_approve: true })
         if (sub === '/notes')
           return send([
             { system: true, body: 'added 3 commits', author: { username: 'mali' } },

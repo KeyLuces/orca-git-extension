@@ -4,7 +4,7 @@
   "execution": "trusted-worker",
   "id": "git-control",
   "name": "Git Control",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "description": "A Git client inside Orca: commit graph, commits, branches, stashes and worktrees, plus GitHub and GitLab merge requests and pipelines, with your existing Git login. In a full tab and the right sidebar.",
   "license": "MIT",
   "author": {
@@ -29,8 +29,8 @@
     },
     {
       "path": "assets/promo/merge-request.png",
-      "alt": "A GitLab merge request page with description, reviewers, approvals and activity",
-      "caption": "Read a merge request, then approve or comment"
+      "alt": "A GitLab merge request page with description, pipeline, approvals with Approve, and Merge with its options",
+      "caption": "Approve and merge like on GitLab"
     },
     {
       "path": "assets/promo/new-merge-request.png",

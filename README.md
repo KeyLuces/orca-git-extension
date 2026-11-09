@@ -31,10 +31,15 @@ left to commit but commits wait on your machine, the same button becomes **Push*
 ![The Commit tab: changed files on the left, the diff on the right](assets/screenshots/commit.png)
 
 ### Review merge requests
-**Review & MR** lists the pull and merge requests waiting for you, assigned to you, opened by you, or
-open in this repository. Click one to read it like on GitHub or GitLab: the description, who reviews it
-and how many approvals it has, the activity with inline comments, its commits and changes. Then decide at
-the bottom: **AI review**, **Comment**, **Request changes** or **Approve**.
+**Review & MR** has three tabs: **To review** (waiting for you: asked to review or assigned, and not approved
+by you yet), **Opened by me** and **All open**, each with its count. Approve or Merge right from the list, or tick
+several and approve or merge them together; an approved one leaves To review, a merged one leaves the list.
+
+Click one to read it like on GitHub or GitLab: the description, reviewers and approvals, the activity with inline
+comments, its commits and changes. Under the description sits the merge box, laid out like GitLab's: the
+pipeline, the approvals with **Approve** (or **Revoke approval**), then **Merge** with *Delete source branch*
+and *Squash commits*, or the reason it cannot be merged yet (and **Set to auto-merge** while the pipeline runs).
+**AI review**, **Comment** and **Request changes** are at the bottom.
 
 ![A merge request's detail page with description, reviewers, approvals and activity](assets/screenshots/merge-request.png)
 

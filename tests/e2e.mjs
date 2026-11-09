@@ -558,7 +558,7 @@ await step('merge request: one button pushes the branch and hands over to GitLab
 
 // ---------- merge requests through the saved Git login, against a fake GitHub/GitLab API ----------
 // Hosts are made up (*.example.test) and the API is a local server: no real account is ever used.
-const api = { calls: [], deny: false }
+const api = { calls: [], deny: false, approved: new Set(), merged: new Set() }
 const apiServer = http.createServer((req, res) => {
   let data = ''
   req.on('data', (c) => (data += c))
@@ -585,15 +585,29 @@ const apiServer = http.createServer((req, res) => {
     if (u.pathname === '/api/v4/projects/team%2Fapp') return send(200, { remove_source_branch_after_merge: true, squash_option: 'default_on', merge_requests_template: '## What does this MR do?' })
     if (u.pathname.endsWith('/assignees') && req.method === 'GET') return send(200, [{ id: 1, login: 'me' }, { id: 2, login: 'dev1' }])
     if (req.method === 'POST' && /\/(assignees|requested_reviewers)$/.test(u.pathname)) return send(201, {})
-    if (req.method === 'GET' && u.pathname === '/api/v4/projects/5/merge_requests/11')
-      return send(200, { iid: 11, title: 'MR review', description: '## Why\nKeeps **reviews** in the app.\n\n- [x] tests\n- docs', state: 'opened', author: { username: 'dev' }, source_branch: 's11', target_branch: 'main', sha: 'abc1234567', created_at: new Date().toISOString(), web_url: 'https://gitlab2.example.test/team/app/-/merge_requests/11', labels: ['backend'], reviewers: [{ username: 'dev1' }, { username: 'me' }], assignees: [{ username: 'dev' }], changes_count: '2' })
-    if (req.method === 'GET' && u.pathname === '/api/v4/projects/5/merge_requests/11/approvals') return send(200, { approvals_required: 2, approved_by: [{ user: { username: 'dev1' } }] })
+    if (req.method === 'GET' && u.pathname === '/api/v4/projects/5/merge_requests/11' && !api.merged.has(11))
+      return send(200, { iid: 11, title: 'MR review', description: '## Why\nKeeps **reviews** in the app.\n\n- [x] tests\n- docs', state: 'opened', author: { username: 'dev' }, source_branch: 's11', target_branch: 'main', sha: 'abc1234567', created_at: new Date().toISOString(), web_url: 'https://gitlab2.example.test/team/app/-/merge_requests/11', labels: ['backend'], reviewers: [{ username: 'dev1' }, { username: 'me' }], assignees: [{ username: 'dev' }], changes_count: '2', detailed_merge_status: api.approved.has(11) ? 'mergeable' : 'not_approved', head_pipeline: { status: 'success' }, force_remove_source_branch: true, squash: true, user: { can_merge: true } })
+    const mrM = u.pathname.match(/^\/api\/v4\/projects\/5\/merge_requests\/(\d+)(\/\w+)?$/)
+    if (mrM) {
+      const n = +mrM[1]
+      const sub = mrM[2] || ''
+      if (req.method === 'POST' && sub === '/approve') return api.approved.add(n), send(201, {})
+      if (req.method === 'POST' && sub === '/unapprove') return api.approved.delete(n), send(201, {})
+      if (req.method === 'PUT' && sub === '/merge') return api.merged.add(n), send(200, { iid: n, state: 'merged' })
+      if (req.method === 'GET' && sub === '/approvals') {
+        const by = [...(n === 11 ? [{ user: { username: 'dev1' } }] : []), ...(api.approved.has(n) ? [{ user: { username: 'me' } }] : [])]
+        return send(200, { approvals_required: 2, approvals_left: Math.max(0, 2 - by.length), approved_by: by, user_has_approved: api.approved.has(n), user_can_approve: n !== 13 })
+      }
+      if (req.method === 'GET' && !sub && n !== 11)
+        return send(200, { iid: n, title: `MR ${n}`, description: '', state: api.merged.has(n) ? 'merged' : 'opened', author: { username: n === 13 ? 'me' : 'dev' }, source_branch: 's' + n, target_branch: 'main', sha: 'abc1234567', created_at: now, web_url: `https://gitlab2.example.test/team/app/-/merge_requests/${n}`, labels: [], reviewers: [], assignees: [], detailed_merge_status: 'mergeable', squash: false, force_remove_source_branch: true, head_pipeline: { status: 'success' }, user: { can_merge: true } })
+    }
     if (req.method === 'GET' && u.pathname === '/api/v4/projects/5/merge_requests/11/notes')
       return send(200, [{ system: true, body: 'added 1 commit', author: { username: 'dev' } }, { body: 'Looks good to me', author: { username: 'dev1' }, created_at: new Date().toISOString() }, { body: 'Rename this?', author: { username: 'qa' }, created_at: new Date().toISOString(), position: { new_path: 'src/a.js', new_line: 3 } }])
     if (req.method === 'GET' && u.pathname === '/api/v4/projects/5/merge_requests/11/commits') return send(200, [{ id: 'abc1234567890', title: 'Add review change', author_name: 'Dev', created_at: new Date().toISOString() }])
     if (req.method === 'GET' && /merge_requests$/.test(u.pathname)) {
       const role = u.search.includes('reviewer_username') ? 'review' : u.search.includes('assignee_username') ? 'assigned' : u.search.includes('author_username') ? 'mine' : 'repo'
       const n = { review: 11, assigned: 12, mine: 13, repo: 14 }[role]
+      if (api.merged.has(n)) return send(200, role === 'review' ? [{ iid: 99, project_id: 6, web_url: 'https://gitlab2.example.test/other/proj/-/merge_requests/99', title: 'MR other repo', author: { username: 'dev' }, source_branch: 'x', target_branch: 'main', updated_at: new Date().toISOString(), references: { full: 'other/proj!99' } }] : [])
       return send(200, [
         {
           iid: n,
@@ -720,19 +734,24 @@ await step('Inbox (GitLab, saved Git login): to review, assigned, opened by me, 
     await until(() => page.$eval('.reviews', (r, w) => r.textContent.includes(w), want), `${label} lists ${want}`, 20000)
     if (not && (await page.$eval('.reviews', (r, n) => r.textContent.includes(n), not))) throw new Error(`${label} also lists ${not}`)
   }
-  await seg('To review', 'MR review', 'MR mine')
-  await seg('Assigned to me', 'MR assigned', 'MR review')
-  await seg('Opened by me', 'MR mine', 'MR assigned')
-  await seg('All open', 'MR repo', 'MR mine')
-  await seg('All', 'MR mine', 'MR repo')
+  const tabBtn = (l) => `[...document.querySelectorAll('.reviews .rv-tabs button')].find((b) => b.textContent.startsWith('${l}'))`
+  const seg2 = async (label, want, not) => {
+    await page.evaluate(`${tabBtn(label)}.click()`)
+    await until(() => page.$eval('.reviews', (r, w) => r.textContent.includes(w), want), `${label} lists ${want}`, 20000)
+    if (not && (await page.$eval('.reviews .rv-list', (r, n) => r.textContent.includes(n), not))) throw new Error(`${label} also lists ${not}`)
+  }
+  await seg2('To review', 'MR assigned', 'MR mine')
+  await seg2('Opened by me', 'MR mine', 'MR assigned')
+  await seg2('All open', 'MR repo')
+  await seg2('To review', 'MR review')
   // follows the repository's remote: another project's MR shows only with "All repos"
   if (await page.$eval('.reviews', (r) => r.textContent.includes('MR other repo'))) throw new Error('another repo listed by default')
   await clickText('.reviews .segmented button', 'All repos')
   await until(() => page.$eval('.reviews', (r) => r.textContent.includes('MR other repo')), 'All repos lists the other project', 20000)
   await clickText('.reviews .segmented button', 'app')
+  await until(() => page.$eval('.reviews', (r) => !r.textContent.includes('MR other repo')), 'back to this repo')
   await shot('11-inbox')
   // a row opens the detail page: description, people, approvals, activity; then decide inside
-  if (await page.$$eval('.review-row .btn', (b) => b.some((x) => /Approve/.test(x.textContent)))) throw new Error('the list still has Approve buttons')
   await clickText('.review-row', 'MR review')
   await until(() => page.$eval('.mr-detail .mrd-desc', (d) => d.textContent.includes('Keeps reviews in the app')).catch(() => false), 'description rendered', 20000)
   if (!(await page.$eval('.mr-detail .mrd-desc strong', (b) => b.textContent === 'reviews'))) throw new Error('markdown bold not rendered')
@@ -744,6 +763,19 @@ await step('Inbox (GitLab, saved Git login): to review, assigned, opened by me, 
   await clickText('.mrd-tab', 'Commits')
   await until(() => page.$$eval('.mrd-commit', (c) => c.some((x) => x.textContent.includes('Add review change'))), 'commits tab')
   if (await page.$eval('.mr-detail', (x) => /\bfalse\b|\bnull\b|undefined|\[object/.test(x.textContent))) throw new Error('stray false/null text on the detail page')
+  // the merge widget, like GitLab: pipeline, approvals with Approve, merge blocked until approved
+  await clickText('.mrd-tab', 'Overview')
+  await until(() => exists('.mr-detail .mrw'), 'merge widget')
+  const mw = await page.$eval('.mr-detail .mrw', (x) => x.textContent)
+  if (!/Pipeline passed/.test(mw) || !/Approved by dev1/.test(mw) || !/Merge blocked/.test(mw) || !/Needs approval/.test(mw)) throw new Error('widget: ' + mw)
+  if (await page.$$eval('.mrd-bar .btn', (b) => b.some((x) => x.textContent.trim() === 'Approve'))) throw new Error('Approve is still in the bottom bar')
+  await shot('11c-merge-widget')
+  api.calls = []
+  await clickSel('.mr-detail .mrw-approve')
+  await until(() => api.calls.some((c) => c.method === 'POST' && c.path.endsWith('/merge_requests/11/approve')), 'approve sent')
+  await until(() => page.$eval('.mr-detail .mrw', (x) => /you approved/.test(x.textContent) && /Ready to merge/.test(x.textContent)).catch(() => false), 'widget re-read: approved and ready', 20000)
+  if (!(await exists('.mr-detail .mrw-revoke'))) throw new Error('no Revoke approval after approving')
+  await shot('11d-approved')
   // AI review waits for Start review, so the agent and instructions can be chosen first
   await clickText('.mrd-bar .btn', 'AI review')
   await until(() => exists('.ai-review-dialog'), 'AI review dialog')
@@ -754,6 +786,36 @@ await step('Inbox (GitLab, saved Git login): to review, assigned, opened by me, 
   await page.mouse.click(320, 700)
   await until(() => page.$('.mr-detail').then((x) => !x), 'detail closes on a click outside')
 })
+await step('Review & MR list: approve leaves To review, multi-select merge, real data after', async () => {
+  await tab('Review & MR')
+  await until(() => exists('.reviews .rv-tabs'), 'tabs')
+  await page.evaluate(() => [...document.querySelectorAll('.reviews .rv-tabs button')].find((b) => b.textContent.startsWith('To review')).click())
+  // MR review (11) was approved on its page: it is no longer waiting for me
+  await until(() => page.$eval('.reviews .rv-list', (r) => !r.textContent.includes('MR review') && r.textContent.includes('MR assigned')).catch(() => false), 'approved MR left To review', 20000)
+  api.calls = []
+  await page.evaluate(() => [...document.querySelectorAll('.review-row')].find((r) => r.textContent.includes('MR assigned')).querySelector('.rv-approve').click())
+  await until(() => api.calls.some((c) => c.method === 'POST' && c.path.endsWith('/merge_requests/12/approve')), 'row approve sent', 20000)
+  await until(() => exists('.review-row.rv-done-approve'), 'row shows it was approved')
+  await until(() => page.$eval('.reviews .rv-list', (r) => !r.textContent.includes('MR assigned')).catch(() => false), 'row left To review', 20000)
+  // All open still has them, with "You approved"
+  await page.evaluate(() => [...document.querySelectorAll('.reviews .rv-tabs button')].find((b) => b.textContent.startsWith('All open')).click())
+  await until(() => page.$$eval('.review-row', (rs) => rs.some((r) => r.textContent.includes('MR assigned') && r.textContent.includes('You approved'))), 'All open shows You approved after a real refresh', 20000)
+  // select two, merge both
+  for (const name of ['MR assigned', 'MR repo'])
+    await page.evaluate((n) => [...document.querySelectorAll('.review-row')].find((r) => r.textContent.includes(n)).querySelector('.rv-check').click(), name)
+  await until(() => page.$eval('.rv-bulk', (b) => b.classList.contains('on') && b.textContent.includes('2 selected')), 'bulk bar')
+  await shot('11e-bulk')
+  api.calls = []
+  await clickText('.rv-bulk .btn', 'Merge 2')
+  await until(() => exists('.overlay .dialog'), 'merge confirm')
+  await page.evaluate(() => [...document.querySelectorAll('.overlay .dialog .btn')].find((b) => b.textContent.trim() === 'Merge').click())
+  await until(() => ['12', '14'].every((n) => api.calls.some((c) => c.method === 'PUT' && c.path.endsWith(`/merge_requests/${n}/merge`))), 'both merges sent', 30000)
+  const body = api.calls.find((c) => c.method === 'PUT')?.body || {}
+  if (body.should_remove_source_branch !== true) throw new Error('merge options ' + JSON.stringify(body))
+  await until(() => page.$eval('.reviews .rv-list', (r) => !r.textContent.includes('MR assigned') && !r.textContent.includes('MR repo')).catch(() => false), 'merged ones left the list', 20000)
+  if (await page.$eval('.rv-bulk', (b) => b.classList.contains('on'))) throw new Error('bulk bar still showing')
+})
+
 await step('pipeline (GitLab): CI badge opens the pipeline, its jobs and the failed log; retry', async () => {
   g('remote', 'set-url', 'origin', 'https://gitlab2.example.test/team/app.git')
   process.env.GITX_API_BASE = API + '/api/v4'
