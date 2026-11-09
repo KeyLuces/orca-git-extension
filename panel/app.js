@@ -2173,8 +2173,8 @@ async function viewHistory() {
   const seg = h(
     'div',
     { class: 'segmented' },
-    h('button', { class: H.all ? '' : 'on', onClick: () => setAll(false) }, 'Branch'),
-    h('button', { class: H.all ? 'on' : '', onClick: () => setAll(true) }, 'All')
+    h('button', { class: H.all ? '' : 'on', title: 'Only the history of the branch you are on', onClick: () => setAll(false) }, 'This branch'),
+    h('button', { class: H.all ? 'on' : '', title: 'Every branch, tag and remote', onClick: () => setAll(true) }, 'All branches')
   )
   function setAll(v) {
     H.all = v
@@ -2374,6 +2374,12 @@ function commitBody(c, { inline = false } = {}) {
         { class: 'actions-wrap' },
         h('button', { class: 'btn sm', onClick: () => checkoutCommit(c.hash) }, icon('commit', 12), 'Checkout'),
         h('button', { class: 'btn sm', onClick: () => newBranch(c.hash) }, icon('branch', 12), 'Branch'),
+        // a branch of this commit that is not the one you are on: merge it in one click
+        (() => {
+          const cur = state.status?.branch
+          const other = (c.refs || []).map((r) => r.replace(/^HEAD -> /, '')).find((r) => r !== 'HEAD' && !r.startsWith('tag: ') && state.localNames?.has(r) && r !== cur)
+          return cur && other && c.hash !== state.status?.oid ? h('button', { class: 'btn sm', title: `Merge ${other} into ${cur}, the branch you are on`, onClick: () => mergeRef(other) }, icon('merge', 12), `Merge ${nm(other, 18)} → ${nm(cur, 18)}`) : null
+        })(),
         h('button', { class: 'btn sm', onClick: (e) => commitMenu(e.currentTarget, c) }, icon('more', 12), 'More')
       )
     )
@@ -3540,7 +3546,8 @@ async function viewSettings() {
   form.append(
     h(
       'div',
-      { class: 'row' },
+      { class: 'row cfg-save' },
+      h('span', { class: 'dim cfg-save-note' }, scope === 'global' ? 'Saves to your global git config' : 'Saves to this repository\'s .git/config'),
       h('span', { class: 'grow' }),
       h(
         'button',
@@ -3854,14 +3861,13 @@ async function viewReflog() {
         h(
           'div',
           { class: 'hover-actions', onClick: (ev) => ev.stopPropagation() },
-          iconBtn('plus', 'Create branch here', () => newBranch(e.hash)),
-          iconBtn('undo', 'Reset current branch here', (ev) =>
+          h('button', { class: 'btn sm', title: 'Create a branch at this point (recovers lost commits)', onClick: () => newBranch(e.hash) }, icon('plus', 12), 'Branch here'),
+          h('button', { class: 'btn sm', title: 'Move the current branch back to this point', onClick: (ev) =>
             menu(ev.currentTarget, [
               { label: 'Soft reset here', icon: 'undo', onClick: () => resetTo(e.hash, 'soft') },
               { label: 'Mixed reset here', icon: 'undo', onClick: () => resetTo(e.hash, 'mixed') },
               { label: 'Hard reset here…', icon: 'alert', danger: true, onClick: () => resetTo(e.hash, 'hard') }
-            ])
-          )
+            ]) }, icon('undo', 12), 'Reset here')
         )
       )
     )
