@@ -55,6 +55,14 @@ Right-click any branch or tag label in the graph (or a tag in the sidebar): the 
 your branch. If both sides changed the same lines, the conflicts page names them, **Incoming (their branch)** and
 **Current (your branch)**, and lets you keep one side for all files at once, let **AI resolve all** (or one file),
 or go file by file, conflict by conflict, side by side, with the result editable. Then **Commit merge**.
+Parts where only one side really changed (or both made the same change) are counted for you: **Apply
+non-conflicting** merges them in one click, and **Show base** shows the file as it was before either side changed it.
+
+### Rewrite history safely
+**Interactive rebase** (right-click a commit → More): drag commits to reorder; keep, reword (type the new message in
+place), squash, fixup or drop each one; a line says what the branch will look like before you start. **Reset**
+explains each kind (keep staged, keep unstaged, keep only your work, throw away) and how to get commits back.
+**Ctrl+K → Show git commands** lists the exact git commands that ran, and can show them with each action.
 
 ### Fix a failing pipeline
 The **CI** badge next to the branch shows the latest pipeline. Click it to see the jobs by stage, open

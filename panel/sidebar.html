@@ -1459,6 +1459,83 @@ body:has(.cfg-save) #toasts { bottom: 64px; }
 .graph-search-wrap .graph-search { flex: 1; padding-right: 28px; }
 .graph-search-wrap .search-clear { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); }
 
+/* ---------- v0.7: conflicts need fewer choices ---------- */
+.res-auto { display: none; align-items: center; gap: 3px; color: var(--add); background: color-mix(in srgb, var(--add) 14%, transparent); }
+.res-block[data-c="auto"] .res-auto { display: inline-flex; }
+.res-block[data-c="auto"] .res-side { opacity: .55; }
+.res-side.base { display: none; border-left-color: var(--t3); }
+.resolver.show-base .res-sides { grid-template-columns: 1fr 1fr 1fr; }
+.resolver.show-base .res-side.base { display: block; }
+.res-side.base .side-k { color: var(--t2); }
+.res-side.base .res-code { background: color-mix(in srgb, var(--fg) 4%, transparent); }
+.side-panel .resolver.show-base .res-sides, body.compact .resolver.show-base .res-sides { grid-template-columns: 1fr; }
+.res-top .btn.on { border-color: var(--ren); color: var(--ren); }
+.cf-auto { margin-left: 4px; }
+
+/* reset: three choices, each explained */
+.choice-dialog { width: min(520px, calc(100vw - 32px)); }
+.choice-list { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
+.choice { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius); cursor: pointer; }
+.choice input { margin-top: 3px; }
+.choice.on { border-color: var(--ren); background: var(--sel); }
+.choice.danger.on { border-color: var(--del); background: color-mix(in srgb, var(--del) 10%, transparent); }
+.choice b .dim { font-weight: 400; font-size: 11px; }
+.choice-what { display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px; border-radius: var(--r-sm); background: var(--card); color: var(--t2); font-size: 12px; }
+
+/* git command log */
+.cmd-log { padding: 8px 12px 16px; }
+.cmd-lead { margin: 4px 4px 10px; font-size: 12px; }
+.cmd-row { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: var(--r-sm); }
+.cmd-row:hover { background: var(--hover); }
+.cmd-row.bad .cmd-c { color: var(--del); }
+.cmd-c { font-family: var(--mono); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.cmd-t, .cmd-ms { font-size: 11px; white-space: nowrap; }
+.cmd-toast { display: flex; flex-direction: column; gap: 2px; }
+.cmd-toast code { font-family: var(--mono); font-size: 11.5px; }
+.toast-act { margin-left: 8px; padding: 2px 10px; border-radius: 999px; border: 1px solid var(--line-hi); background: var(--card-hi); color: var(--t1); cursor: pointer; pointer-events: auto; font: inherit; font-weight: 600; }
+.toast-act:hover { border-color: var(--ren); }
+.tab-intro { margin: 0 16px 8px; font-size: 12px; line-height: 1.5; }
+
+/* interactive rebase */
+.rb-dialog { width: min(900px, calc(100vw - 32px)); }
+.rb-list { display: flex; flex-direction: column; gap: 6px; max-height: 55vh; overflow: auto; margin: 10px 0; }
+.rb-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--line); border-left: 3px solid var(--ren); border-radius: var(--radius); background: var(--card); outline: none; }
+.rb-row:focus-visible { box-shadow: var(--focus); }
+.rb-row.dragging { opacity: .4; }
+.rb-row.drop-here { border-top: 2px solid var(--ren); }
+.rb-row.a-reword { border-left-color: var(--mod); }
+.rb-row.a-squash, .rb-row.a-fixup { border-left-color: #a371f7; margin-left: 22px; }
+.rb-row.a-drop { border-left-color: var(--del); opacity: .55; }
+.rb-row.a-drop .rb-subject { text-decoration: line-through; }
+.rb-grip { cursor: grab; color: var(--t3); user-select: none; font-size: 15px; }
+.rb-hash { font-size: 11.5px; }
+.rb-main { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.rb-msg { width: 100%; }
+.rb-hint { font-size: 11px; color: #a371f7; }
+.rb-acts { display: inline-flex; border: 1px solid var(--line); border-radius: var(--r-sm); overflow: hidden; flex: none; }
+.rb-act { border: 0; background: transparent; color: var(--t2); padding: 3px 8px; font: inherit; font-size: 11.5px; cursor: pointer; }
+.rb-act + .rb-act { border-left: 1px solid var(--line); }
+.rb-act:disabled { opacity: .35; cursor: default; }
+.rb-act.on.a-pick { background: color-mix(in srgb, var(--ren) 22%, transparent); color: var(--t1); }
+.rb-act.on.a-reword { background: color-mix(in srgb, var(--mod) 24%, transparent); color: var(--t1); }
+.rb-act.on.a-squash, .rb-act.on.a-fixup { background: color-mix(in srgb, #a371f7 24%, transparent); color: var(--t1); }
+.rb-act.on.a-drop { background: color-mix(in srgb, var(--del) 24%, transparent); color: var(--t1); }
+.rb-move { display: flex; flex: none; }
+.rb-summary { display: flex; gap: 8px; align-items: center; padding: 8px 10px; border-radius: var(--r-sm); background: var(--card); font-size: 12px; }
+body.compact .rb-row, .side-panel .rb-row { flex-wrap: wrap; }
+
+/* Review & MR filters */
+.rv-filters { display: flex; align-items: center; gap: 8px; padding: 0 16px 10px; flex-wrap: wrap; }
+.rv-search-wrap { display: flex; align-items: center; gap: 6px; flex: 1 1 220px; min-width: 0; padding: 0 8px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--raised); color: var(--t3); }
+.rv-search { flex: 1; min-width: 0; border: 0 !important; background: transparent !important; box-shadow: none !important; padding-left: 0 !important; }
+.rv-sel { max-width: 200px; }
+.rv-sel.on { border-color: var(--ren); color: var(--ren); }
+.pill.rv-new { color: var(--ren); background: color-mix(in srgb, var(--ren) 16%, transparent); font-weight: 600; }
+.pill.rv-label { color: var(--t2); background: var(--card-hi); }
+.rv-search-wrap { overflow: hidden; }
+.rv-search { width: 0 !important; flex: 1 1 0 !important; }
+@media (max-width: 620px), (pointer: coarse) { .rv-search { height: 36px !important; min-height: 36px !important; } }
+
 </style>
   </head>
   <body class="side-panel">
@@ -1530,6 +1607,7 @@ const ICONS = {
   check: '<path d="M20 6 9 17l-5-5"/>',
   x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
   down: '<path d="m6 9 6 6 6-6"/>',
+  up: '<path d="m18 15-6-6-6 6"/>',
   left: '<path d="m15 18-6-6 6-6"/>',
   right: '<path d="m9 18 6-6-6-6"/>',
   more: '<circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/>',
@@ -1665,8 +1743,8 @@ const state = {
 /* =========================================================================
    feedback: toasts, dialogs, menus
    ========================================================================= */
-function toast(msg, kind = 'ok', ms) {
-  const el = h('div', { class: `toast ${kind}` }, icon(kind === 'error' ? 'alert' : 'check'), h('div', { class: 'grow' }, msg))
+function toast(msg, kind = 'ok', ms, action) {
+  const el = h('div', { class: `toast ${kind}` }, icon(kind === 'error' ? 'alert' : 'check'), h('div', { class: 'grow' }, msg), action && h('button', { class: 'toast-act', onClick: (e) => (e.stopPropagation(), el.remove(), action.run()) }, action.label))
   el.addEventListener('click', () => el.remove())
   $('#toasts').append(el)
   setTimeout(() => el.remove(), ms ?? (kind === 'error' ? 9000 : 2600))
@@ -1911,6 +1989,7 @@ async function openLink(url) {
 }
 /** Run an op with a spinner and error toast, then refresh. Returns the result, or undefined on failure. */
 async function run(op, args, { success, refresh = true, quiet = false } = {}) {
+  const t0 = Date.now()
   setBusy(1)
   setWorking(op, true)
   // fetch, pull and push say what they changed once the view is fresh ("3 new commits", "up to date")
@@ -1935,6 +2014,7 @@ async function run(op, args, { success, refresh = true, quiet = false } = {}) {
     if (refresh) await refreshAll()
     setWorking(op, false, ok)
     if (ok && before) toast(SYNC_NOTE[op](before, state.status || {}, success, args || {}))
+    cmdNote(t0)
   }
 }
 const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`
@@ -3117,7 +3197,9 @@ async function viewChanges() {
       if (!(await confirmBox('Nothing staged', 'Stage all changes and commit them?', 'Stage all & commit'))) return
       await call('stageAll').catch((e) => toast(e.message, 'error'))
     }
-    const out = await run('commit', args, { success: extra.push ? undefined : state.amend ? 'Amended' : 'Committed' })
+    const out = await run('commit', args, { success: extra.push || !state.amend ? undefined : 'Amended' })
+    // forgot a file or a typo? one click puts the last commit back in the box to amend
+    if (out !== undefined && !extra.push && !state.amend) toast('Committed', 'ok', 8000, { label: 'Amend', run: () => ((state.amend = true), call('lastMessage').then((m) => ((state.commitDraft = m || ''), setTab('changes'), renderView({ force: true })), () => setTab('changes'))) })
     if (extra.push && out !== undefined) out?.pushError ? toast(`Committed, but the push failed: ${out.pushError}`, 'error') : toast('Committed and pushed')
     if (out !== undefined) {
       state.commitDraft = ''
@@ -3997,17 +4079,7 @@ function commitMenu(anchor, c, clicked) {
     !isHead && { label: pickRef ? `Rebase ${nm(cur)} onto ${nm(pickRef)}…` : `Rebase ${cur} onto this…`, icon: 'merge', onClick: () => rebaseOnto(pickRef || local[0] || c.hash) },
     !isHead && { label: 'Cherry-pick', icon: 'commit', onClick: () => run('cherryPick', { hash: c.hash, mainline: isMerge }, { success: 'Cherry-picked' }) },
     { label: 'Revert…', icon: 'undo', onClick: async () => (await confirmBox(`Revert ${short}?`, 'A new commit that undoes it will be created.', 'Revert')) && run('revert', { hash: c.hash, mainline: isMerge }, { success: 'Reverted' }) },
-    !isHead && {
-      label: `Reset ${cur} to here`,
-      icon: 'undo',
-      items: [
-        { label: 'Soft: keep changes staged', icon: 'undo', onClick: () => resetTo(c.hash, 'soft') },
-        { label: 'Mixed: keep changes unstaged', icon: 'undo', onClick: () => resetTo(c.hash, 'mixed') },
-        { label: 'Keep: keep uncommitted changes', icon: 'undo', onClick: () => resetTo(c.hash, 'keep') },
-        '-',
-        { label: 'Hard: discard all changes…', icon: 'alert', danger: true, onClick: () => resetTo(c.hash, 'hard') }
-      ]
-    },
+    !isHead && { label: `Reset ${cur} to here…`, icon: 'undo', onClick: () => resetTo(c.hash) },
     branchItems.length && '-',
     branchItems.length === 1 ? branchItems[0] : branchItems.length && { label: 'Branches and tags here', icon: 'branch', items: branchItems },
     '-',
@@ -4052,13 +4124,6 @@ function commitMenu(anchor, c, clicked) {
       ]
     }
   ])
-}
-async function resetTo(hash, mode) {
-  const msg = mode === 'hard' ? 'All uncommitted changes will be lost. This cannot be undone.' : `Your branch will point at ${hash.slice(0, 7)}.`
-  if (!(await confirmBox(`${mode[0].toUpperCase() + mode.slice(1)} reset?`, msg, 'Reset', mode === 'hard'))) return
-  closeSheet()
-  resetHistory()
-  run('reset', { hash, mode }, { success: `Reset (${mode})` })
 }
 async function copy(text) {
   try {
@@ -4603,6 +4668,7 @@ async function viewWorktrees() {
   const list = await call('worktrees')
   const root = h('div', { class: 'view' })
   root.append(
+    h('p', { class: 'dim tab-intro' }, 'A worktree is another folder with another branch checked out, from the same repository: work on two branches at once without stashing.'),
     h(
       'div',
       { class: 'section-head' },
@@ -5353,12 +5419,7 @@ async function viewReflog() {
           'div',
           { class: 'hover-actions', onClick: (ev) => ev.stopPropagation() },
           h('button', { class: 'btn sm', title: 'Create a branch at this point (recovers lost commits)', onClick: () => newBranch(e.hash) }, icon('plus', 12), 'Branch here'),
-          h('button', { class: 'btn sm', title: 'Move the current branch back to this point', onClick: (ev) =>
-            menu(ev.currentTarget, [
-              { label: 'Soft reset here', icon: 'undo', onClick: () => resetTo(e.hash, 'soft') },
-              { label: 'Mixed reset here', icon: 'undo', onClick: () => resetTo(e.hash, 'mixed') },
-              { label: 'Hard reset here…', icon: 'alert', danger: true, onClick: () => resetTo(e.hash, 'hard') }
-            ]) }, icon('undo', 12), 'Reset here')
+          h('button', { class: 'btn sm', title: 'Move the current branch back to this point', onClick: () => resetTo(e.hash) }, icon('undo', 12), 'Reset here')
         )
       )
     )
@@ -5423,46 +5484,115 @@ async function squashSince(base) {
   run('squashSince', { base, message: r.msg }, { success: 'Squashed' })
 }
 
+/**
+ * Edit the commits after `base`, oldest first: drag (or ↑ ↓) to reorder, and per commit pick, reword
+ * (the new message is typed right there), squash / fixup into the one above, or drop. Keys on a row:
+ * p r s f d. A line at the bottom says what the branch will look like.
+ */
 async function interactiveRebase(base) {
   let todo
   try {
-    todo = (await call('rebaseTodo', { base })).map((t) => ({ ...t, action: 'pick' }))
+    todo = (await call('rebaseTodo', { base })).map((t) => ({ ...t, action: 'pick', message: t.subject }))
   } catch (e) {
     return toast(e.message, 'error')
   }
   if (!todo.length) return toast('No commits after this one', 'error')
   closeOverlays()
-  const list = h('div', { class: 'rebase-list' })
-  const draw = () => {
+  const cur = state.status?.branch || 'HEAD'
+  const ACTS = [
+    ['pick', 'Keep', 'p'],
+    ['reword', 'Reword', 'r'],
+    ['squash', 'Squash ↑', 's'],
+    ['fixup', 'Fixup ↑', 'f'],
+    ['drop', 'Drop', 'd']
+  ]
+  const HELP = { pick: 'kept as it is', reword: 'kept, with the new message', squash: 'joined into the commit above; both messages kept', fixup: 'joined into the commit above; its message dropped', drop: 'removed' }
+  const list = h('div', { class: 'rb-list' })
+  const summary = h('div', { class: 'rb-summary' })
+  let dragFrom = null
+  const fix = () => {
+    const first = todo.findIndex((t) => t.action !== 'drop')
+    if (first >= 0 && (todo[first].action === 'squash' || todo[first].action === 'fixup')) todo[first].action = 'pick'
+  }
+  const move = (i, j) => {
+    if (j < 0 || j >= todo.length || i === j) return
+    const [t] = todo.splice(i, 1)
+    todo.splice(j, 0, t)
+    fix()
+    draw(j)
+  }
+  function draw(focus) {
     clear(list)
     todo.forEach((t, i) => {
-      const sel = h(
-        'select',
-        { class: `act act-${t.action}`, onChange: (e) => ((t.action = e.target.value), draw()) },
-        [
-          ['pick', 'pick'],
-          ['squash', 'squash'],
-          ['fixup', 'fixup'],
-          ['drop', 'drop']
-        ].map(([v, l]) => h('option', { value: v, selected: t.action === v, disabled: i === 0 && (v === 'squash' || v === 'fixup') }, l))
-      )
-      list.append(
-        h(
-          'div',
-          { class: `rebase-row ${t.action === 'drop' ? 'dropped' : ''}` },
-          sel,
-          h('span', { class: 'mono dim' }, t.hash.slice(0, 7)),
-          h('span', { class: 'grow ellipsis', title: t.subject }, t.subject),
-          iconBtn('push', 'Move up', () => (i > 0 && ([todo[i - 1], todo[i]] = [todo[i], todo[i - 1]]), fix(), draw()), { disabled: i === 0 }),
-          iconBtn('pull', 'Move down', () => (i < todo.length - 1 && ([todo[i + 1], todo[i]] = [todo[i], todo[i + 1]]), fix(), draw()), { disabled: i === todo.length - 1 })
+      const firstKept = todo.findIndex((x) => x.action !== 'drop') === i
+      const acts = h(
+        'div',
+        { class: 'rb-acts', role: 'radiogroup' },
+        ACTS.map(([k, label, key]) =>
+          h('button', { type: 'button', class: `rb-act a-${k} ${t.action === k ? 'on' : ''}`, title: `${label}: ${HELP[k]} (${key})`, disabled: firstKept && (k === 'squash' || k === 'fixup'), onClick: () => ((t.action = k), fix(), draw(i)) }, label)
         )
       )
+      const msg =
+        t.action === 'reword' &&
+        h('input', {
+          type: 'text',
+          class: 'rb-msg',
+          value: t.message,
+          placeholder: 'New message',
+          onInput: (e) => ((t.message = e.target.value), drawSummary()),
+          onKeydown: (e) => e.stopPropagation()
+        })
+      const row = h(
+        'div',
+        {
+          class: `rb-row a-${t.action}`,
+          tabindex: 0,
+          draggable: 'true',
+          onDragstart: (e) => ((dragFrom = i), row.classList.add('dragging'), e.dataTransfer.setData('text/plain', String(i))),
+          onDragend: () => row.classList.remove('dragging'),
+          onDragover: (e) => (e.preventDefault(), row.classList.add('drop-here')),
+          onDragleave: () => row.classList.remove('drop-here'),
+          onDrop: (e) => (e.preventDefault(), row.classList.remove('drop-here'), dragFrom != null && move(dragFrom, i), (dragFrom = null)),
+          onKeydown: (e) => {
+            const k = ACTS.find(([, , key]) => key === e.key.toLowerCase())
+            if (k && !(firstKept && (k[0] === 'squash' || k[0] === 'fixup'))) (e.preventDefault(), (t.action = k[0]), fix(), draw(i))
+            else if (e.key === 'ArrowUp' && e.altKey) (e.preventDefault(), move(i, i - 1))
+            else if (e.key === 'ArrowDown' && e.altKey) (e.preventDefault(), move(i, i + 1))
+            else if (e.key === 'ArrowUp') (e.preventDefault(), list.children[i - 1]?.focus())
+            else if (e.key === 'ArrowDown') (e.preventDefault(), list.children[i + 1]?.focus())
+          }
+        },
+        h('span', { class: 'rb-grip', title: 'Drag to reorder (or Alt+↑ ↓)' }, '⠿'),
+        h('span', { class: 'mono dim rb-hash' }, t.hash.slice(0, 7)),
+        h('div', { class: 'grow rb-main' }, h('span', { class: 'ellipsis rb-subject', title: t.subject }, t.subject), msg, (t.action === 'squash' || t.action === 'fixup') && h('span', { class: 'rb-hint' }, '↳ joins the commit above')),
+        acts,
+        h('div', { class: 'rb-move' }, iconBtn('up', 'Move up', () => move(i, i - 1), { disabled: i === 0 }), iconBtn('down', 'Move down', () => move(i, i + 1), { disabled: i === todo.length - 1 }))
+      )
+      list.append(row)
     })
+    drawSummary()
+    if (focus != null) list.children[focus]?.focus()
   }
-  const fix = () => {
-    if (todo[0] && (todo[0].action === 'squash' || todo[0].action === 'fixup')) todo[0].action = 'pick'
+  function drawSummary() {
+    const kept = todo.filter((t) => t.action === 'pick' || t.action === 'reword').length
+    const joined = todo.filter((t) => t.action === 'squash' || t.action === 'fixup').length
+    const dropped = todo.filter((t) => t.action === 'drop').length
+    const reworded = todo.filter((t) => t.action === 'reword' && t.message.trim() && t.message.trim() !== t.subject).length
+    const moved = todo.some((t, i) => t.hash !== orig[i])
+    const changes = [joined && `${joined} joined`, dropped && `${dropped} dropped`, reworded && `${reworded} reworded`, moved && 'reordered'].filter(Boolean)
+    clear(summary).append(icon('history', 13), h('span', null, h('b', null, `${todo.length} → ${kept} commit${kept === 1 ? '' : 's'} on ${cur}`), changes.length ? ` · ${changes.join(', ')}` : ' · nothing changed yet', h('span', { class: 'dim' }, ' · Undo takes it all back')))
+    start.disabled = !changes.length || kept === 0
   }
-  draw()
+  const orig = todo.map((t) => t.hash)
+  const start = h('button', { class: 'btn primary', onClick: () => go() }, icon('check', 12), 'Start')
+  async function go() {
+    if (todo.some((t) => t.action === 'reword' && !t.message.trim())) return toast('Write the new message for each Reword', 'error')
+    close()
+    if (state.sheets.length) closeSheet()
+    resetHistory()
+    const out = await run('rebaseInteractive', { base, todo: todo.map(({ hash, action, message }) => ({ hash, action, message: action === 'reword' ? message : undefined })) }, { success: `Rewrote ${cur}` })
+    if (out === undefined && state.status?.files.some((f) => f.conflict)) openConflicts()
+  }
   const close = () => {
     overlay.remove()
     document.removeEventListener('keydown', onKey)
@@ -5470,33 +5600,17 @@ async function interactiveRebase(base) {
   const onKey = (e) => e.key === 'Escape' && isTopOverlay(overlay) && close()
   const box = h(
     'div',
-    { class: 'dialog wide-dialog' },
-    h('h3', null, `Interactive rebase onto ${base.slice(0, 7)}`),
-    h('p', null, 'Oldest commit first. squash = merge into the commit above and keep both messages; fixup = merge and drop this message.'),
+    { class: 'dialog wide-dialog rb-dialog', role: 'dialog' },
+    h('h3', null, `Edit ${todo.length} commit${todo.length > 1 ? 's' : ''} on ${cur}`),
+    h('p', { class: 'dim' }, `After ${base.slice(0, 7)}, oldest first. Drag to reorder; choose what happens to each. Keys: p r s f d, Alt+↑ ↓ to move.`),
     list,
-    h(
-      'div',
-      { class: 'buttons' },
-      h('button', { class: 'btn', onClick: close }, 'Cancel'),
-      h(
-        'button',
-        {
-          class: 'btn primary',
-          onClick: async () => {
-            close()
-            closeSheet()
-            resetHistory()
-            const out = await run('rebaseInteractive', { base, todo: todo.map(({ hash, action }) => ({ hash, action })) }, { success: 'Rebased' })
-            if (out === undefined && state.status?.files.some((f) => f.conflict) && true) openConflicts()
-          }
-        },
-        'Start rebase'
-      )
-    )
+    summary,
+    h('div', { class: 'buttons' }, h('button', { class: 'btn', onClick: close }, 'Cancel'), h('span', { class: 'grow' }), start)
   )
   const overlay = h('div', { class: 'overlay', onMousedown: (e) => e.target === overlay && close() }, box)
   mountOverlay(overlay, close)
   document.addEventListener('keydown', onKey)
+  draw(0)
 }
 
 async function savePatch(c) {
@@ -6141,6 +6255,19 @@ async function mergeRequestDialog(target, source, swapped) {
    Reviews: every open pull/merge request you are asked to review or assigned
    ========================================================================= */
 let reviewsLoading = null
+let rvSearchBox = null
+/** Comment counts seen per merge request (this device): more than that is "new". */
+const rvSeen = () => store.get('rvSeen', {})
+function rvNewComments(it) {
+  if (it.comments == null) return 0
+  const seen = rvSeen()
+  if (seen[it.url] == null) {
+    store.set('rvSeen', { ...seen, [it.url]: it.comments })
+    return 0
+  }
+  return Math.max(0, it.comments - seen[it.url])
+}
+const rvMarkSeen = (it) => it.comments != null && store.set('rvSeen', { ...rvSeen(), [it.url]: it.comments })
 /** Does a review item belong to the open repository (same host and project path as its remote)? */
 const inThisRepo = (it, data) => !!data.repoPath && it.repo?.toLowerCase() === data.repoPath.toLowerCase() && (!data.repoHost || !it.host || it.host.toLowerCase() === data.repoHost.toLowerCase())
 /** The tab's badge: waiting for me, in this repository unless "All repos" is chosen. */
@@ -6195,7 +6322,15 @@ async function viewReviews() {
   const data = state.reviews
   const filter = RV_TABS.some(([k]) => k === state.reviewFilter) ? state.reviewFilter : 'todo'
   const allRepos = !data.repoPath || store.get('reviewsAllRepos', false)
-  const scoped = data.items.filter((it) => allRepos || inThisRepo(it, data))
+  const q = (state.rvQ ||= { text: '', repo: '', label: '' })
+  const inScope = data.items.filter((it) => allRepos || inThisRepo(it, data))
+  const words = q.text.toLowerCase().split(/\s+/).filter(Boolean)
+  const scoped = inScope.filter(
+    (it) =>
+      (!q.repo || it.repo === q.repo) &&
+      (!q.label || (it.labels || []).includes(q.label)) &&
+      words.every((w) => `${it.title} ${it.repo} ${it.author} ${it.source || ''} ${it.number} ${(it.labels || []).join(' ')}`.toLowerCase().includes(w))
+  )
   const where = data.repoPath && h(
     'div',
     { class: 'segmented' },
@@ -6218,8 +6353,37 @@ async function viewReviews() {
       where,
       seg,
       h('span', { class: 'grow' }),
-      h('span', { class: 'dim', style: { fontSize: '11.5px' } }, `Updated ${ago(data.at / 1000)}`),
+      h('span', { class: 'dim rv-updated', style: { fontSize: '11.5px' } }, `Updated ${ago(data.at / 1000)}`),
       h('button', { class: 'btn sm', onClick: async (e) => ((e.currentTarget.disabled = true), await loadReviews(true).catch((err) => toast(err.message, 'error')), renderView({ force: true })) }, icon('refresh', 12), 'Refresh')
+    )
+  )
+
+  // search, project and label
+  const repos = [...new Set(inScope.map((it) => it.repo).filter(Boolean))].sort()
+  const labels = [...new Set(inScope.flatMap((it) => it.labels || []))].sort()
+  const rvSearch = (rvSearchBox ||= h('input', {
+    type: 'text',
+    class: 'rv-search',
+    placeholder: 'Filter by title, author, branch, number…',
+    onInput: (e) => {
+      clearTimeout(rvSearchBox._t)
+      rvSearchBox._t = setTimeout(() => ((state.rvQ.text = e.target.value), renderView({ force: true })), 200)
+    },
+    onKeydown: (e) => e.key === 'Escape' && e.target.value && (e.preventDefault(), (e.target.value = ''), (state.rvQ.text = ''), renderView({ force: true }))
+  }))
+  if (document.activeElement !== rvSearch) rvSearch.value = q.text
+  const pickSel = (key, all, values) =>
+    values.length > 1 &&
+    h('select', { class: `rv-sel ${q[key] ? 'on' : ''}`, onChange: (e) => ((state.rvQ[key] = e.target.value), renderView({ force: true })) }, h('option', { value: '' }, all), values.map((v) => h('option', { value: v, selected: q[key] === v }, v)))
+  const active = q.text || q.repo || q.label
+  root.append(
+    h(
+      'div',
+      { class: 'rv-filters' },
+      h('div', { class: 'rv-search-wrap' }, icon('search', 12), rvSearch),
+      pickSel('repo', 'All projects', allRepos ? repos : []),
+      pickSel('label', 'All labels', labels),
+      active && h('button', { class: 'btn sm', onClick: () => ((state.rvQ = { text: '', repo: '', label: '' }), (rvSearch.value = ''), renderView({ force: true })) }, icon('x', 12), 'Clear filters')
     )
   )
 
@@ -6421,7 +6585,12 @@ function reviewRow(it, { onSelect, filter } = {}) {
         it.roles.includes('mine') && h('span', { class: 'pill role' }, 'Mine'),
         it.ci && h('span', { class: `ci ci-${it.ci}`, title: `CI: ${it.ci}` }, ciIcon(it.ci), it.ci),
         approvals,
-        it.myApproved && h('span', { class: 'pill rv-mine-ok' }, icon('check', 10), 'You approved')
+        it.myApproved && h('span', { class: 'pill rv-mine-ok' }, icon('check', 10), 'You approved'),
+        (() => {
+          const n = rvNewComments(it)
+          return n > 0 && h('span', { class: 'pill rv-new', title: 'New since you last opened it' }, `${n} new comment${n > 1 ? 's' : ''}`)
+        })(),
+        ...(it.labels || []).slice(0, 3).map((l) => h('span', { class: 'pill rv-label' }, l))
       ),
       h(
         'div',
@@ -6679,6 +6848,7 @@ const initials = (n) => (String(n || '?').replace(/[^A-Za-z0-9]/g, '')[0] || '?'
 
 /** The detail page of one pull/merge request: header, Overview / Commits / Changes / Pipeline, and the decision bar. */
 async function reviewDetailSheet(it, tab = 'overview') {
+  rvMarkSeen(it)
   const body = h('div', { class: 'mrd' }, h('div', { class: 'inline-skeleton', style: { margin: '16px' } }, h('span'), h('span'), h('span')))
   openSheet(`${mrRef(it)} · ${it.title}`, body, [h('button', { class: 'btn sm', title: `Open the ${mrNoun(it)} in the browser`, onClick: () => openLink(it.url) }, icon('open', 12), 'Open')])
   const sheet = state.sheets[state.sheets.length - 1]
@@ -7285,6 +7455,205 @@ function conflictSides(block) {
 }
 const sideChip = (kind, name) => h('span', { class: `side-chip ${kind}` }, h('span', { class: 'side-k' }, kind === 'current' ? 'Current' : 'Incoming'), h('span', { class: 'side-n mono', title: name }, name))
 
+/* ---------- conflicts: the parts that need no choice ---------- */
+/** A file with conflict markers → plain text runs and blocks { ours, base, theirs, labels }. */
+function parseConflictText(text) {
+  const eol = text.includes('\r\n') ? '\r\n' : '\n'
+  const lines = text.split(/\r?\n/)
+  const parts = []
+  let buf = []
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].startsWith('<<<<<<<')) {
+      if (buf.length) parts.push(buf.join(eol))
+      buf = []
+      const block = { ours: [], base: [], theirs: [], oursLabel: lines[i].slice(8).trim(), theirsLabel: '', choice: null, result: null }
+      let where = 'ours'
+      for (i++; i < lines.length; i++) {
+        const l = lines[i]
+        if (l.startsWith('|||||||')) where = 'base'
+        else if (l.startsWith('=======')) where = 'theirs'
+        else if (l.startsWith('>>>>>>>')) {
+          block.theirsLabel = l.slice(8).trim()
+          break
+        } else block[where].push(l)
+      }
+      parts.push(block)
+    } else buf.push(lines[i])
+  }
+  if (buf.length) parts.push(buf.join(eol))
+  return { parts, eol }
+}
+/**
+ * A block that needs no choice, and its result: both sides made the same change; only one side
+ * changed it (compared with the base); after their shared first and last lines, one side is the base;
+ * or they differ only in spaces. null when it is a real conflict.
+ */
+function autoBlock(b, hasBase) {
+  const same = (x, y) => x.length === y.length && x.every((l, i) => l === y[i])
+  const { ours, theirs, base } = b
+  if (same(ours, theirs)) return ours
+  if (hasBase) {
+    if (same(ours, base)) return theirs
+    if (same(theirs, base)) return ours
+    let p = 0
+    while (p < ours.length && p < theirs.length && p < base.length && ours[p] === theirs[p] && base[p] === ours[p]) p++
+    let s = 0
+    while (s < ours.length - p && s < theirs.length - p && s < base.length - p && ours[ours.length - 1 - s] === theirs[theirs.length - 1 - s] && base[base.length - 1 - s] === ours[ours.length - 1 - s]) s++
+    const o = ours.slice(p, ours.length - s)
+    const t = theirs.slice(p, theirs.length - s)
+    const bm = base.slice(p, base.length - s)
+    if (p + s > 0 && same(o, bm)) return [...ours.slice(0, p), ...t, ...ours.slice(ours.length - s)]
+    if (p + s > 0 && same(t, bm)) return [...ours.slice(0, p), ...o, ...ours.slice(ours.length - s)]
+    // same number of lines on all three: line by line, each changed by one side only
+    if (ours.length === base.length && theirs.length === base.length) {
+      const out = []
+      for (let i = 0; i < base.length; i++) {
+        if (ours[i] === theirs[i] || theirs[i] === base[i]) out.push(ours[i])
+        else if (ours[i] === base[i]) out.push(theirs[i])
+        else return null
+      }
+      return out
+    }
+  }
+  const squash = (x) => x.map((l) => l.replace(/\s+/g, ' ').trim()).join('\n')
+  if (squash(ours) === squash(theirs)) return ours
+  return null
+}
+/** What git can tell about a conflicted file's blocks: with the base, how many need no choice. */
+async function conflictAnalysis(file) {
+  const { text, hasBase } = await call('conflictText', { file })
+  const { parts } = parseConflictText(text)
+  const blocks = parts.filter((x) => typeof x === 'object')
+  return { parts, blocks, hasBase, auto: blocks.filter((b) => autoBlock(b, hasBase)).length }
+}
+/** Give the blocks of the file on disk their base, from git's stages, when the file has none. */
+async function withBase(file, blocks) {
+  if (blocks.some((b) => b.base.length)) return true
+  try {
+    const a = await conflictAnalysis(file)
+    if (a.blocks.length !== blocks.length) return false
+    blocks.forEach((b, i) => (b.base = a.blocks[i].base))
+    return a.hasBase
+  } catch {
+    return false
+  }
+}
+/** Resolve the blocks that need no choice in one file; the rest stay marked. Staged when nothing is left. */
+async function applyNonConflicting(file, sides) {
+  const text = await call('readWorkFile', { file })
+  const { parts, eol } = parseConflictText(text)
+  const blocks = parts.filter((x) => typeof x === 'object')
+  const hasBase = await withBase(file, blocks)
+  let applied = 0
+  let left = 0
+  const out = parts.map((x) => {
+    if (typeof x === 'string') return x
+    const r = autoBlock(x, hasBase)
+    if (r) return applied++, r.join(eol)
+    left++
+    return [`<<<<<<< ${x.oursLabel || sides.current}`, ...x.ours, '=======', ...x.theirs, `>>>>>>> ${x.theirsLabel || sides.incoming}`].join(eol)
+  })
+  if (applied) await call('writeWorkFile', { file, text: out.join(eol), stage: left === 0 })
+  return { applied, left }
+}
+
+/* ---------- reset: say what each kind does, and how to get it back ---------- */
+async function resetTo(hash, mode = 'mixed') {
+  const cur = state.status?.branch || 'HEAD'
+  const short = hash.slice(0, 7)
+  const leaving = await call('rebaseTodo', { base: hash }).then((t) => t.length, () => null)
+  const files = state.status?.files?.length || 0
+  return new Promise((resolve) => {
+    let pick = mode
+    const opts = [
+      ['soft', 'Keep the changes, staged', 'The commits are undone; their changes wait in Staged, ready to commit again.'],
+      ['mixed', 'Keep the changes, not staged', 'The commits are undone; their changes stay in your files. Recommended.'],
+      ['keep', 'Keep only my uncommitted work', 'The commits and their changes go; files you are editing now stay (stops if they would be overwritten).'],
+      ['hard', 'Throw the changes away', `The commits and ${files ? `your ${files} uncommitted file${files > 1 ? 's' : ''}` : 'any uncommitted change'} are gone from your files.`]
+    ]
+    const list = h('div', { class: 'choice-list' })
+    const draw = () => {
+      clear(list)
+      for (const [k, title, text] of opts)
+        list.append(
+          h(
+            'label',
+            { class: `choice ${pick === k ? 'on' : ''} ${k === 'hard' ? 'danger' : ''}` },
+            h('input', { type: 'radio', name: 'reset-mode', checked: pick === k, onChange: () => ((pick = k), draw(), sync()) }),
+            h('div', null, h('b', null, title, h('span', { class: 'dim mono' }, `  ${k}`)), h('div', { class: 'dim' }, text))
+          )
+        )
+    }
+    const what = h('div', { class: 'choice-what' })
+    const go = h('button', { class: 'btn primary', onClick: () => finish(true) }, 'Reset')
+    const sync = () => {
+      go.className = `btn ${pick === 'hard' ? 'danger' : 'primary'}`
+      clear(what).append(
+        icon(pick === 'hard' ? 'alert' : 'undo', 13),
+        h('span', null, `${leaving != null ? `${leaving} commit${leaving === 1 ? '' : 's'} leave ${cur}` : `${cur} moves to ${short}`}. `, pick === 'hard' ? 'Uncommitted changes cannot be recovered; the commits can, from Reflog.' : 'You can get the commits back with Undo or from Reflog.')
+      )
+    }
+    draw()
+    sync()
+    const close = () => finish(false)
+    function finish(ok) {
+      overlay.remove()
+      document.removeEventListener('keydown', onKey)
+      resolve(ok)
+      if (!ok) return
+      if (state.sheets.length) closeSheet()
+      resetHistory()
+      run('reset', { hash, mode: pick }, { success: `Reset ${cur} to ${short} (${pick})` })
+    }
+    const onKey = (e) => isTopOverlay(overlay) && (e.key === 'Escape' ? close() : e.key === 'Enter' && pick !== 'hard' && finish(true))
+    const box = h('div', { class: 'dialog choice-dialog', role: 'dialog' }, h('h3', null, `Reset ${cur} to ${short}?`), list, what, h('div', { class: 'buttons' }, h('button', { class: 'btn', onClick: close }, 'Cancel'), h('span', { class: 'grow' }), go))
+    const overlay = h('div', { class: 'overlay', onMousedown: (e) => e.target === overlay && close() }, box)
+    mountOverlay(overlay, close)
+    document.addEventListener('keydown', onKey)
+  })
+}
+
+/* ---------- the git commands that ran ---------- */
+async function openCmdLog() {
+  const body = h('div', { class: 'cmd-log' }, h('div', { class: 'inline-skeleton', style: { margin: '12px' } }, h('span'), h('span')))
+  openSheet('Git commands', body, [
+    h('label', { class: 'check sm' }, (() => {
+      const c = h('input', { type: 'checkbox', checked: !!store.get('showCmds', false), onChange: (e) => (store.set('showCmds', e.target.checked), toast(e.target.checked ? 'Each action now shows its git command' : 'Commands hidden')) })
+      return c
+    })(), 'Show with each action')
+  ])
+  let list
+  try {
+    list = await call('gitLog')
+  } catch (e) {
+    return append(clear(body), [h('div', { class: 'empty' }, e.message)])
+  }
+  if (!list.length) return append(clear(body), [h('div', { class: 'empty' }, icon('history', 28), h('div', null, 'No git commands yet'), h('div', { class: 'dim' }, 'Fetch, commit, merge… each shows up here with the exact command.'))])
+  clear(body).append(
+    h('p', { class: 'dim cmd-lead' }, 'The commands Git Control ran for you, newest first. Reading commands (status, log…) are left out.'),
+    ...list
+      .slice()
+      .reverse()
+      .map((c) =>
+        h(
+          'div',
+          { class: `cmd-row ${c.code === 0 ? '' : 'bad'}` },
+          h('span', { class: 'cmd-t dim' }, new Date(c.at).toLocaleTimeString()),
+          h('code', { class: 'grow cmd-c', title: c.cmd }, c.cmd),
+          h('span', { class: 'dim cmd-ms' }, c.code === 0 ? `${c.ms} ms` : `exit ${c.code}`),
+          iconBtn('copy', 'Copy the command', () => copy(c.cmd))
+        )
+      )
+  )
+}
+/** After an action, when "show git commands" is on: the commands it ran, under its message. */
+async function cmdNote(since) {
+  if (!store.get('showCmds', false)) return
+  const list = await call('gitLog').catch(() => [])
+  const mine = list.filter((c) => c.at >= since).map((c) => c.cmd)
+  if (mine.length) toast(h('div', { class: 'cmd-toast' }, ...mine.slice(-4).map((c) => h('code', null, c))), 'ok', 6000)
+}
+
 /** How each file of the operation in progress was resolved (current, incoming, AI, by hand), for the conflicts page. */
 const cfLog = new Map()
 /** The conflicts of the operation in progress, in one place: every file, all at once or one by one, then Commit. */
@@ -7375,12 +7744,55 @@ function openConflicts() {
         'div',
         { class: 'cf-all' },
         h('span', { class: 'cf-all-k' }, files.length > 1 ? `All ${files.length} files` : 'This file'),
+        h('span', { class: 'cf-auto-slot' }),
         h('button', { class: 'btn sm cf-cur', title: `Keep ${sides.current}'s version wherever they conflict`, onClick: () => takeWhole(left, 'ours') }, icon('left', 12), `Accept all current`),
         h('button', { class: 'btn sm cf-inc', title: `Keep ${sides.incoming}'s version wherever they conflict`, onClick: () => takeWhole(left, 'theirs') }, `Accept all incoming`, icon('right', 12)),
         h('span', { class: 'grow' }),
         h('button', { class: 'btn sm ai-gen', title: 'AI merges both sides of every file; you review before committing', onClick: () => aiFiles(left) }, icon('wand', 13), files.length > 1 ? `AI resolve all ${files.length}` : 'AI resolve')
       )
     )
+  // which parts need no choice: counted in the background, then one button applies them all
+  async function analyze(paths) {
+    const info = {}
+    await Promise.all(paths.map((p) => conflictAnalysis(p).then((a) => (info[p] = a), () => null)))
+    if (!sheet.el.isConnected) return
+    let total = 0
+    for (const p of paths) {
+      const a = info[p]
+      if (!a) continue
+      total += a.auto
+      const tag = body.querySelector(`.cf-file[data-path="${CSS.escape(p)}"] .cf-state`)
+      if (tag && !tag.textContent) tag.textContent = `${a.blocks.length} conflict${a.blocks.length === 1 ? '' : 's'}${a.auto ? ` · ${a.auto} automatic` : ''}`
+    }
+    const slot = body.querySelector('.cf-auto-slot')
+    if (slot && total)
+      slot.replaceWith(
+        h('button', { class: 'btn sm primary cf-auto', title: 'Parts where both sides made the same change, only one side really changed, or only spaces differ', onClick: () => applyAuto(paths.filter((p) => info[p]?.auto)) }, icon('check', 12), `Apply ${total} non-conflicting`)
+      )
+  }
+  async function applyAuto(paths) {
+    if (busy) return
+    busy = true
+    setBusy(1)
+    let n = 0
+    let whole = 0
+    try {
+      for (const p of paths) {
+        const r = await applyNonConflicting(p, sides)
+        n += r.applied
+        if (r.applied && !r.left) (cfLog.set(p, 'auto'), whole++)
+      }
+      toast(`Merged ${n} part${n === 1 ? '' : 's'} automatically${whole ? ` · ${whole} file${whole === 1 ? '' : 's'} done` : ''}. The rest need your choice.`)
+    } catch (e) {
+      toast(e.message, 'error')
+    } finally {
+      setBusy(-1)
+      busy = false
+      await refreshAll()
+      reopen()
+    }
+  }
+  if (files.length) setTimeout(() => analyze(left), 0)
   // file by file
   if (files.length) {
     body.append(h('div', { class: 'section-head' }, 'To resolve', h('span', { class: 'count' }, files.length)))
@@ -7403,7 +7815,7 @@ function openConflicts() {
   }
   // what is done: how, with a look at the result
   if (done.length) {
-    const how = { current: `Kept current (${sides.current})`, incoming: `Kept incoming (${sides.incoming})`, ai: 'Resolved by AI', manual: 'Resolved by you' }
+    const how = { current: `Kept current (${sides.current})`, incoming: `Kept incoming (${sides.incoming})`, ai: 'Resolved by AI', manual: 'Resolved by you', auto: 'Merged automatically' }
     body.append(h('div', { class: 'section-head' }, 'Resolved', h('span', { class: 'count' }, done.length)))
     const list = h('div', { class: 'cf-files' })
     for (const [p, kind] of done)
@@ -7452,7 +7864,7 @@ async function resolveConflict(file) {
   let buf = []
   for (let i = 0; i < lines.length; i++) {
     if (lines[i].startsWith('<<<<<<<')) {
-      parts.push(buf.join(eolStr))
+      if (buf.length) parts.push(buf.join(eolStr))
       buf = []
       const block = { ours: [], base: [], theirs: [], oursLabel: lines[i].slice(8).trim(), theirsLabel: '', choice: null, result: null }
       let where = 'ours'
@@ -7468,7 +7880,7 @@ async function resolveConflict(file) {
       parts.push(block)
     } else buf.push(lines[i])
   }
-  parts.push(buf.join(eolStr))
+  if (buf.length) parts.push(buf.join(eolStr))
   const blocks = parts.filter((x) => typeof x === 'object')
   if (!blocks.length) {
     if (await confirmBox('No conflict markers left', `${file} has no conflict markers. Mark it as resolved?`, 'Mark resolved')) {
@@ -7478,6 +7890,7 @@ async function resolveConflict(file) {
     return
   }
   const sides = conflictSides(blocks[0])
+  const hasBase = await withBase(file, blocks)
   const all = (state.status?.files || []).filter((f) => f.conflict).map((f) => f.path)
   const pos = all.indexOf(file)
   const body = h('div', { class: 'resolver' })
@@ -7498,6 +7911,7 @@ async function resolveConflict(file) {
       pos >= 0 && all.length > 1 && h('span', { class: 'dim' }, `File ${pos + 1} of ${all.length}`),
       h('button', { class: 'btn sm', title: `Keep ${sides.current}'s side in every conflict below`, onClick: () => blocks.forEach((b) => b.pick('ours')) }, 'Accept all current'),
       h('button', { class: 'btn sm', title: `Keep ${sides.incoming}'s side in every conflict below`, onClick: () => blocks.forEach((b) => b.pick('theirs')) }, 'Accept all incoming'),
+      hasBase && h('button', { class: 'btn sm', title: 'Show what the file looked like before either side changed it', onClick: (e) => (body.classList.toggle('show-base'), e.currentTarget.classList.toggle('on')) }, icon('history', 12), 'Show base'),
       h('button', { class: 'btn sm ai-gen', title: 'AI merges both sides of this file; you check and edit before saving', onClick: (e) => aiSuggest(e.currentTarget) }, icon('wand', 13), 'AI resolve')
     )
   )
@@ -7519,7 +7933,7 @@ async function resolveConflict(file) {
       )
     b.pick = (choice) => {
       b.choice = choice
-      b.result = choice === 'ours' ? b.ours : choice === 'theirs' ? b.theirs : [...b.ours, ...b.theirs]
+      b.result = choice === 'auto' ? b.autoRes : choice === 'ours' ? b.ours : choice === 'theirs' ? b.theirs : [...b.ours, ...b.theirs]
       result.value = b.result.join('\n')
       result.rows = Math.min(14, Math.max(2, b.result.length))
       resultBox.classList.remove('hidden')
@@ -7533,13 +7947,16 @@ async function resolveConflict(file) {
         'div',
         { class: 'res-head' },
         h('strong', null, `Conflict ${n + 1} of ${blocks.length}`),
+        h('span', { class: 'pill res-auto', title: 'Only one side really changed this part (or both made the same change); it was merged for you. Pick a side to change it.' }, icon('check', 10), 'Merged automatically'),
         h('span', { class: 'grow' }),
         h('div', { class: 'res-actions' }, ...[['ours', 'Accept current'], ['theirs', 'Accept incoming'], ['both', 'Accept both']].map(([c, l]) => h('button', { class: 'btn sm', 'data-c': c, onClick: () => b.pick(c) }, l)))
       ),
-      h('div', { class: 'res-sides' }, side('ours', sides.current, b.ours), side('theirs', sides.incoming, b.theirs)),
+      h('div', { class: 'res-sides' }, side('ours', sides.current, b.ours), hasBase && h('div', { class: 'res-side base' }, h('div', { class: 'res-side-head' }, h('span', { class: 'side-k' }, 'Base'), h('span', { class: 'side-n' }, '(before both)')), h('pre', { class: 'res-code' }, b.base.join('\n') || ' ')), side('theirs', sides.incoming, b.theirs)),
       resultBox
     )
     body.append(card)
+    b.autoRes = autoBlock(b, hasBase)
+    if (b.autoRes) b.pick('auto')
   })
   update()
   // AI: the whole file merged by AI, shown for checking and editing; Save writes it
@@ -7980,6 +8397,7 @@ function commandPalette() {
     ['Refresh', 'refresh', () => manualRefresh()],
     [ROW_H > 28 ? 'Compact rows' : 'Comfortable rows', 'rows', () => setDensity(ROW_H > 28 ? 'compact' : 'comfortable')],
     ['Keyboard shortcuts', 'keyboard', () => shortcutsHelp()],
+    ['Show git commands', 'history', () => openCmdLog()],
     ...TABS.map(([id, label, ic]) => [`Go to ${label}`, ic, () => setTab(id)])
   ].filter((c) => !c[3])
   const input = h('input', { type: 'text', class: 'pal-input', placeholder: 'Type a command…', spellcheck: 'false' })

@@ -44,7 +44,24 @@ async function git(cwd, args, opts = {}) {
   }
 }
 
+/** The last git commands, newest last, for the command log; anything that looks like a secret is masked. */
+const CMD_LOG = []
+const QUIET_GIT = new Set(['diff-tree', 'status', 'log', 'rev-parse', 'for-each-ref', 'show', 'diff', 'config', 'rev-list', 'cat-file', 'ls-files', 'name-rev', 'worktree', 'stash', 'remote', 'reflog', 'branch', 'tag', 'merge-base', 'ls-tree', 'blame', 'check-ignore', 'credential', 'var', 'symbolic-ref', 'describe', 'shortlog', 'count-objects', 'merge-file', 'hash-object', 'ls-remote'])
+const SECRET = /(token|password|passwd|secret|authorization|private-token|extraheader)/i
+function logCmd(args, code, ms) {
+  // our own plumbing (-c core.editor=true, the rebase plan's sequence editor) is not what the person ran
+  const plain = []
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '-c' && /^(core\.editor|sequence\.editor)=/.test(args[i + 1] || '')) i++
+    else plain.push(args[i])
+  }
+  args = plain
+  const shown = args.map((a) => (SECRET.test(a) ? a.replace(/=.*/, '=•••') : a))
+  CMD_LOG.push({ at: Date.now(), cmd: 'git ' + shown.map((a) => (/[\s"']/.test(a) ? JSON.stringify(a) : a)).join(' '), code, ms })
+  if (CMD_LOG.length > 150) CMD_LOG.splice(0, CMD_LOG.length - 150)
+}
 function gitOnce(cwd, args, { input, timeout = LOCAL_TIMEOUT, okCodes = [0], signal, env, raw } = {}) {
+  const t0 = Date.now()
   return new Promise((resolve, reject) => {
     const child = spawn('git', args, {
       cwd: cwd || undefined,
@@ -80,6 +97,8 @@ function gitOnce(cwd, args, { input, timeout = LOCAL_TIMEOUT, okCodes = [0], sig
     child.on('close', (code) => {
       clearTimeout(timer)
       signal?.removeEventListener('abort', onAbort)
+      // everyday reads (status, log, refs…) would bury the commands people ran; keep the ones that change things
+      if (!QUIET_GIT.has(args[0])) logCmd(args, code, Date.now() - t0)
       const stdout = raw ? Buffer.concat(out) : Buffer.concat(out).toString('utf8')
       const stderr = Buffer.concat(err).toString('utf8').trim()
       if (killedFor) reject(new GitError(killedFor))
@@ -1569,7 +1588,7 @@ async function githubInbox(h, where, via) {
   if (via === 'cli') {
     const meR = await runProc('gh', ['api', 'user', '--jq', '.login'], { timeout: 20_000, env: h.host === 'github.com' ? undefined : { GH_HOST: h.host } }).catch(() => null)
     base.me = meR?.code === 0 ? meR.stdout.trim() : ''
-    const fields = 'number,title,url,repository,author,updatedAt,isDraft'
+    const fields = 'number,title,url,repository,author,updatedAt,isDraft,labels,commentsCount'
     const env = h.host === 'github.com' ? undefined : { GH_HOST: h.host }
     const search = (...q) => runProc('gh', ['search', 'prs', ...q, '--state=open', '--json', fields, '--limit', '50'], { timeout: 30_000, env })
     const [rev, asg, mine, repo] = await Promise.all([
@@ -1587,7 +1606,9 @@ async function githubInbox(h, where, via) {
       repo: p.repository?.nameWithOwner || p.repository?.name || '',
       author: p.author?.login || '',
       updated: Date.parse(p.updatedAt) / 1000,
-      draft: !!p.isDraft
+      draft: !!p.isDraft,
+      labels: (p.labels || []).map((l) => l.name).filter(Boolean),
+      comments: p.commentsCount ?? null
     }))
   }
   // the saved Git login: @me works only for user tokens, so ask who that is first
@@ -1604,7 +1625,9 @@ async function githubInbox(h, where, via) {
     repo: String(p.repository_url || '').replace(/^.*\/repos\//, ''),
     author: p.user?.login || '',
     updated: Date.parse(p.updated_at) / 1000,
-    draft: !!p.draft
+    draft: !!p.draft,
+    labels: (p.labels || []).map((l) => l.name).filter(Boolean),
+    comments: p.comments ?? null
   }))
 }
 
@@ -1641,7 +1664,9 @@ async function gitlabInbox(h, where, via) {
     source: m.source_branch,
     target: m.target_branch,
     updated: Date.parse(m.updated_at) / 1000,
-    draft: !!(m.draft || m.work_in_progress)
+    draft: !!(m.draft || m.work_in_progress),
+    labels: (m.labels || []).map((l) => (typeof l === 'string' ? l : l.name)).filter(Boolean),
+    comments: m.user_notes_count ?? null
   }))
 }
 
@@ -2687,6 +2712,21 @@ const ops = {
       throw e
     }
   },
+  conflictText: async (r, a) => {
+    const f = String(a.file || '')
+    if (!f || f.startsWith('-')) throw new GitError('bad file')
+    const stage = (n) => git(r, ['show', `:${n}:${f}`]).catch(() => '')
+    const [base, ours, theirs] = await Promise.all([stage(1), stage(2), stage(3)])
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'orca-git-cf-'))
+    try {
+      const p = (n, t) => (writeFileSync(path.join(dir, n), t), path.join(dir, n))
+      const out = await git(r, ['merge-file', '-p', '--diff3', '-L', 'current', '-L', 'base', '-L', 'incoming', p('ours', ours), p('base', base), p('theirs', theirs)], { okCodes: Array.from({ length: 128 }, (_, i) => i) })
+      return { text: out, hasBase: !!base }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  },
+  gitLog: async () => CMD_LOG.slice(-100),
   rebaseTodo: async (r, a) => {
     const raw = await git(r, ['log', '--reverse', `--format=%H${SEP}%s`, `${req(a.base, 'base')}..HEAD`])
     return raw
@@ -2699,15 +2739,22 @@ const ops = {
   },
   rebaseInteractive: async (r, a) => {
     const base = req(a.base, 'base')
-    const ACTIONS = new Set(['pick', 'squash', 'fixup', 'drop'])
+    const ACTIONS = new Set(['pick', 'squash', 'fixup', 'drop', 'reword'])
+    // kept until the rebase is over: a reword after a conflict still needs its message file
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'orca-git-rebase-'))
+    let n = 0
     const todo = (a.todo || [])
       .map((t) => {
         if (!ACTIONS.has(t.action) || !/^[0-9a-f]{7,40}$/.test(t.hash)) throw new GitError('invalid rebase plan')
-        return `${t.action} ${t.hash}`
+        if (t.action !== 'reword') return `${t.action} ${t.hash}`
+        const msg = String(t.message || '').trim()
+        if (!msg) return `pick ${t.hash}`
+        const mf = path.join(dir, `msg${n++}.txt`)
+        writeFileSync(mf, msg + '\n')
+        return `pick ${t.hash}\nexec git commit --amend --allow-empty -F "${mf.replace(/\\/g, '/')}"`
       })
       .join('\n')
     if (!todo) throw new GitError('nothing to rebase')
-    const dir = mkdtempSync(path.join(os.tmpdir(), 'orca-git-rebase-'))
     try {
       const file = path.join(dir, 'todo.txt')
       writeFileSync(file, todo + '\n')
@@ -2719,7 +2766,7 @@ const ops = {
         env: { ELECTRON_RUN_AS_NODE: '1', ORCA_GIT_TODO: file }
       })
     } finally {
-      rmSync(dir, { recursive: true, force: true })
+      if (!(await repoState(r))) rmSync(dir, { recursive: true, force: true })
     }
   }
 }
@@ -2727,7 +2774,7 @@ const ops = {
 const READ_ONLY_OPS = new Set(['fileImage', 
   'status', 'diff', 'log', 'commitShow', 'commitFileDiff', 'refs', 'worktrees', 'stashList', 'stashShow', 'remotes',
   'configList', 'blame', 'showFile', 'treeFiles', 'compare', 'compareFileDiff', 'reflog', 'cleanPreview', 'submodules',
-  'aheadBehind', 'rebaseTodo', 'lastMessage', 'formatPatch', 'ciStatus', 'pipelines', 'pipelineJobs', 'jobLog', 'readWorkFile', 'branchCleanup', 'undoInfo'
+  'aheadBehind', 'rebaseTodo', 'lastMessage', 'formatPatch', 'ciStatus', 'pipelines', 'pipelineJobs', 'jobLog', 'readWorkFile', 'branchCleanup', 'undoInfo', 'conflictText', 'gitLog'
 ])
 const NO_REPO_OK = new Set(['configList', 'configSet', 'configUnset', 'init', 'clone'])
 

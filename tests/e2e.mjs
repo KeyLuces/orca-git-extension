@@ -189,6 +189,11 @@ async function step(name, fn) {
     results.push({ name, ok: false, ms: Date.now() - t, error: e.message, toasts: await toastText().catch(() => '') })
     await shot('FAIL-' + name.replace(/\W+/g, '_')).catch(() => {})
     await page.keyboard.press('Escape').catch(() => {})
+    // a failed step must not leave the graph filtered for the next ones
+    await page.evaluate(() => {
+      const i = document.querySelector('.graph-search')
+      if (i?.value) (i.value = ''), i.dispatchEvent(new Event('input', { bubbles: true }))
+    }).catch(() => {})
   }
 }
 
@@ -293,13 +298,13 @@ await step('menus: no trailing "…", and no tooltip on text that is shown in fu
 })
 
 await step('search finds everything as you type (message, file, author, hash) and highlights it', async () => {
-  const typeSearch = async (text) => {
-    const box = await page.$('.history-bar input') // redrawn with each result
-    await box.click()
-    await page.keyboard.down('Control'); await page.keyboard.press('KeyA'); await page.keyboard.up('Control')
-    await page.keyboard.press('Backspace')
-    await page.keyboard.type(text) // no Enter
-  }
+  // set the text in one go (as a paste would): typing key by key races the debounced redraw on a busy machine
+  const typeSearch = (text) =>
+    page.$eval('.history-bar input', (i, v) => {
+      i.focus()
+      i.value = v
+      i.dispatchEvent(new Event('input', { bubbles: true }))
+    }, text)
   const rows = () => page.$$eval('.commit-row', (r) => r.map((x) => x.textContent))
   // message, highlighted
   await typeSearch('sandbox')
@@ -826,6 +831,12 @@ await step('Review & MR list: approve leaves To review, multi-select merge, real
   if (body.should_remove_source_branch !== true) throw new Error('merge options ' + JSON.stringify(body))
   await until(() => page.$eval('.reviews .rv-list', (r) => !r.textContent.includes('MR assigned') && !r.textContent.includes('MR repo')).catch(() => false), 'merged ones left the list', 20000)
   if (await page.$eval('.rv-bulk', (b) => b.classList.contains('on'))) throw new Error('bulk bar still showing')
+  // search narrows the list; Clear filters brings it back
+  await page.focus('.rv-search')
+  await page.keyboard.type('mine')
+  await until(() => page.$$eval('.rv-list .review-row', (r) => r.length === 1 && r[0].textContent.includes('MR mine')), 'search finds MR mine', 20000)
+  await clickText('.rv-filters .btn', 'Clear filters')
+  await until(() => page.$$eval('.rv-list .review-row', (r) => r.length > 1), 'filters cleared')
 })
 
 await step('pipeline (GitLab): CI badge opens the pipeline, its jobs and the failed log; retry', async () => {
@@ -1015,6 +1026,99 @@ await step('conflicts page: one file incoming, one by AI, the rest "accept all c
   await clickText('.cf-ready .btn', 'Commit merge')
   await until(() => g('rev-list', '--parents', '-1', 'HEAD').split(' ').length === 3, 'merge commit made', 20000)
   delete fakes['ai.resolveFile']
+})
+
+await step('conflicts: "Apply non-conflicting" merges what needs no choice; the real conflict stays', async () => {
+  g('switch', '-q', 'main')
+  write('auto.txt', 'L1\nL2\nL3\n'); write('real.txt', 'x\n'); g('add', '.'); g('commit', '-qm', 'base for auto')
+  g('switch', '-q', '-c', 'au-a'); write('auto.txt', 'L1a\nL2\nL3\n'); write('real.txt', 'a\n'); g('add', '.'); g('commit', '-qm', 'au A')
+  g('switch', '-q', 'main'); g('switch', '-q', '-c', 'au-b'); write('auto.txt', 'L1\nL2b\nL3\n'); write('real.txt', 'b\n'); g('add', '.'); g('commit', '-qm', 'au B')
+  try { g('merge', 'au-a') } catch {}
+  if (!g('diff', '--name-only', '--diff-filter=U').includes('auto.txt')) throw new Error('setup: auto.txt should conflict (adjacent lines)')
+  await refresh()
+  await clickText('#banner .btn', 'Resolve conflicts')
+  await until(() => page.$$eval('.cf-all .btn', (b) => b.some((x) => x.textContent.includes('Apply 1 non-conflicting'))), 'Apply 1 non-conflicting offered', 20000)
+  const counts = await page.$eval('.cf-file[data-path="auto.txt"] .cf-state', (x) => x.textContent)
+  if (!/1 conflict · 1 automatic/.test(counts)) throw new Error('auto.txt state: ' + counts)
+  // the resolver shows it pre-chosen, and the base on request
+  await clickText('.cf-file[data-path="auto.txt"] .btn', 'Resolve')
+  await until(() => exists('.res-block[data-c="auto"]'), 'block merged automatically in the resolver')
+  await clickText('.res-top .btn', 'Show base')
+  await until(() => exists('.resolver.show-base .res-side.base'), 'base column')
+  await new Promise((r) => setTimeout(r, 400))
+  await shot('10c-auto-merge')
+  await page.keyboard.press('Escape')
+  await clickSel('.sheet .sheet-close').catch(() => {})
+  await clickText('#banner .btn', 'Resolve conflicts')
+  await until(() => exists('.cf-auto'), 'button again')
+  await clickSel('.cf-auto')
+  await until(() => !g('diff', '--name-only', '--diff-filter=U').includes('auto.txt'), 'auto.txt resolved', 20000)
+  const out = readFileSync(path.join(repo, 'auto.txt'), 'utf8')
+  if (out.replace(/\r/g, '') !== 'L1a\nL2b\nL3\n') throw new Error('auto.txt: ' + JSON.stringify(out))
+  if (!g('diff', '--name-only', '--diff-filter=U').includes('real.txt')) throw new Error('real.txt should still need a choice')
+  await until(() => page.$eval('.cf-hub', (x) => x.textContent.includes('Merged automatically')).catch(() => false), 'listed as merged automatically', 20000)
+  await page.evaluate(() => [...document.querySelector('.cf-file[data-path="real.txt"]').querySelectorAll('.btn')].find((b) => b.textContent.trim() === 'Incoming').click())
+  await until(() => exists('.cf-ready'), 'ready to commit', 20000)
+  await clickText('.cf-ready .btn', 'Commit merge')
+  await until(() => g('rev-list', '--parents', '-1', 'HEAD').split(' ').length === 3, 'merge commit made', 20000)
+})
+
+await step('reset explains each kind and how to get commits back', async () => {
+  const before = g('rev-parse', 'HEAD')
+  await tab('Reflog')
+  await until(() => page.$$eval('.view button', (b) => b.filter((x) => x.textContent.trim() === 'Reset here').length > 1), 'reflog rows')
+  const short = await page.evaluate(() => {
+    const b = [...document.querySelectorAll('.view button')].filter((x) => x.textContent.trim() === 'Reset here')[1]
+    const hash = b.closest('.item, .reflog-row, .row, div').parentElement.textContent.match(/[0-9a-f]{7}/)[0]
+    b.click()
+    return hash
+  })
+  const target = g('rev-parse', short)
+  await until(() => exists('.choice-dialog'), 'reset dialog')
+  const t = await page.$eval('.choice-dialog', (d) => d.textContent)
+  for (const want of ['Keep the changes, staged', 'Keep the changes, not staged', 'Throw the changes away', 'leave', 'Undo or from Reflog']) if (!t.includes(want)) throw new Error('reset dialog misses: ' + want + ' / ' + t.slice(0, 200))
+  await shot('15-reset')
+  await clickText('.choice-dialog .btn', 'Reset')
+  await until(() => g('rev-parse', 'HEAD') === target, 'HEAD moved (mixed)')
+  g('reset', '-q', '--hard', before)
+  await refresh()
+})
+
+await step('interactive rebase: squash one into the one above, reword one, summary says the result', async () => {
+  g('switch', '-q', '-c', 'rb-edit')
+  for (const n of [1, 2, 3]) (write(`rb${n}.txt`, `${n}\n`), g('add', '.'), g('commit', '-qm', `rb ${n}`))
+  const base = g('rev-parse', 'HEAD~3')
+  await refresh()
+  await tab('Graph')
+  await until(() => exists(`.commit-row[data-hash="${base}"]`), 'base row')
+  await page.click(`.commit-row[data-hash="${base}"]`, { button: 'right' })
+  await until(() => exists('.menu'), 'commit menu')
+  for (const b of await page.$$('.menu button')) if (/^More\b/.test(await b.evaluate((x) => x.textContent.trim()))) await b.hover()
+  await until(() => page.$$eval('.menu button', (bs) => bs.some((x) => x.textContent.includes('Interactive rebase from here'))), 'More submenu open')
+  await clickText('.menu button', 'Interactive rebase from here')
+  await until(() => page.$$eval('.rb-row', (r) => r.length === 3), 'three rows')
+  await page.evaluate(() => [...document.querySelectorAll('.rb-row')[1].querySelectorAll('.rb-act')].find((b) => b.textContent.startsWith('Squash')).click())
+  await page.evaluate(() => [...document.querySelectorAll('.rb-row')[2].querySelectorAll('.rb-act')].find((b) => b.textContent === 'Reword').click())
+  await until(() => exists('.rb-row .rb-msg'), 'message field for reword')
+  await page.$eval('.rb-row .rb-msg', (i) => ((i.value = 'rb three, renamed'), i.dispatchEvent(new Event('input', { bubbles: true }))))
+  const sum = await page.$eval('.rb-summary', (x) => x.textContent)
+  if (!/3 → 2 commits/.test(sum) || !/1 joined/.test(sum) || !/1 reworded/.test(sum)) throw new Error('summary: ' + sum)
+  await shot('16-rebase')
+  await clickText('.rb-dialog .btn', 'Start')
+  await until(() => g('log', '-2', '--format=%s') === 'rb three, renamed\nrb 1', 'history rewritten', 20000)
+  if (!readFileSync(path.join(repo, 'rb2.txt'), 'utf8')) throw new Error('squashed change lost')
+})
+
+await step('command log lists the git commands that ran', async () => {
+  await page.keyboard.down('Control'); await page.keyboard.press('KeyK'); await page.keyboard.up('Control')
+  await until(() => exists('.pal-input'), 'palette')
+  await page.keyboard.type('Show git commands')
+  await page.keyboard.press('Enter')
+  await until(() => page.$$eval('.cmd-row', (r) => r.some((x) => /git (rebase|merge|reset)/.test(x.textContent))), 'commands listed', 20000)
+  const shown = await page.$$eval('.cmd-row .cmd-c', (r) => r.map((x) => x.textContent).join('\n'))
+  if (/TESTTOKEN/.test(shown)) throw new Error('a secret is in the log')
+  await shot('17-cmd-log')
+  await clickSel('.sheet .sheet-close').catch(() => page.keyboard.press('Escape'))
 })
 
 await step('identity profiles: save once, use for this repo or set global with one click', async () => {
