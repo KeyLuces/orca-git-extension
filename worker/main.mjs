@@ -1905,6 +1905,110 @@ async function reviewMerge(w, via, it) {
 }
 
 /**
+ * Merge queue: "Approve & merge" on several runs here, in the background, so it goes on when the tab
+ * closes. Merge requests of one project go one at a time (each merge changes the target branch, so the
+ * next one has to be checked or rebased again); different projects run side by side.
+ */
+const mergeJobs = new Map() // url -> job
+const mergeLanes = new Set() // projects with a runner going
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+const laneOf = (it) => `${it.provider}|${it.host || ''}|${it.repo}`
+const jobView = (j) => ({ url: j.it.url, repo: j.it.repo, number: j.it.number, title: j.it.title, state: j.state, note: j.note, error: j.error || null, position: j.position ?? null, at: j.at })
+
+function queueMerges(items, { approve = true } = {}) {
+  for (const it of items) {
+    const cur = mergeJobs.get(it.url)
+    if (cur && !['merged', 'failed'].includes(cur.state)) continue // already queued
+    const clean = { ...it, ci: undefined, action: undefined, options: undefined }
+    mergeJobs.set(it.url, { it: clean, approve: approve && !!it.wantApprove, state: 'queued', note: 'Waiting for its turn', at: Date.now() })
+  }
+  for (const lane of new Set(items.map(laneOf))) if (!mergeLanes.has(lane)) runLane(lane)
+  return mergeQueueState()
+}
+
+function mergeQueueState() {
+  // finished ones are shown for a while, then dropped
+  for (const [url, j] of mergeJobs) if (['merged', 'failed'].includes(j.state) && Date.now() - j.at > 15 * 60_000) mergeJobs.delete(url)
+  const lanes = new Map()
+  for (const j of mergeJobs.values())
+    if (j.state === 'queued') {
+      const n = (lanes.get(laneOf(j.it)) || 0) + 1
+      lanes.set(laneOf(j.it), n)
+      j.position = n
+    } else j.position = null
+  return { jobs: [...mergeJobs.values()].map(jobView) }
+}
+
+async function runLane(lane) {
+  mergeLanes.add(lane)
+  try {
+    for (;;) {
+      const job = [...mergeJobs.values()].find((j) => j.state === 'queued' && laneOf(j.it) === lane)
+      if (!job) break
+      try {
+        await runMergeJob(job)
+      } catch (e) {
+        Object.assign(job, { state: 'failed', note: 'Not merged', error: e?.message || String(e), at: Date.now() })
+      }
+      const ref = `${job.it.repo} ${job.it.provider === 'github' ? '#' : '!'}${job.it.number}`
+      if (ORCA?.host?.has?.('notifications.show'))
+        await ORCA.host.call('notifications.show', job.state === 'merged' ? { title: 'Merged', body: `${ref}: ${job.it.title}` } : job.state === 'auto' ? { title: 'Will merge when the pipeline passes', body: `${ref}: ${job.it.title}` } : { title: 'Could not merge', body: `${ref}: ${job.error}` }).catch(() => {})
+    }
+  } finally {
+    mergeLanes.delete(lane)
+  }
+}
+
+async function runMergeJob(job) {
+  const set = (state, note) => Object.assign(job, { state, note, at: Date.now() })
+  const it = job.it
+  if (job.approve) {
+    set('approving', 'Approving')
+    await reviewAct({ ...it, action: 'approve' }).catch((e) => {
+      if (!/already|approved/i.test(e.message)) throw e
+    })
+  }
+  const { w, via } = await itemTarget(it)
+  const started = Date.now()
+  let rebased = false
+  let autoSet = false
+  // GitLab and GitHub need a moment after each change (merge, rebase, approval) to say what is possible
+  while (Date.now() - started < 60 * 60_000) {
+    const d = await reviewDetail(it)
+    if (d.state === 'merged') return set('merged', 'Merged')
+    if (d.state !== 'open') throw new GitError(`It is ${d.state}`)
+    const m = d.merge || {}
+    const st = d.mergeable || ''
+    if (m.ready) {
+      set('merging', 'Merging')
+      const r = await reviewMerge(w, via, { ...it, options: { squash: m.squash, removeSource: m.removeSource } })
+      if (r.state === 'merged') return set('merged', 'Merged')
+    } else if (['checking', 'unchecked', 'unknown', 'preparing'].includes(st)) {
+      set('waiting', 'Waiting for ' + (d.provider === 'github' ? 'GitHub' : 'GitLab') + ' to check it')
+    } else if ((st === 'need_rebase' || st === 'behind') && !rebased) {
+      // the target moved on (often: the one merged just before): bring the branch up to date
+      set('rebasing', d.provider === 'github' ? 'Updating the branch' : 'Rebasing onto the target')
+      if (w.kind === 'github') await forgeCall(w, via, 'PUT', `/repos/${w.path}/pulls/${w.number}/update-branch`, {})
+      else await forgeCall(w, via, 'PUT', `/${w.mr}/rebase`, {})
+      rebased = true
+    } else if (m.canAuto || m.autoSet || (rebased && ['ci_still_running', 'ci_must_pass'].includes(st))) {
+      // only the pipeline is in the way: GitLab merges it when it passes; the next one waits for that
+      if (!m.autoSet && !autoSet) {
+        await reviewMerge(w, via, { ...it, options: { squash: m.squash, removeSource: m.removeSource, auto: true } }).catch(() => null)
+        autoSet = true
+      }
+      set('pipeline', 'Merges when the pipeline passes')
+    } else if (st === 'need_rebase' && rebased) {
+      set('rebasing', 'Waiting for the rebase')
+    } else throw new GitError(m.reason || 'It cannot be merged')
+    await sleep(+process.env.GITX_QUEUE_POLL || (job.state === 'pipeline' ? 15_000 : 4_000))
+  }
+  // an hour on: it is set to merge by itself, let the next one go
+  if (autoSet) return set('auto', 'Merges when the pipeline passes')
+  throw new GitError('Waited an hour and it still cannot be merged')
+}
+
+/**
  * One pull/merge request in full, for the detail page: description, people and their review state,
  * approvals, comments (with file and line for inline ones) and commits. Same shape for GitHub and GitLab.
  */
@@ -3171,6 +3275,8 @@ Click to open Git Control`
   orca.panels.handle('ai.review', async (input = {}) => aiReview(input, AI[input.agent] ? input.agent : await agentSetting()))
   orca.panels.handle('reviews.act', (input = {}) => reviewAct(input))
   orca.panels.handle('reviews.detail', (input = {}) => reviewDetail(input))
+  orca.panels.handle('reviews.queue', ({ items = [], approve = true } = {}) => queueMerges(items, { approve }))
+  orca.panels.handle('reviews.queueState', () => mergeQueueState())
   orca.panels.handle('reviews.setup', async ({ host, step } = {}) => {
     // same terminal setup as the merge request dialog, for a host instead of a repository
     setupCommand(step, host) // validates before looking up workspaces

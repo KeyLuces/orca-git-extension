@@ -853,9 +853,11 @@ await step('Review & MR list: approve leaves To review, multi-select merge, real
   await shot('11e-bulk')
   await phoneCheck('mr-bulk')
   api.calls = []
-  await clickText('.rv-bulk .btn', 'Merge 2')
+  await page.evaluate(() => [...document.querySelectorAll('.rv-bulk .btn')].find((b) => /^(Approve & merge|Merge) 2$/.test(b.textContent.trim())).click())
   await until(() => exists('.overlay .dialog'), 'merge confirm')
-  await page.evaluate(() => [...document.querySelectorAll('.overlay .dialog .btn')].find((b) => b.textContent.trim() === 'Merge').click())
+  await page.evaluate(() => [...document.querySelectorAll('.overlay .dialog .btn')].find((b) => /^(Approve & merge|Merge)$/.test(b.textContent.trim())).click())
+  // queued in the background: the rows say so
+  await until(() => exists('.review-row .rv-q'), 'rows show the queue', 10000)
   await until(() => ['12', '14'].every((n) => api.calls.some((c) => c.method === 'PUT' && c.path.endsWith(`/merge_requests/${n}/merge`))), 'both merges sent', 30000)
   const body = api.calls.find((c) => c.method === 'PUT')?.body || {}
   if (body.should_remove_source_branch !== true) throw new Error('merge options ' + JSON.stringify(body))

@@ -38,8 +38,10 @@ straight to a shared main branch is pointed out first. **Ctrl+Z** undoes the las
 ### Review merge requests
 **Review & MR** has three tabs: **To review** (asked to review or assigned to you), **Opened by me** and **All**;
 the count is what still waits for your approval, and it shows as soon as a project opens. Search, filter by project
-or label, and see new comments since you last looked. Approve or merge right from the list, or tick several and do
-them together. An approved one stays, marked **Approved · waiting merge**; one with conflicts is marked
+or label, and see new comments since you last looked. Approve or merge right from the list, or tick several and **Approve & merge** them together:
+they merge in the background while you keep working. Within one project they go one at a time, each waiting
+until the one before is merged and rebasing when GitLab asks, so they never collide; other projects go at the
+same time, and you are told as each one merges. An approved one stays, marked **Approved · waiting merge**; one with conflicts is marked
 **Conflicts**; while its pipeline runs the button reads **Merge when CI passes**. Only a real merge removes it.
 
 Click one to read it like on GitHub or GitLab: the description, reviewers and approvals, the activity with inline
@@ -128,6 +130,7 @@ node e2e.mjs <plugin folder> <shots folder>       # the full tab, clicked throug
 node mobile.mjs <plugin folder> <shots folder>    # phone size, loaded the way Orca's web client loads it
 node sidebar.mjs <plugin folder> <shots folder>   # the right-sidebar panel at several widths
 node worker-api.mjs github|gitlab                 # merge requests, reviews and CI through the Git login
+node merge-queue.mjs                              # Approve & merge on several: one at a time per project
 node screenshots.mjs <plugin folder> <out folder> # the screenshots above, on a made-up project
 node promo.mjs <plugin folder>                    # marketplace posters from assets/screenshots → assets/promo
 ```

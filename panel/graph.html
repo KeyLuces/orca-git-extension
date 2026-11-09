@@ -1649,6 +1649,14 @@ body.compact .pc-head, .side-panel .pc-head { display: none !important; }
 body.compact .pipe-list .pipe-row, .side-panel .pipe-list .pipe-row { grid-template-columns: 110px 1fr 16px; }
 body.compact .pc-ref, body.compact .pc-stages, body.compact .pc-by, .side-panel .pc-ref, .side-panel .pc-stages, .side-panel .pc-by { grid-column: 2; }
 
+/* merge queue pills on review rows */
+.rv-q { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; white-space: nowrap; }
+.rv-q .spinner { width: 10px; height: 10px; }
+.rv-q.wait { background: color-mix(in srgb, var(--accent, #8fb0f0) 14%, transparent); color: var(--accent, #8fb0f0); }
+.rv-q.run { background: color-mix(in srgb, #e0b050 16%, transparent); color: #d9a640; }
+.rv-q.bad { background: color-mix(in srgb, #e5534b 16%, transparent); color: #e5534b; }
+.review-row.rv-queued { opacity: .92; }
+
 </style>
   </head>
   <body class="wide">
@@ -6640,7 +6648,10 @@ async function loadReviews(force) {
   return reviewsLoading
 }
 
+let queueChecked = false
 async function viewReviews() {
+  // merges queued earlier keep running in the worker: show them after a reload too
+  if (!queueChecked) (queueChecked = true), watchQueue()
   state.rvSel ||= new Set()
   const root = h('div', { class: 'view reviews' })
   // Show at once: the last list (even from an earlier session) while a fresh one loads behind it.
@@ -6796,12 +6807,18 @@ async function viewReviews() {
       h('button', { class: 'btn sm', onClick: () => (state.rvSel.clear(), renderView({ force: true })) }, 'Clear'),
       h('span', { class: 'grow' }),
       h('button', { class: 'btn sm', disabled: !approvable.length, title: approvable.length ? '' : 'Nothing selected that you can approve', onClick: () => bulkAct('approve', approvable) }, icon('check', 12), `Approve${approvable.length ? ' ' + approvable.length : ''}`),
-      h('button', { class: 'btn sm primary', onClick: () => bulkAct('merge', sel) }, icon('merge', 12), `Merge ${sel.length}`)
+      h('button', { class: 'btn sm primary', onClick: () => bulkAct('merge', sel) }, icon('merge', 12), approvable.length ? `Approve & merge ${sel.length}` : `Merge ${sel.length}`)
     )
   }
   async function bulkAct(action, list) {
     const noun = list.length === 1 ? 'merge request' : 'merge requests'
-    if (action === 'merge' && !(await confirmBox(`Merge ${list.length} ${noun}?`, list.map((it) => `${it.repo} ${mrRef(it)} ${it.title}`).join('\n') + '\n\nEach one is merged with its project\'s default options. Those that cannot be merged yet are skipped and say why.', 'Merge'))) return
+    if (action === 'merge') {
+      const toApprove = list.filter((it) => !isMine(it) && !it.myApproved).length
+      const projects = new Set(list.map((it) => it.repo)).size
+      if (!(await confirmBox(`${toApprove ? 'Approve and merge' : 'Merge'} ${list.length} ${noun}?`, list.map((it) => `${it.repo} ${mrRef(it)} ${it.title}`).join('\n') + `\n\nThis runs in the background, so you can keep working.${toApprove ? ` ${toApprove} of them are approved first.` : ''} In one project they merge one at a time, each waiting until the one before is merged (rebasing when needed), so they never collide${projects > 1 ? '; different projects go at the same time' : ''}. You are told when each one is merged.`, toApprove ? 'Approve & merge' : 'Merge'))) return
+      state.rvSel.clear()
+      return queueMerge(list, true)
+    }
     if (action === 'approve' && !(await confirmBox(`Approve ${list.length} ${noun}?`, list.map((it) => `${it.repo} ${mrRef(it)} ${it.title}`).join('\n'), 'Approve'))) return
     bulk.querySelectorAll('button').forEach((b) => (b.disabled = true))
     await runReviewActions(list, action, root)
@@ -6835,6 +6852,82 @@ async function runReviewActions(list, action, root) {
   await refreshReviewsAfterAction()
 }
 const mrNounShort = (it) => (it.provider === 'github' ? 'pull request' : 'merge request')
+
+/* ---- the merge queue: merges run in the worker, one at a time per project; rows show where each is ---- */
+state.mergeQueue = new Map() // url -> { state, note, position, error }
+const Q_DONE = new Set(['merged', 'failed', 'auto'])
+let queueTimer = null
+async function queueMerge(list, approve) {
+  let r
+  try {
+    r = await request('reviews.queue', { approve, items: list.map((it) => ({ ...it, ci: undefined, wantApprove: approve && !isMine(it) && !it.myApproved })) }, 30000)
+  } catch (e) {
+    return toast(e.message, 'error')
+  }
+  applyQueue(r)
+  if (list.length > 1) toast(`${list.length} merge requests queued: they merge in the background, one at a time in each project`)
+  if (state.tab === 'reviews') renderView({ force: true })
+  watchQueue()
+}
+function applyQueue(r) {
+  const prev = state.mergeQueue
+  state.mergeQueue = new Map((r?.jobs || []).map((j) => [j.url, j]))
+  for (const [url, j] of state.mergeQueue) {
+    const p = prev.get(url)
+    if (!p || p.state === j.state) continue
+    const ref = `${j.repo} !${j.number}`
+    if (j.state === 'merged') {
+      toast(`Merged ${ref}`)
+      const row = document.querySelector(`.review-row[data-url="${CSS.escape(url)}"]`)
+      const items = state.reviews?.items
+      const i = items ? items.findIndex((x) => x.url === url) : -1
+      if (row) rowDone(row, 'merge', items?.[i]).catch(() => {})
+      if (i >= 0) items.splice(i, 1)
+    } else if (j.state === 'failed') toast(`${ref} was not merged: ${j.error}`, 'error', 9000)
+    else if (j.state === 'auto') toast(`${ref} merges by itself when its pipeline passes`)
+  }
+  paintQueueRows()
+}
+function paintQueueRow(row) {
+  const j = state.mergeQueue.get(row.dataset.url)
+  const badge = row.querySelector('.rv-result')
+  if (!badge || (j && j.state === 'merged')) return
+  const busy = !!j && !Q_DONE.has(j.state)
+  row.classList.toggle('rv-queued', busy)
+  row.querySelectorAll('.rv-merge, .rv-approve').forEach((b) => (b.disabled = busy))
+  if (!j) {
+    if (badge.dataset.q) delete badge.dataset.q, clear(badge)
+    return
+  }
+  badge.dataset.q = '1'
+  badge.title = j.error || j.note || ''
+  const pill = (cls, ...kids) => h('span', { class: `rv-q ${cls}` }, ...kids)
+  clear(badge).append(
+    j.state === 'queued'
+      ? pill('wait', icon('history', 11), j.position > 1 ? `In line · ${j.position}` : 'Next in line')
+      : j.state === 'failed'
+        ? pill('bad', icon('alert', 11), 'Not merged')
+        : j.state === 'auto'
+          ? pill('wait', icon('pipeline', 11), 'Merges when CI passes')
+          : pill('run', h('span', { class: 'spinner' }), j.note)
+  )
+}
+const paintQueueRows = () => document.querySelectorAll('.review-row[data-url]').forEach(paintQueueRow)
+/** While anything is queued or running, ask the worker how it goes; at the end, read the list again. */
+function watchQueue() {
+  if (queueTimer) return
+  const tick = async () => {
+    let r = null
+    try {
+      r = await request('reviews.queueState', {}, 15000)
+    } catch {}
+    if (r) applyQueue(r)
+    const active = [...state.mergeQueue.values()].some((j) => !Q_DONE.has(j.state))
+    queueTimer = active ? setTimeout(tick, 2500) : null
+    if (!active && r?.jobs?.length) refreshReviewsAfterAction()
+  }
+  queueTimer = setTimeout(tick, 1200)
+}
 
 /** One action on one item. Merge reads the item first, so it is merged only when it can be, with its defaults. */
 async function doReviewAction(it, action, options) {
@@ -6897,7 +6990,10 @@ function reviewRow(it, { onSelect, filter } = {}) {
   const act = (action) => async (e) => {
     e.stopPropagation()
     const b = e.currentTarget
-    if (action === 'merge' && !(await confirmBox(`Merge ${mrRef(it)}?`, `${it.repo} ${mrRef(it)}\n${it.title}\n\nMerged with the project's default options.`, 'Merge'))) return
+    if (action === 'merge') {
+      if (!(await confirmBox(`Merge ${mrRef(it)}?`, `${it.repo} ${mrRef(it)}\n${it.title}\n\nMerged with the project's default options, in the background: if another merge in this project is going on, it waits for its turn.`, 'Merge'))) return
+      return queueMerge([it], false)
+    }
     b.disabled = true
     clear(b).append(h('span', { class: 'spinner' }))
     await runReviewActions([it], action, row.closest('.view'))
@@ -6948,6 +7044,7 @@ function reviewRow(it, { onSelect, filter } = {}) {
       h('span', { class: 'review-chev', 'aria-hidden': 'true' }, icon('right', 14))
     )
   )
+  if (state.mergeQueue.size) paintQueueRow(row)
   return row
 }
 

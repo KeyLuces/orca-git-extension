@@ -1640,3 +1640,11 @@ nav.tabs .tab.active > svg { opacity: 1; color: var(--ren); }
 body.compact .pc-head, .side-panel .pc-head { display: none !important; }
 body.compact .pipe-list .pipe-row, .side-panel .pipe-list .pipe-row { grid-template-columns: 110px 1fr 16px; }
 body.compact .pc-ref, body.compact .pc-stages, body.compact .pc-by, .side-panel .pc-ref, .side-panel .pc-stages, .side-panel .pc-by { grid-column: 2; }
+
+/* merge queue pills on review rows */
+.rv-q { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; white-space: nowrap; }
+.rv-q .spinner { width: 10px; height: 10px; }
+.rv-q.wait { background: color-mix(in srgb, var(--accent, #8fb0f0) 14%, transparent); color: var(--accent, #8fb0f0); }
+.rv-q.run { background: color-mix(in srgb, #e0b050 16%, transparent); color: #d9a640; }
+.rv-q.bad { background: color-mix(in srgb, #e5534b 16%, transparent); color: #e5534b; }
+.review-row.rv-queued { opacity: .92; }
