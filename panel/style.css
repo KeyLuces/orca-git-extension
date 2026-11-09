@@ -1653,3 +1653,18 @@ body.compact .pc-ref, body.compact .pc-stages, body.compact .pc-by, .side-panel 
 .review-row.rv-done .review-icon { color: #a371f7; }
 .review-row.rv-done .review-title > .ellipsis { opacity: .8; }
 .rv-check-gap { display: inline-block; width: 13px; flex: none; }
+.rv-group { display: flex; align-items: center; gap: 6px; padding: 14px 12px 6px; font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--fg-dim, var(--muted)); }
+.rv-group-merged { color: #a371f7; border-top: 1px solid var(--border); margin-top: 6px; }
+.rv-group-n { font-weight: 600; padding: 0 6px; border-radius: 8px; background: color-mix(in srgb, currentColor 14%, transparent); }
+.rv-group-hint { margin-left: auto; font-weight: 400; text-transform: none; letter-spacing: 0; opacity: .7; }
+.rv-group-empty { padding: 4px 12px 10px; font-size: 12px; }
+.rv-day { padding: 8px 12px 2px; font-size: 11px; color: var(--fg-dim, var(--muted)); }
+.rv-more { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 16px 12px 24px; }
+.rv-more .dim { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; }
+.rv-more-btn { min-width: 200px; justify-content: center; }
+.rv-more-hint { text-align: center; }
+.review-row.rv-done { padding-top: 7px; padding-bottom: 7px; }
+.review-row.rv-done .review-icon { color: #a371f7; background: color-mix(in srgb, #a371f7 14%, transparent); }
+.review-row.rv-done .review-title { font-weight: 500; }
+.rv-day { padding: 10px 16px 4px; font-size: 11px; font-weight: 600; color: var(--fg-dim, var(--muted)); border-bottom: 1px solid var(--line); }
+.rv-group { padding-left: 16px; }

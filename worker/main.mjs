@@ -1654,7 +1654,10 @@ function collect(lists, make) {
   return [...items.values()]
 }
 
-async function githubInbox(h, where, via) {
+const MERGED_PAGE = 20
+
+/** opt.page: which page of merged ones; opt.mergedOnly: only that page (Show more). The list's .more says if more merged ones wait. */
+async function githubInbox(h, where, via, { page = 1, mergedOnly = false } = {}) {
   const here = where?.kind === 'github' && where.host === h.host && /^[\w.-]+\/[\w.-]+$/.test(where.path) ? where.path : null
   const base = { provider: 'github', host: h.host, protocol: h.protocol, via }
   if (via === 'cli') {
@@ -1663,21 +1666,28 @@ async function githubInbox(h, where, via) {
     const fields = 'number,title,url,repository,author,updatedAt,isDraft,labels,commentsCount,state'
     const env = h.host === 'github.com' ? undefined : { GH_HOST: h.host }
     const search = (...q) => runProc('gh', ['search', 'prs', ...q, '--state=open', '--json', fields, '--limit', '50'], { timeout: 30_000, env })
-    const merged = (...q) => runProc('gh', ['search', 'prs', ...q, '--merged', '--sort', 'updated', '--json', fields, '--limit', '20'], { timeout: 30_000, env })
+    // gh search has no page: ask for all up to this page, keep this page
+    const merged = (...q) =>
+      runProc('gh', ['search', 'prs', ...q, '--merged', '--sort', 'updated', '--json', fields, '--limit', String(MERGED_PAGE * page)], { timeout: 30_000, env }).then((r) => {
+        const all = jsonOf(r)
+        return { code: r.code, stderr: r.stderr, stdout: JSON.stringify(Array.isArray(all) ? all.slice(MERGED_PAGE * (page - 1)) : []) }
+      })
     const none = Promise.resolve({ code: 0, stdout: '[]' })
+    const open = (...q) => (mergedOnly ? none : search(...q))
     const [rev, asg, mine, repo, dRev, dAsg, dMine, dRepo] = await Promise.all([
-      search('--review-requested=@me'),
-      search('--assignee=@me'),
-      search('--author=@me'),
-      here ? search('--repo', here) : none,
+      open('--review-requested=@me'),
+      open('--assignee=@me'),
+      open('--author=@me'),
+      here ? open('--repo', here) : none,
       merged('--review-requested=@me'),
       merged('--assignee=@me'),
       merged('--author=@me'),
       here ? merged('--repo', here) : none
     ])
-    if (rev.code !== 0 && asg.code !== 0) throw new GitError((rev.stderr || asg.stderr).trim() || 'gh could not list pull requests')
+    if (!mergedOnly && rev.code !== 0 && asg.code !== 0) throw new GitError((rev.stderr || asg.stderr).trim() || 'gh could not list pull requests')
     const roles = ['review', 'assigned', 'mine', 'repo']
-    return collect([rev, asg, mine, repo, dRev, dAsg, dMine, dRepo].map((r, i) => [jsonOf(r), roles[i % 4]]), (p) => ({
+    const more = [dRev, dAsg, dMine, dRepo].some((r) => jsonOf(r)?.length >= MERGED_PAGE)
+    return withMore(more, collect([rev, asg, mine, repo, dRev, dAsg, dMine, dRepo].map((r, i) => [jsonOf(r), roles[i % 4]]), (p) => ({
       ...base,
       state: p.state === 'MERGED' || p.state === 'merged' ? 'merged' : /closed/i.test(p.state || '') ? 'closed' : 'open',
       url: p.url,
@@ -1689,18 +1699,19 @@ async function githubInbox(h, where, via) {
       draft: !!p.isDraft,
       labels: (p.labels || []).map((l) => l.name).filter(Boolean),
       comments: p.commentsCount ?? null
-    }))
+    })))
   }
   // the saved Git login: @me works only for user tokens, so ask who that is first
   const me = await forgeApi(h, 'GET', '/user')
   if (!me?.login) throw new GitError(`could not tell who is signed in to ${h.host}`)
   base.me = me.login
-  const q = (s, st = 'open', n = 50) => forgeApi(h, 'GET', `/search/issues?per_page=${n}&sort=updated&q=${encodeURIComponent(`is:pr is:${st} ${s}`)}`).then((r) => r?.items || [])
+  const q = (s, st = 'open', n = 50) => forgeApi(h, 'GET', `/search/issues?per_page=${n}&sort=updated${st === 'merged' ? `&page=${page}` : ''}&q=${encodeURIComponent(`is:pr is:${st} ${s}`)}`).then((r) => r?.items || [])
   const scopes = [`review-requested:${me.login}`, `assignee:${me.login}`, `author:${me.login}`, here ? `repo:${here}` : null]
   const roles = ['review', 'assigned', 'mine', 'repo']
   // open ones, then the latest merged ones (for the All tab)
-  const lists = await Promise.all([...scopes.map((s) => (s ? q(s) : [])), ...scopes.map((s) => (s ? q(s, 'merged', 20).catch(() => []) : []))])
-  return collect(lists.map((l, i) => [l, roles[i % 4]]), (p) => ({
+  const lists = await Promise.all([...scopes.map((s) => (s && !mergedOnly ? q(s) : [])), ...scopes.map((s) => (s ? q(s, 'merged', MERGED_PAGE).catch(() => []) : []))])
+  const more = lists.slice(4).some((l) => l.length >= MERGED_PAGE)
+  return withMore(more, collect(lists.map((l, i) => [l, roles[i % 4]]), (p) => ({
     ...base,
     state: p.pull_request?.merged_at ? 'merged' : p.state === 'closed' ? 'closed' : 'open',
     mergedAt: p.pull_request?.merged_at ? Date.parse(p.pull_request.merged_at) / 1000 : null,
@@ -1713,8 +1724,10 @@ async function githubInbox(h, where, via) {
     draft: !!p.draft,
     labels: (p.labels || []).map((l) => l.name).filter(Boolean),
     comments: p.comments ?? null
-  }))
+  })))
 }
+
+const withMore = (more, list) => Object.assign(list, { more })
 
 /** GET from the GitLab API through glab (cli) or the saved Git login (git); null when it fails. */
 function gitlabGet(h, via, apiPath) {
@@ -1722,7 +1735,7 @@ function gitlabGet(h, via, apiPath) {
   return forgeApi(h, 'GET', '/' + apiPath)
 }
 
-async function gitlabInbox(h, where, via) {
+async function gitlabInbox(h, where, via, { page = 1, mergedOnly = false } = {}) {
   const me = await gitlabGet(h, via, 'user')
   if (!me?.username) throw new GitError(`${via === 'cli' ? 'glab is' : 'the saved Git login is'} not signed in to ${h.host}`)
   const q = 'merge_requests?state=opened&scope=all&per_page=50'
@@ -1733,19 +1746,21 @@ async function gitlabInbox(h, where, via) {
   const once = (p) => gitlabGet(h, via, p).then((r) => (Array.isArray(r) ? r : Promise.reject(new Error('no list'))))
   const soft = (p) => once(p).catch(() => new Promise((res) => setTimeout(res, 800)).then(() => once(p))).catch(() => null)
   // merged ones too (for the All tab): the latest of each list
-  const done = (p) => p.replace('state=opened', 'state=merged').replace('per_page=50', 'per_page=20&order_by=updated_at')
+  const done = (p) => p.replace('state=opened', 'state=merged').replace('per_page=50', `per_page=${MERGED_PAGE}&page=${page}&order_by=updated_at`)
+  const open = (p) => (mergedOnly ? [] : soft(p))
   const [rev, asg, mine, repo, dRev, dAsg, dMine, dRepo] = await Promise.all([
-    soft(`${q}&reviewer_username=${u}`),
-    soft(`${q}&assignee_username=${u}`),
-    soft(`${q}&author_username=${u}`),
-    here ? soft(here) : [],
+    open(`${q}&reviewer_username=${u}`),
+    open(`${q}&assignee_username=${u}`),
+    open(`${q}&author_username=${u}`),
+    here ? open(here) : [],
     soft(done(`${q}&reviewer_username=${u}`)),
     soft(done(`${q}&assignee_username=${u}`)),
     soft(done(`${q}&author_username=${u}`)),
     here ? soft(done(here)) : []
   ])
-  if (rev === null && asg === null && mine === null) throw new GitError(`could not list merge requests on ${h.host} (it did not answer); showing the last list`)
-  return collect([[rev, 'review'], [asg, 'assigned'], [mine, 'mine'], [repo, 'repo'], [dRev, 'review'], [dAsg, 'assigned'], [dMine, 'mine'], [dRepo, 'repo']], (m) => ({
+  if (mergedOnly ? dRev === null && dAsg === null && dMine === null : rev === null && asg === null && mine === null) throw new GitError(`could not list merge requests on ${h.host} (it did not answer); showing the last list`)
+  const more = [dRev, dAsg, dMine, dRepo].some((l) => l?.length >= MERGED_PAGE)
+  return withMore(more, collect([[rev, 'review'], [asg, 'assigned'], [mine, 'mine'], [repo, 'repo'], [dRev, 'review'], [dAsg, 'assigned'], [dMine, 'mine'], [dRepo, 'repo']], (m) => ({
     state: m.state === 'merged' ? 'merged' : m.state === 'closed' ? 'closed' : 'open',
     mergedAt: m.merged_at ? Date.parse(m.merged_at) / 1000 : null,
     provider: 'gitlab',
@@ -1766,7 +1781,7 @@ async function gitlabInbox(h, where, via) {
     labels: (m.labels || []).map((l) => (typeof l === 'string' ? l : l.name)).filter(Boolean),
     comments: m.user_notes_count ?? null,
     conflicts: !!m.has_conflicts
-  }))
+  })))
 }
 
 /** Where the open repository's main remote lives, or null. */
@@ -1780,10 +1795,11 @@ async function repoWhere(repo) {
   }
 }
 
-async function reviewsList(orca, repo) {
+async function reviewsList(orca, repo, { page = 1, mergedOnly = false } = {}) {
   const where = await repoWhere(repo)
   const items = []
   const errors = []
+  let moreMerged = false
   const hosts = await forgeHosts(orca, where)
   const install = canInstall()
   // via: 'gh' | 'glab' (the CLI is signed in) or 'git' (the saved Git login), null when neither
@@ -1800,8 +1816,9 @@ async function reviewsList(orca, repo) {
       .filter((p) => p.signedIn)
       .map((p) => {
         const via = p.via === 'git' ? 'git' : 'cli'
-        return (p.provider === 'github' ? githubInbox(p._h, where, via) : gitlabInbox(p._h, where, via)).then(
-          (list) => items.push(...list),
+        const opt = { page: Math.max(1, Math.min(50, +page || 1)), mergedOnly: !!mergedOnly }
+        return (p.provider === 'github' ? githubInbox(p._h, where, via, opt) : gitlabInbox(p._h, where, via, opt)).then(
+          (list) => (items.push(...list), (moreMerged ||= !!list.more)),
           (e) => errors.push(`${p.host}: ${e.message}`)
         )
       })
@@ -1815,7 +1832,7 @@ async function reviewsList(orca, repo) {
       if (ap) Object.assign(it, ap)
     })
   )
-  return { items, providers, errors, repoPath: where?.path || null, repoHost: where?.host || null }
+  return { items, providers, errors, moreMerged, repoPath: where?.path || null, repoHost: where?.host || null }
 }
 
 /** A review item as an API target, and how to reach it (gh/glab or the saved Git login). */
@@ -3298,6 +3315,8 @@ Click to open Git Control`
   orca.panels.handle('mr.people', async ({ repo, query } = {}) => mrPeople(req(repo, 'repo'), { query }))
   orca.panels.handle('mr.setup', async ({ repo, step } = {}) => mrSetup(orca, req(repo, 'repo'), { step }))
   orca.panels.handle('reviews.list', ({ repo } = {}) => reviewsList(orca, repo))
+  // Show more under All: the next page of merged ones only
+  orca.panels.handle('reviews.moreMerged', ({ repo, page } = {}) => reviewsList(orca, repo, { page, mergedOnly: true }))
   orca.panels.handle('ai.review', async (input = {}) => aiReview(input, AI[input.agent] ? input.agent : await agentSetting()))
   orca.panels.handle('reviews.act', (input = {}) => reviewAct(input))
   orca.panels.handle('reviews.detail', (input = {}) => reviewDetail(input))

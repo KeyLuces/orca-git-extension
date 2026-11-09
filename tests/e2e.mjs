@@ -652,8 +652,15 @@ const apiServer = http.createServer((req, res) => {
     if (req.method === 'GET' && /merge_requests$/.test(u.pathname)) {
       const role = u.search.includes('reviewer_username') ? 'review' : u.search.includes('assignee_username') ? 'assigned' : u.search.includes('author_username') ? 'mine' : 'repo'
       const n = { review: 11, assigned: 12, mine: 13, repo: 14 }[role]
-      if (u.search.includes('state=merged'))
-        return send(200, api.merged.has(n) ? [{ iid: n, project_id: 5, state: 'merged', merged_at: new Date().toISOString(), web_url: `https://gitlab2.example.test/team/app/-/merge_requests/${n}`, title: `MR ${role}`, author: { username: 'dev' }, source_branch: 's' + n, target_branch: 'main', updated_at: new Date().toISOString(), references: { full: 'team/app!' + n } }] : [])
+      if (u.search.includes('state=merged')) {
+        // the project's own list also has older merged ones: 20 on page 1, 3 more on page 2
+        const old = (iid, days) => ({ iid, project_id: 5, state: 'merged', merged_at: new Date(Date.now() - days * 86400000).toISOString(), web_url: `https://gitlab2.example.test/team/app/-/merge_requests/${iid}`, title: `Old merged ${iid}`, author: { username: 'dev' }, source_branch: 'o' + iid, target_branch: 'main', updated_at: new Date(Date.now() - days * 86400000).toISOString(), references: { full: 'team/app!' + iid } })
+        const pg = +u.searchParams.get('page') || 1
+        if (pg === 2) return send(200, role === 'repo' ? [old(300, 60), old(301, 61), old(302, 62)] : [])
+        if (pg > 2) return send(200, [])
+        const now1 = api.merged.has(n) ? [{ iid: n, project_id: 5, state: 'merged', merged_at: new Date().toISOString(), web_url: `https://gitlab2.example.test/team/app/-/merge_requests/${n}`, title: `MR ${role}`, author: { username: 'dev' }, source_branch: 's' + n, target_branch: 'main', updated_at: new Date().toISOString(), references: { full: 'team/app!' + n } }] : []
+        return send(200, role === 'repo' ? now1.concat(Array.from({ length: 20 }, (_, i) => old(200 + i, 2 + i))) : now1)
+      }
       if (api.merged.has(n)) return send(200, role === 'review' ? [{ iid: 99, project_id: 6, web_url: 'https://gitlab2.example.test/other/proj/-/merge_requests/99', title: 'MR other repo', author: { username: 'dev' }, source_branch: 'x', target_branch: 'main', updated_at: new Date().toISOString(), references: { full: 'other/proj!99' } }] : [])
       return send(200, [
         {
@@ -864,8 +871,18 @@ await step('Review & MR list: approve leaves To review, multi-select merge, real
   const body = api.calls.find((c) => c.method === 'PUT')?.body || {}
   if (body.should_remove_source_branch !== true) throw new Error('merge options ' + JSON.stringify(body))
   // under All they stay, marked Merged, with nothing to click but open
-  await until(() => page.$$eval('.reviews .review-row.rv-done', (rs) => ['MR assigned', 'MR repo'].every((t) => rs.some((r) => r.textContent.includes(t) && r.textContent.includes('Merged') && !r.querySelector('.rv-merge, .rv-approve, .rv-check')))).catch(() => false), 'merged ones marked Merged under All', 20000)
+  await until(() => page.$$eval('.reviews .review-row.rv-done', (rs) => ['MR assigned', 'MR repo'].every((t) => rs.some((r) => r.textContent.includes(t) && r.closest('.rv-list').textContent.includes('Merged') && !r.querySelector('.rv-merge, .rv-approve, .rv-check')))).catch(() => false), 'merged ones marked Merged under All', 20000)
   await until(() => page.$$eval('.reviews .review-row:not(.rv-done)', (rs) => !rs.some((r) => /MR assigned|MR repo/.test(r.textContent))).catch(() => false), 'no open row left for the merged ones', 20000)
+  // grouped: Open, then Merged by day; Show more merged loads older ones, then says there are no more
+  await until(() => page.$$eval('.reviews .rv-group', (g) => g.map((x) => x.textContent)).then((t) => t.some((x) => x.startsWith('Open')) && t.some((x) => x.startsWith('Merged'))).catch(() => false), 'Open and Merged groups', 10000)
+  if (!(await page.$$eval('.reviews .rv-day', (d) => d.map((x) => x.textContent))).includes('Today')) throw new Error('no Today group')
+  if (await exists('.reviews .review-row[data-url$="/300"]')) throw new Error('page 2 shown too early')
+  await clickSel('.reviews .rv-more-btn')
+  await until(() => exists('.reviews .review-row[data-url$="/300"]'), 'older merged loaded', 20000)
+  await until(() => page.$eval('.reviews .rv-more', (f) => f.textContent.includes('No older merged') && !f.querySelector('button')).catch(() => false), 'no more after the last page', 10000)
+  if (!(await exists('.reviews .review-row[data-url$="/219"]'))) throw new Error('page 1 lost after Show more')
+  await page.evaluate(() => document.querySelector('.reviews .rv-group-merged')?.scrollIntoView())
+  await shot('reviews-merged')
   if (await page.$eval('.rv-bulk', (b) => b.classList.contains('on'))) throw new Error('bulk bar still showing')
   // search narrows the list; Clear filters brings it back (typed slowly: focus stays through redraws)
   await page.focus('.rv-search')

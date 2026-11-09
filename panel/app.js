@@ -4988,7 +4988,11 @@ async function viewReviews() {
   const filter = RV_TABS.some(([k]) => k === state.reviewFilter) ? state.reviewFilter : 'todo'
   const allRepos = !data.repoPath || store.get('reviewsAllRepos', false)
   const q = (state.rvQ ||= { text: '', repo: '', label: '' })
-  const inScope = data.items.filter((it) => allRepos || inThisRepo(it, data))
+  // older merged ones loaded with Show more stay through refreshes (until the project changes)
+  const extra = state.rvMore?.repo === state.repo ? state.rvMore : null
+  const seen = new Set(data.items.map((it) => it.url))
+  const allItems = extra ? data.items.concat(extra.items.filter((it) => !seen.has(it.url))) : data.items
+  const inScope = allItems.filter((it) => allRepos || inThisRepo(it, data))
   const words = q.text.toLowerCase().split(/\s+/).filter(Boolean)
   const scoped = inScope.filter(
     (it) =>
@@ -5110,8 +5114,23 @@ async function viewReviews() {
       )
     )
   const list = h('div', { class: 'rv-list' })
-  for (const it of items) list.append(reviewRow(it, { onSelect: () => ((selAll.checked = items.every((x) => state.rvSel.has(x.url))), (selAll.indeterminate = !selAll.checked && items.some((x) => state.rvSel.has(x.url))), drawBulk()), filter }))
+  const onSelect = () => ((selAll.checked = openItems.every((x) => state.rvSel.has(x.url))), (selAll.indeterminate = !selAll.checked && openItems.some((x) => state.rvSel.has(x.url))), drawBulk())
+  const mergedItems = items.filter((it) => !isOpenMr(it)).sort((a, b) => (b.mergedAt || b.updated) - (a.mergedAt || a.updated))
+  if (filter === 'all' && mergedItems.length) {
+    // two groups: still open, then merged by day
+    list.append(h('div', { class: 'rv-group' }, icon('merge', 12), 'Open', h('span', { class: 'rv-group-n' }, String(openItems.length))))
+    if (!openItems.length) list.append(h('div', { class: 'rv-group-empty dim' }, 'Nothing open'))
+    for (const it of openItems) list.append(reviewRow(it, { onSelect, filter }))
+    list.append(h('div', { class: 'rv-group rv-group-merged' }, icon('check', 12), 'Merged', h('span', { class: 'rv-group-n' }, String(mergedItems.length)), h('span', { class: 'rv-group-hint' }, 'latest first')))
+    let day = ''
+    for (const it of mergedItems) {
+      const d = mergedDay(it.mergedAt || it.updated)
+      if (d !== day) list.append(h('div', { class: 'rv-day' }, (day = d)))
+      list.append(reviewRow(it, { onSelect, filter }))
+    }
+  } else for (const it of items) list.append(reviewRow(it, { onSelect, filter }))
   root.append(list)
+  if (filter === 'all') root.append(moreMergedFooter(data, extra, words.length > 0 || !!q.repo || !!q.label))
 
   // the bulk bar: shows when one or more are selected
   const bulk = h('div', { class: 'rv-bulk' })
@@ -5210,7 +5229,7 @@ function applyQueue(r) {
 function paintQueueRow(row) {
   const j = state.mergeQueue.get(row.dataset.url)
   const badge = row.querySelector('.rv-result')
-  if (!badge || (j && j.state === 'merged')) return
+  if (!badge || row.classList.contains('rv-done') || (j && j.state === 'merged')) return
   const busy = !!j && !Q_DONE.has(j.state)
   row.classList.toggle('rv-queued', busy)
   row.querySelectorAll('.rv-merge, .rv-approve').forEach((b) => (b.disabled = busy))
@@ -5295,6 +5314,50 @@ async function refreshReviewsAfterAction() {
   if (state.tab === 'reviews') renderView({ force: true })
 }
 
+/** Merged ones grouped by day: Today, Yesterday, This week, then the month. */
+function mergedDay(t) {
+  const d = new Date(t * 1000)
+  const start = new Date()
+  start.setHours(0, 0, 0, 0)
+  const days = Math.floor((start - d) / 86400000) + 1
+  if (d >= start) return 'Today'
+  if (days <= 1) return 'Yesterday'
+  if (days < 7) return 'Last 7 days'
+  if (d.getMonth() === start.getMonth() && d.getFullYear() === start.getFullYear()) return 'Earlier this month'
+  return d.toLocaleDateString(undefined, { month: 'long', year: d.getFullYear() === start.getFullYear() ? undefined : 'numeric' })
+}
+
+/** The foot of All: Show more merged (the next 20 of each list), or that there are no more. */
+function moreMergedFooter(data, extra, filtering) {
+  const more = extra ? extra.more : !!data.moreMerged
+  const foot = h('div', { class: 'rv-more' })
+  if (!more) {
+    if (extra || data.items.some((it) => !isOpenMr(it))) foot.append(h('span', { class: 'dim' }, icon('check', 12), 'No older merged merge requests'))
+    return foot
+  }
+  const btn = h('button', { class: 'btn rv-more-btn', title: 'Load the next older merged merge requests' }, icon('down', 12), 'Show more merged')
+  btn.addEventListener('click', async () => {
+    btn.disabled = true
+    clear(btn).append(h('span', { class: 'spinner sm' }), 'Loading older merged…')
+    const page = (extra?.page || 1) + 1
+    try {
+      const r = await request('reviews.moreMerged', { repo: state.repo, page }, 60000)
+      const prev = state.rvMore?.repo === state.repo ? state.rvMore.items : []
+      const got = r.items || []
+      state.rvMore = { repo: state.repo, page, more: !!r.moreMerged && got.length > 0, items: prev.concat(got) }
+      renderView({ force: true })
+      if (!got.length) toast('No older merged merge requests')
+    } catch (e) {
+      toast(e.message, 'error')
+      btn.disabled = false
+      clear(btn).append(icon('down', 12), 'Show more merged')
+    }
+  })
+  foot.append(btn)
+  if (filtering) foot.append(h('span', { class: 'dim rv-more-hint' }, 'Search and filters look only at what is loaded: show more to search older ones'))
+  return foot
+}
+
 function reviewRow(it, { onSelect, filter } = {}) {
   const open = () => openLink(it.url)
   const noun = it.provider === 'github' ? 'pull request' : 'merge request'
@@ -5323,7 +5386,7 @@ function reviewRow(it, { onSelect, filter } = {}) {
     'div',
     { class: `review-row ${state.rvSel.has(it.url) ? 'sel' : ''} ${done ? 'rv-done' : ''}`, 'data-url': it.url, role: 'button', tabindex: 0, title: `Open ${mrRef(it)}`, onClick: show, onKeydown: (e) => (e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget && (e.preventDefault(), show()) },
     done ? h('span', { class: 'rv-check-gap' }) : check,
-    h('span', { class: 'review-icon' }, icon('merge', 15)),
+    h('span', { class: 'review-icon', title: it.state === 'merged' ? 'Merged' : it.state === 'closed' ? 'Closed' : 'Open' }, icon('merge', done ? 13 : 15)),
     h(
       'div',
       { class: 'grow', style: { minWidth: 0 } },
@@ -5331,7 +5394,6 @@ function reviewRow(it, { onSelect, filter } = {}) {
         'div',
         { class: 'review-title' },
         h('span', { class: 'ellipsis', title: it.title }, it.title),
-        it.state === 'merged' && h('span', { class: 'pill rv-merged', title: it.mergedAt ? `Merged ${ago(it.mergedAt)}` : 'Merged' }, icon('merge', 10), 'Merged'),
         it.state === 'closed' && h('span', { class: 'pill rv-closed' }, 'Closed'),
         !done && it.draft && h('span', { class: 'pill' }, 'Draft'),
         it.roles.includes('review') && h('span', { class: 'pill role' }, 'Review requested'),
@@ -5352,7 +5414,7 @@ function reviewRow(it, { onSelect, filter } = {}) {
         'div',
         { class: 'review-meta' },
         h('span', { class: 'mono' }, `${it.repo} ${it.provider === 'github' ? '#' : '!'}${it.number}`),
-        ` · ${it.author} · ${ago(it.updated)}`,
+        ` · ${it.author} · ${it.state === 'merged' && it.mergedAt ? 'merged ' + ago(it.mergedAt) : ago(it.updated)}`,
         it.source && [' · ', h('span', { class: 'mono' }, `${it.source} → ${it.target}`)]
       )
     ),
