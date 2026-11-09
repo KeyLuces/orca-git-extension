@@ -2613,17 +2613,31 @@ export default function activate(orca) {
         if (hits.length === 1) focused = hits[0].path
       }
     }
+    if (focused) lastRepo = focused
     return { focused, workspaces }
   }
+  // The repository the status bar last showed: what the person sees when they press it, used when
+  // the focused workspace cannot be told apart at that moment (no terminal yet, same name and branch).
+  let lastRepo = null
   orca.panels.handle('repo.resolve', () => resolveFocused())
 
   // Status bar: "⎇ branch ↑1 ↓2 • 3" for the focused worktree; pressing it opens Git Control in a tab.
   orca.commands.register('openGraph', async () => {
-    const { focused } = await resolveFocused()
-    if (!focused) return 'No Git repository for the focused workspace'
-    await openGraphTab(focused)
+    const repo = (await resolveFocused().catch(() => ({}))).focused || lastRepo
+    if (!repo) return 'No Git repository for the focused workspace'
+    await openTabRetry(repo)
     return 'Opened Git Control'
   })
+  // Opening the tab goes through Orca's CLI, which can miss once while Orca is busy: try again.
+  async function openTabRetry(repo) {
+    try {
+      return await openGraphTab(repo)
+    } catch (e) {
+      orca.log(`Git Control tab did not open (${e.message}); trying again`)
+      await new Promise((res) => setTimeout(res, 400))
+      return openGraphTab(repo)
+    }
+  }
   let lastBar = ''
   let barBusy = false // a slow git must not pile up overlapping polls
   async function updateStatusBar() {
@@ -2818,7 +2832,7 @@ Click to open Git Control`
     pendingUi = { tab: 'reviews' }
     orca.panels.post?.('ui.show', { tab: 'reviews' })
     const { focused } = await resolveFocused()
-    if (focused) await openGraphTab(focused)
+    if (focused || lastRepo) await openTabRetry(focused || lastRepo)
     return 'Opened Reviews'
   })
   // open a repository file as an Orca editor tab (in its worktree)
