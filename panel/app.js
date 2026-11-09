@@ -693,6 +693,7 @@ function renderHeader() {
   const tb = clear($('#toolbar'))
   const dis = !state.repo || !st
   // In the full tab the main actions carry a label, like a toolbar; in the narrow panel icons only.
+  const phoneLbl = (b, text) => (b.append(h('span', { class: 'tb-label tb-phone' }, text)), b) // only phones show it
   const lbl = (b, text) => (b.append(h('span', { class: 'tb-label' }, text)), b) // narrow screens hide it, except on a button with work waiting
   // Pull/Push carry how many commits wait (↓ to pull, ↑ to push) and stand out while any do.
   const diverged = st?.ahead > 0 && st?.behind > 0
@@ -714,10 +715,10 @@ function renderHeader() {
     sep(),
     IN_TAB && lbl(iconBtn('stash', 'Stash changes', () => run('stashSave', { untracked: true }, { success: 'Stashed' }), { disabled: dis || !st0.files?.length }), 'Stash'),
     sep(),
-    iconBtn('refresh', 'Refresh', () => manualRefresh(), { disabled: !state.repo }),
-    iconBtn('undo', 'Undo the last action (commit, reset, merge, rebase…)', undoLast, { disabled: dis }),
-    IN_TAB && iconBtn('search', 'Commands (Ctrl+K)', () => commandPalette(), { disabled: dis }),
-    iconBtn('settings', 'Git settings (identity, HTTPS, remotes)', () => setTab('settings'), { disabled: !state.repo }),
+    phoneLbl(iconBtn('refresh', 'Refresh', () => manualRefresh(), { disabled: !state.repo }), 'Refresh'),
+    phoneLbl(iconBtn('undo', 'Undo the last action (commit, reset, merge, rebase…)', undoLast, { disabled: dis }), 'Undo'),
+    IN_TAB && phoneLbl(iconBtn('search', 'Commands (Ctrl+K)', () => commandPalette(), { disabled: dis }), 'Actions'),
+    phoneLbl(iconBtn('settings', 'Git settings (identity, HTTPS, remotes)', () => setTab('settings'), { disabled: !state.repo }), 'Settings'),
     !IN_TAB && iconBtn('expand', 'Open Git Control in a full tab', openTab, { disabled: dis })
   ])
   const ops = { 'Fetch all (prune)': 'fetch', Pull: 'pull', Push: 'push', 'Stash changes': 'stash', Refresh: 'refresh', 'Undo the last action (commit, reset, merge, rebase…)': 'undo' }
@@ -1641,7 +1642,7 @@ async function viewChanges() {
       if (!(await confirmBox('Nothing staged', 'Stage all changes and commit them?', 'Stage all & commit'))) return
       await call('stageAll').catch((e) => toast(e.message, 'error'))
     }
-    const out = await run('commit', args, { success: extra.push || !state.amend ? undefined : 'Amended' })
+    const out = await run('commit', args, { success: extra.push || !state.amend ? undefined : 'Amended', quiet: true })
     // forgot a file or a typo? one click puts the last commit back in the box to amend
     if (out !== undefined && !extra.push && !state.amend) toast('Committed', 'ok', 8000, { label: 'Amend', run: () => ((state.amend = true), call('lastMessage').then((m) => ((state.commitDraft = m || ''), setTab('changes'), renderView({ force: true })), () => setTab('changes'))) })
     if (extra.push && out !== undefined) out?.pushError ? toast(`Committed, but the push failed: ${out.pushError}`, 'error') : toast('Committed and pushed')
@@ -2159,6 +2160,12 @@ async function viewHistory() {
     H.search = v
     resetHistory()
     $('#main').scrollTop = 0 // a new search starts at the top, the box in view
+    // a search through a big history can take a while: say so, and let it be stopped
+    const bar = document.querySelector('#main .history-bar')
+    if (v && bar && !bar.querySelector('.search-busy')) {
+      const busy = h('span', { class: 'search-busy' }, h('span', { class: 'spinner' }), 'Searching…', h('button', { class: 'btn sm', onClick: () => ((search.value = ''), runSearch('')) }, icon('x', 11), 'Stop'))
+      setTimeout(() => bar.isConnected && !busy.isConnected && bar.append(busy), 400)
+    }
     renderView()
   }
   // One search box for the life of the panel: results redraw the view around it, never the box
