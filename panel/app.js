@@ -1002,10 +1002,18 @@ let renderSeq = 0
 document.addEventListener('input', (e) => {
   if (e.target.closest?.('#main .form')) e.target.closest('.view')?.setAttribute('data-editing', '1')
 })
+/**
+ * A place in a view being built for an element that is on the page now (a search box being typed in):
+ * the element stays where it is until the new view goes in, then moves in the same moment, so no key is lost.
+ */
+const liveSlot = (el) => Object.assign(h('span', { class: 'live-slot' }), { _live: el })
 async function renderView({ force = false } = {}) {
   const main = $('#main')
   if (!force && lastTabRendered === state.tab && main.querySelector('.view[data-editing]')) return
   const keepScroll = main.scrollTop
+  // the field being typed in, taken before the new view is built: building it moves a reused search box
+  // out of the page, which drops its focus; it gets focus and caret back once the view is in
+  const typing = document.activeElement?.matches?.('input, textarea') ? document.activeElement : null
   const loading = main.querySelector('.loading')
   if (!state.repo) {
     clear(main).append(emptyRepo())
@@ -1015,7 +1023,7 @@ async function renderView({ force = false } = {}) {
   document.body.classList.remove('is-loading-repo')
   if (!state.status) {
     clear(main).append(
-      h('div', { class: 'empty' }, icon('alert', 28), h('div', null, 'Not a Git repository'), h('div', { class: 'dim mono', style: { marginTop: '6px' } }, state.statusError || state.repo))
+      h('div', { class: 'empty' }, icon('alert', 28), h('div', null, /not a git repository/i.test(state.statusError || '') || !state.statusError ? 'Not a Git repository' : 'Could not read this repository'), h('div', { class: 'dim mono', style: { marginTop: '6px' } }, state.statusError || state.repo))
     )
     return
   }
@@ -1039,13 +1047,14 @@ async function renderView({ force = false } = {}) {
   if (lastTabRendered !== state.tab) el.classList.add('view-enter')
   lastTabRendered = state.tab
   // a field being typed in (the graph's search box is reused across redraws) keeps focus and caret
-  const typing = document.activeElement?.matches?.('input, textarea') ? document.activeElement : null
-  const caret = typing ? [typing.selectionStart, typing.selectionEnd] : null
+  // the caret as it is now (typing may have gone on while the view was built)
+  const caret = typing?.isConnected ? [typing.selectionStart, typing.selectionEnd] : null
   clear(main).append(el)
+  el.querySelectorAll('.live-slot').forEach((s) => s.replaceWith(s._live))
   if (typing && typing.isConnected && document.activeElement !== typing) {
     typing.focus({ preventScroll: true })
     try {
-      typing.setSelectionRange(caret[0], caret[1])
+      if (caret) typing.setSelectionRange(caret[0], caret[1])
     } catch {}
   }
   if (loading) main.prepend(loading)
@@ -1586,6 +1595,8 @@ async function viewChanges() {
   const unstaged = st.files.filter((f) => !f.conflict && (f.untracked || f.y !== '.'))
 
   const root = h('div', { class: 'view', style: { paddingTop: 0 } })
+  if (st.filesTotal > st.files.length)
+    root.append(h('div', { class: 'banner' }, h('div', { class: 'row' }, icon('alert'), h('strong', null, `Showing ${st.files.length.toLocaleString()} of ${st.filesTotal.toLocaleString()} changed files`)), h('div', { class: 'dim', style: { fontSize: '11.5px' } }, 'So many usually means a build or dependency folder is not ignored. Add it to .gitignore and the list gets short again.')))
 
   // commit box
   const ta = h('textarea', {
@@ -2215,7 +2226,7 @@ async function viewHistory() {
   const headBtn = h('button', { class: 'btn sm', title: 'Scroll to the checked-out commit', onClick: () => goToHead() }, icon('current', 12), 'HEAD')
   const dense = IN_TAB && iconBtn('rows', ROW_H > 28 ? 'Compact rows' : 'Comfortable rows', () => setDensity(ROW_H > 28 ? 'compact' : 'comfortable'), { class: `icon-btn density-btn ${ROW_H > 28 ? 'on' : ''}` })
   // an × inside the box clears the search (Esc does too)
-  const searchWrap = h('div', { class: 'graph-search-wrap' }, search, H.search && iconBtn('x', 'Clear search', () => ((search.value = ''), runSearch('')), { class: 'icon-btn search-clear' }))
+  const searchWrap = h('div', { class: 'graph-search-wrap' }, liveSlot(search), H.search && iconBtn('x', 'Clear search', () => ((search.value = ''), runSearch('')), { class: 'icon-btn search-clear' }))
   root.append(h('div', { class: 'history-bar' }, searchWrap, seg, headBtn, dense))
   if (IN_TAB) root.append(h('div', { class: 'date-float-wrap' }, h('div', { class: 'date-float', id: 'dateFloat' })))
 
@@ -5029,7 +5040,7 @@ async function viewReviews() {
     h(
       'div',
       { class: 'rv-filters' },
-      h('div', { class: 'rv-search-wrap' }, icon('search', 12), rvSearch),
+      h('div', { class: 'rv-search-wrap' }, icon('search', 12), liveSlot(rvSearch)),
       pickSel('repo', 'All projects', allRepos ? repos : []),
       pickSel('label', 'All labels', labels),
       active && h('button', { class: 'btn sm', onClick: () => ((state.rvQ = { text: '', repo: '', label: '' }), (rvSearch.value = ''), renderView({ force: true })) }, icon('x', 12), 'Clear filters')
@@ -5163,7 +5174,7 @@ async function doReviewAction(it, action, options) {
   if (items) {
     const i = items.findIndex((x) => x.url === it.url)
     if (i >= 0) {
-      if (action === 'merge' && r?.state !== 'auto') items.splice(i, 1)
+      if (action === 'merge' && r?.state === 'merged') items.splice(i, 1)
       else if (action === 'approve') items[i] = { ...items[i], myApproved: true, approvedCount: (items[i].approvedCount || 0) + 1 }
       else if (action === 'unapprove') items[i] = { ...items[i], myApproved: false, approvedCount: Math.max(0, (items[i].approvedCount || 1) - 1) }
     }
@@ -5235,6 +5246,7 @@ function reviewRow(it, { onSelect, filter } = {}) {
         it.ci && h('span', { class: `ci ci-${it.ci}`, title: `CI: ${it.ci}` }, ciIcon(it.ci), it.ci),
         approvals,
         it.myApproved && h('span', { class: 'pill rv-waiting', title: 'You approved it; it is not merged yet' }, icon('check', 10), 'Approved · waiting merge'),
+        it.conflicts && h('span', { class: 'pill rv-conflict', title: 'Merge conflicts: resolve them before merging' }, icon('alert', 10), 'Conflicts'),
         ciBusy(it) && h('span', { class: 'pill rv-running', title: 'The pipeline is still running' }, h('span', { class: 'spinner sm' }), 'Pipeline running'),
         (() => {
           const n = rvNewComments(it)
@@ -5744,6 +5756,14 @@ const pipeBadge = (st) => h('span', { class: `ci ci-${st} pipe-state` }, ciIcon(
    Pipelines tab: the latest runs of every branch in one place
    ========================================================================= */
 let pipesTimer = null
+const PIPE_SRC = { push: 'push', merge_request_event: 'merge request', pull_request: 'pull request', schedule: 'schedule', web: 'run by hand', api: 'API', trigger: 'trigger', pipeline: 'downstream', parent_pipeline: 'child', workflow_dispatch: 'run by hand', chat: 'chat', external: 'external' }
+/** A pipeline's ref the way GitLab shows it: a merge request as !N, a tag with its icon, else the branch. */
+function refChip(p) {
+  const mr = String(p.branch || '').match(/^refs\/merge-requests\/(\d+)\/(head|merge)$/)
+  if (mr) return h('span', { class: 'ref pc-mr', title: p.branch }, icon('pr', 10), h('span', { class: 'ref-t' }, `!${mr[1]}`))
+  if (p.tag) return h('span', { class: 'ref tag', title: `Tag ${p.branch}` }, icon('tag', 10), h('span', { class: 'ref-t' }, p.branch))
+  return h('span', { class: 'ref', title: p.branch }, icon('branch', 10), h('span', { class: 'ref-t' }, p.branch || '?'))
+}
 async function viewPipelinesTab() {
   clearTimeout(pipesTimer)
   const root = h('div', { class: 'view pipes-tab' })
@@ -5783,13 +5803,22 @@ async function viewPipelinesTab() {
     const items = data.items.filter((p) => (f.state === 'all' || (f.state === 'running' ? p.state === 'running' || p.state === 'pending' : p.state === f.state)) && words.every((w) => `${p.branch} ${p.title} ${p.name} ${p.by} ${p.sha}`.toLowerCase().includes(w)))
     clear(list)
     if (!items.length) return list.append(h('div', { class: 'empty' }, icon('check', 28), h('div', null, data.items.length ? 'Nothing matches' : 'No pipelines yet')))
+    list.append(h('div', { class: 'pc-head' }, h('span', null, 'Status'), h('span', null, 'Pipeline'), h('span', null, 'Branch / commit'), h('span', null, 'Stages'), h('span', null, 'Started by'), h('span')))
     for (const p of items)
       list.append(
         h(
           'button',
           { class: `pipe-row pr-${p.state}`, onClick: () => openPipelines({ branch: p.branch, openId: p.id }) },
-          pipeBadge(p.state),
-          h('div', { class: 'grow', style: { minWidth: 0 } }, h('div', { class: 'ellipsis' }, h('b', null, p.name), p.title && h('span', { class: 'dim' }, ` · ${p.title}`)), h('div', { class: 'dim pipe-meta' }, h('span', { class: 'ref' }, icon('branch', 10), h('span', { class: 'ref-t' }, p.branch || '?')), ` ${(p.sha || '').slice(0, 7)} · ${p.by || ''} · ${ago(p.at)}${p.duration != null ? ` · ${dur(p.duration)}` : ''}`)),
+          // status, with how long it took and when
+          h('div', { class: 'pc-status' }, pipeBadge(p.state), h('div', { class: 'dim pc-time' }, p.duration != null && [icon('history', 10), dur(p.duration)]), h('div', { class: 'dim pc-time', title: new Date(p.at * 1000).toLocaleString() }, ago(p.finished || p.at))),
+          // what it ran on: the commit's message, the pipeline number, what started it
+          h('div', { class: 'pc-main' }, h('div', { class: 'ellipsis pc-title', title: p.commitTitle || p.title || '' }, p.commitTitle || p.title || p.name), h('div', { class: 'pc-sub' }, h('span', { class: 'pc-id' }, p.name), p.event && h('span', { class: 'pill pc-src' }, PIPE_SRC[p.event] || String(p.event).replace(/_/g, ' ')))),
+          // branch, tag or merge request, and the commit
+          h('div', { class: 'pc-ref' }, refChip(p), h('span', { class: 'mono dim pc-sha' }, icon('commit', 10), (p.sha || '').slice(0, 8))),
+          // the stages, like GitLab's dots
+          h('div', { class: 'pc-stages' }, (p.stages || []).map((s) => h('span', { class: `pc-dot st-${s.state}`, title: `${s.name}: ${PIPE_LABEL[s.state] || s.state} (${s.jobs} job${s.jobs > 1 ? 's' : ''})` }, s.state === 'passed' ? icon('check', 9) : s.state === 'failed' ? icon('x', 9) : s.state === 'running' ? h('span', { class: 'spinner sm' }) : null))),
+          // who started it
+          h('div', { class: 'pc-by', title: p.byName || p.by || '' }, (p.by || p.byName) ? [h('span', { class: 'mrd-avatar' }, initials(p.byName || p.by)), h('span', { class: 'ellipsis' }, p.by || p.byName)] : null),
           icon('right', 14)
         )
       )

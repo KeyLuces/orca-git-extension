@@ -1601,3 +1601,42 @@ body.dragging-ref [data-drop-ref] { outline: 1px dashed color-mix(in srgb, var(-
 nav.tabs .tab { display: inline-flex; align-items: center; gap: 6px; }
 nav.tabs .tab > svg { flex: none; opacity: .7; }
 nav.tabs .tab.active > svg { opacity: 1; color: var(--ren); }
+
+.pill.rv-conflict { display: inline-flex; align-items: center; gap: 4px; color: var(--del); background: color-mix(in srgb, var(--del) 15%, transparent); border: 1px solid color-mix(in srgb, var(--del) 40%, transparent); font-weight: 600; }
+
+/* pipelines tab: columns like GitLab's list */
+.pipe-list { gap: 0 !important; }
+.pc-head, .pipe-list .pipe-row { display: grid !important; grid-template-columns: 128px minmax(200px, 1fr) minmax(150px, 260px) 150px 150px 16px; align-items: center; gap: 14px; }
+.pc-head { padding: 6px 12px; font-size: 11px; font-weight: 600; color: var(--t3); text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid var(--line); }
+.pipe-list .pipe-row { border-radius: 0 !important; border-width: 0 0 1px 3px !important; border-color: var(--line) !important; background: transparent !important; padding: 10px 12px !important; }
+.pipe-list .pipe-row:hover { background: var(--hover) !important; }
+.pipe-list .pr-failed { border-left-color: var(--del) !important; background: color-mix(in srgb, var(--del) 5%, transparent) !important; }
+.pipe-list .pr-running, .pipe-list .pr-pending { border-left-color: var(--info) !important; }
+.pipe-list .pr-passed { border-left-color: color-mix(in srgb, var(--add) 70%, transparent) !important; }
+.pipe-list .pr-canceled, .pipe-list .pr-skipped { border-left-color: var(--t3) !important; }
+.pc-status { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; }
+.pc-time { font-size: 11px; display: inline-flex; align-items: center; gap: 4px; }
+.pc-main { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.pc-title { font-weight: 600; color: var(--t1); }
+.pc-sub { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--t2); }
+.pc-id { font-family: var(--mono); color: var(--ren); }
+.pill.pc-src { font-size: 10.5px; color: var(--t2); background: var(--card-hi); }
+.pc-ref { min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.pc-ref .ref { max-width: 100%; }
+.pc-mr { color: #a371f7 !important; border-color: color-mix(in srgb, #a371f7 45%, transparent) !important; }
+.pc-sha { font-size: 11px; display: inline-flex; align-items: center; gap: 4px; }
+.pc-stages { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.pc-dot { width: 18px; height: 18px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; border: 1.5px solid var(--t3); color: var(--t3); }
+.pc-dot.st-passed { border-color: var(--add); color: var(--add); }
+.pc-dot.st-failed { border-color: var(--del); color: #fff; background: var(--del); }
+.pc-dot.st-running, .pc-dot.st-pending { border-color: var(--info); color: var(--info); }
+.pc-dot.st-manual { border-color: var(--mod); }
+.pc-by { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; color: var(--t2); }
+@media (max-width: 900px) {
+  .pc-head { display: none !important; }
+  .pc-head, .pipe-list .pipe-row { grid-template-columns: 110px 1fr 16px; }
+  .pc-ref, .pc-stages, .pc-by { grid-column: 2; }
+}
+body.compact .pc-head, .side-panel .pc-head { display: none !important; }
+body.compact .pipe-list .pipe-row, .side-panel .pipe-list .pipe-row { grid-template-columns: 110px 1fr 16px; }
+body.compact .pc-ref, body.compact .pc-stages, body.compact .pc-by, .side-panel .pc-ref, .side-panel .pc-stages, .side-panel .pc-by { grid-column: 2; }

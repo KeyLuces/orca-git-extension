@@ -300,15 +300,30 @@ function parseStatus(raw) {
   return res
 }
 
+const STATUS_MAX = 3000
 async function status(repo, { untracked = 'all' } = {}) {
   // One git process: --show-stash adds "# stash <n>" to the header (git 2.35+).
-  const [raw, state, { gitDir: d, toplevel }, refsSig] = await Promise.all([
-    git(repo, ['status', '--porcelain=v2', '--branch', '--show-stash', '-z', `--untracked-files=${untracked === 'normal' ? 'normal' : 'all'}`]),
+  const run = (u) => git(repo, ['status', '--porcelain=v2', '--branch', '--show-stash', '-z', `--untracked-files=${u}`])
+  const [first, state, { gitDir: d, toplevel }, refsSig] = await Promise.all([
+    run(untracked === 'normal' ? 'normal' : 'all').catch((e) => (/too large/.test(e.message) ? null : Promise.reject(e))),
     repoState(repo),
     paths(repo),
     refsFingerprint(repo).catch(() => '') // any branch, tag or remote moving changes this
   ])
-  const st = parseStatus(raw)
+  // Thousands of new files (a build folder, node_modules not in .gitignore): list a new folder as one
+  // line, the way `git status` does, and never send more than STATUS_MAX files (Orca's 1 MiB limit).
+  let raw = first
+  let st = raw != null ? parseStatus(raw) : null
+  if (!st || (st.files.length > STATUS_MAX && untracked !== 'normal')) {
+    raw = await run('normal')
+    st = parseStatus(raw)
+  }
+  const total = st.files.length
+  if (total > STATUS_MAX) {
+    st.files.sort((a, b) => (a.conflict ? -2 : a.untracked ? 1 : 0) - (b.conflict ? -2 : b.untracked ? 1 : 0))
+    st.files = st.files.slice(0, STATUS_MAX)
+  }
+  st.filesTotal = total
   const stashCount = +(raw.match(/(?:^|\0)# stash (\d+)/)?.[1] || 0)
   const bisect = existsSync(path.join(d, 'BISECT_LOG'))
   const sides = state ? await stateSides(repo, d, state, st.branch).catch(() => null) : null
@@ -1350,12 +1365,43 @@ async function pipelines(repo, { branch, sha, all } = {}) {
   const p = projectPath(w.path)
   const q = sha ? `sha=${encodeURIComponent(sha)}` : b ? `ref=${encodeURIComponent(b)}` : ''
   const list = await forgeCall(w, via, 'GET', `/projects/${p}/pipelines?per_page=${n}${q ? '&' + q : ''}`, null, repo)
+  // The list lacks who started it, the commit's message and the stages: for the Pipelines tab, fetch
+  // them for the newest runs (a few at a time, so a big project stays quick).
+  const extra = new Map()
+  if (all && Array.isArray(list)) {
+    const top = list.slice(0, 25)
+    const titles = new Map()
+    let i = 0
+    const worker = async () => {
+      while (i < top.length) {
+        const x = top[i++]
+        const [d, jobs] = await Promise.all([
+          forgeCall(w, via, 'GET', `/projects/${p}/pipelines/${x.id}`, null, repo).catch(() => null),
+          i <= 15 ? forgeCall(w, via, 'GET', `/projects/${p}/pipelines/${x.id}/jobs?per_page=100`, null, repo).catch(() => null) : null
+        ])
+        if (!titles.has(x.sha)) titles.set(x.sha, forgeCall(w, via, 'GET', `/projects/${p}/repository/commits/${x.sha}`, null, repo).then((c) => c?.title || '', () => ''))
+        const stages = []
+        for (const j of Array.isArray(jobs) ? jobs.slice().reverse() : []) {
+          let s = stages.find((z) => z.name === j.stage)
+          if (!s) stages.push((s = { name: j.stage, states: [] }))
+          s.states.push(PIPE_STATE(j.status))
+        }
+        extra.set(x.id, { d, stages: stages.map((s) => ({ name: s.name, state: ['failed', 'running', 'pending', 'manual', 'canceled', 'skipped', 'passed'].find((k) => s.states.includes(k)) || 'passed', jobs: s.states.length })), title: await titles.get(x.sha) })
+      }
+    }
+    await Promise.all(Array.from({ length: 6 }, worker))
+  }
   return {
     kind: 'gitlab',
     host: w.host,
     branch: b,
     web: `${w.web}/-/pipelines`,
     items: (Array.isArray(list) ? list : []).map((x) => ({
+      ...(() => {
+        const e = extra.get(x.id)
+        if (!e) return {}
+        return { by: e.d?.user?.username || '', byName: e.d?.user?.name || '', commitTitle: e.title || e.d?.name || '', stages: e.stages, tag: !!e.d?.tag, duration: e.d?.duration ?? null, finished: e.d?.finished_at ? Date.parse(e.d.finished_at) / 1000 : null }
+      })(),
       id: x.id,
       name: `#${x.id}`,
       title: x.name || '',
@@ -1363,11 +1409,10 @@ async function pipelines(repo, { branch, sha, all } = {}) {
       branch: x.ref,
       sha: x.sha,
       event: x.source,
-      by: x.user?.username || '',
       at: Date.parse(x.created_at) / 1000,
-      duration: ['success', 'failed', 'canceled'].includes(x.status) ? secs(x.created_at, x.updated_at) : null,
-      url: x.web_url
-    }))
+      url: x.web_url,
+      ...(extra.has(x.id) ? {} : { by: x.user?.username || '', duration: ['success', 'failed', 'canceled'].includes(x.status) ? secs(x.created_at, x.updated_at) : null })
+    })).map((it) => ({ ...it, by: it.by || '', duration: it.duration ?? null }))
   }
 }
 
@@ -1683,7 +1728,8 @@ async function gitlabInbox(h, where, via) {
     updated: Date.parse(m.updated_at) / 1000,
     draft: !!(m.draft || m.work_in_progress),
     labels: (m.labels || []).map((l) => (typeof l === 'string' ? l : l.name)).filter(Boolean),
-    comments: m.user_notes_count ?? null
+    comments: m.user_notes_count ?? null,
+    conflicts: !!m.has_conflicts
   }))
 }
 
@@ -1829,7 +1875,15 @@ async function reviewMerge(w, via, it) {
   const body = { squash: !!o.squash, should_remove_source_branch: !!o.removeSource }
   if (o.auto) body.merge_when_pipeline_succeeds = true
   const before = await forgeCall(w, via, 'GET', `/${w.mr}`).catch(() => null)
-  const r = await forgeCall(w, via, 'PUT', `/${w.mr}/merge`, body)
+  if (!o.auto && (before?.has_conflicts || before?.detailed_merge_status === 'conflict' || before?.detailed_merge_status === 'broken_status'))
+    throw new GitError('It has merge conflicts: resolve them first (on GitLab, or merge the target branch into it and push)')
+  let r = await forgeCall(w, via, 'PUT', `/${w.mr}/merge`, body)
+  // GitLab can answer before the merge is done, or not merge at all: only "merged" counts
+  if (!o.auto && r?.state !== 'merged') {
+    await new Promise((res) => setTimeout(res, 1500))
+    r = (await forgeCall(w, via, 'GET', `/${w.mr}`).catch(() => null)) || r
+    if (r?.state !== 'merged') throw new GitError(`GitLab did not merge it${r?.merge_error ? `: ${r.merge_error}` : r?.detailed_merge_status ? ` (${String(r.detailed_merge_status).replace(/_/g, ' ')})` : ''}`)
+  }
   // "Delete source branch" was asked for and the branch is still there after the merge: delete it
   const src = before?.source_branch
   const project = w.mr.split('/merge_requests/')[0]
@@ -1837,7 +1891,7 @@ async function reviewMerge(w, via, it) {
     const path = `/${project}/repository/branches/${encodeURIComponent(src)}`
     if (await forgeCall(w, via, 'GET', path).then(Boolean, () => false)) await forgeCall(w, via, 'DELETE', path).catch(() => null)
   }
-  return { ok: true, state: r?.state === 'merged' ? 'merged' : o.auto ? 'auto' : r?.state || 'merged' }
+  return { ok: true, state: r?.state === 'merged' ? 'merged' : 'auto' }
 }
 
 /**
@@ -2882,7 +2936,22 @@ export default function activate(orca) {
   // Orca accepts only plain JSON answers: a field left undefined (or NaN) made it refuse the whole reply
   // ("answered with a non-JSON value"). Every handler's answer is made plain JSON on the way out.
   const handle = orca.panels.handle.bind(orca.panels)
-  orca = { ...orca, panels: { ...orca.panels, handle: (name, fn) => handle(name, async (input) => { const r = await fn(input); return r === undefined ? null : JSON.parse(JSON.stringify(r)) }) } }
+  const MAX_ANSWER = 960 * 1024
+  orca = {
+    ...orca,
+    panels: {
+      ...orca.panels,
+      handle: (name, fn) =>
+        handle(name, async (input) => {
+          const r = await fn(input)
+          if (r === undefined) return null
+          const text = JSON.stringify(r)
+          // Orca refuses answers over 1 MiB and the whole page breaks: say what happened instead
+          if (text.length > MAX_ANSWER) throw new GitError(`The answer was too large to show (${(text.length / 1048576).toFixed(1)} MB). If the repository has many new files, add their folder (build output, node_modules…) to .gitignore.`)
+          return JSON.parse(text)
+        })
+    }
+  }
   ORCA = orca
   orca.panels.handle('git', async (input) => {
     const { op, repo } = input || {}

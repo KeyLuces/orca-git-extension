@@ -357,6 +357,13 @@ await step('search finds everything as you type (message, file, author, hash) an
   })
   if (box !== 'zzqq-nothing-here') throw new Error('search box after no results: ' + box)
   await shot('02c-search-none')
+  // typing on while results redraw: the box keeps focus and every letter
+  await page.$eval('.history-bar input', (i) => ((i.value = ''), i.dispatchEvent(new Event('input', { bubbles: true }))))
+  await page.focus('.history-bar input')
+  for (const ch of 'sandbox') await page.keyboard.type(ch, { delay: 380 })
+  await new Promise((r) => setTimeout(r, 900))
+  const kept = await page.evaluate(() => ({ focused: document.activeElement?.classList.contains('graph-search'), value: document.querySelector('.history-bar input')?.value }))
+  if (!kept.focused || kept.value !== 'sandbox') throw new Error('graph search lost focus or letters: ' + JSON.stringify(kept))
   // Escape clears and brings the graph back
   await page.focus('.history-bar input')
   await page.keyboard.press('Escape')
@@ -854,9 +861,12 @@ await step('Review & MR list: approve leaves To review, multi-select merge, real
   if (body.should_remove_source_branch !== true) throw new Error('merge options ' + JSON.stringify(body))
   await until(() => page.$eval('.reviews .rv-list', (r) => !r.textContent.includes('MR assigned') && !r.textContent.includes('MR repo')).catch(() => false), 'merged ones left the list', 20000)
   if (await page.$eval('.rv-bulk', (b) => b.classList.contains('on'))) throw new Error('bulk bar still showing')
-  // search narrows the list; Clear filters brings it back
+  // search narrows the list; Clear filters brings it back (typed slowly: focus stays through redraws)
   await page.focus('.rv-search')
-  await page.keyboard.type('mine')
+  for (const ch of 'mine') await page.keyboard.type(ch, { delay: 300 })
+  await new Promise((r) => setTimeout(r, 600))
+  const rvKept = await page.evaluate(() => ({ focused: document.activeElement?.classList.contains('rv-search'), value: document.querySelector('.rv-search')?.value }))
+  if (!rvKept.focused || rvKept.value !== 'mine') throw new Error('MR search lost focus or letters: ' + JSON.stringify(rvKept))
   await until(() => page.$$eval('.rv-list .review-row', (r) => r.length === 1 && r[0].textContent.includes('MR mine')), 'search finds MR mine', 20000)
   await clickText('.rv-filters .btn', 'Clear filters')
   await until(() => page.$$eval('.rv-list .review-row', (r) => r.length > 1), 'filters cleared')
