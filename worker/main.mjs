@@ -865,7 +865,9 @@ function runProc(bin, args, { cwd, input, timeout = 60_000, shell = false, env }
 
 // ---------- full-tab graph ----------
 
-const TAB_FILE = '.orca-git-graph.gitgraph'
+// Orca names a tab after its file: "Git.Control" reads as the tool's name (the .control extension opens Git Control)
+const TAB_FILE = 'Git.Control'
+const OLD_TAB_FILE = '.orca-git-graph.gitgraph'
 
 /**
  * Keep Git Control tab files (this one and the "untitled.gitgraph" the + menu creates) out of
@@ -876,8 +878,9 @@ async function ignoreGraphFiles(repo) {
   const exclude = path.join(common, 'info', 'exclude')
   mkdirSync(path.dirname(exclude), { recursive: true })
   const cur = existsSync(exclude) ? readFileSync(exclude, 'utf8') : ''
-  if (!cur.split(/\r?\n/).includes('*.gitgraph'))
-    writeFileSync(exclude, cur + (cur && !cur.endsWith('\n') ? '\n' : '') + '# Git Control tabs\n*.gitgraph\n')
+  const lines = cur.split(/\r?\n/)
+  const add = ['*.gitgraph', TAB_FILE].filter((x) => !lines.includes(x))
+  if (add.length) writeFileSync(exclude, cur + (cur && !cur.endsWith('\n') ? '\n' : '') + (lines.includes('*.gitgraph') ? '' : '# Git Control tabs\n') + add.join('\n') + '\n')
 }
 
 /**
@@ -887,8 +890,12 @@ async function ignoreGraphFiles(repo) {
 async function openGraphTab(repo, { focus = true } = {}) {
   const top = (await paths(repo)).toplevel
   const file = path.join(top, TAB_FILE)
+  await ignoreGraphFiles(top) // ignored before the file exists, so it never shows as a change
   writeFileSync(file, JSON.stringify({ repo: top }) + '\n')
-  await ignoreGraphFiles(top)
+  // the tab file of earlier versions (its tab read ".orca-git-graph.gitgraph")
+  try {
+    rmSync(path.join(top, OLD_TAB_FILE), { force: true })
+  } catch {}
   const r = await runProc(ORCA_BIN, ['file', 'open', file, '--worktree', `path:${top}`, ...(focus ? ['--focus'] : []), '--json'], {
     timeout: 15_000
   })
