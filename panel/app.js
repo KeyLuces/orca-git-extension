@@ -444,7 +444,12 @@ async function run(op, args, { success, refresh = true, quiet = false } = {}) {
     else if (!before && !quiet && typeof out === 'string' && out.trim() && NET_OPS.has(op)) toast(out.trim().split('\n').slice(-3).join('\n'))
     return out ?? ''
   } catch (e) {
-    toast(e?.message || String(e), 'error')
+    const msg = e?.message || String(e)
+    // A conflict is a normal step, not a failure: say what happens next instead of git's error text.
+    const files = [...msg.matchAll(/CONFLICT \([^)]*\): (?:Merge conflict in )?(\S+)/g)].map((m) => m[1])
+    if (files.length || /fix conflicts and then commit|could not apply|after resolving the conflicts/i.test(msg))
+      toast(`${files.length ? `${files.length} file${files.length > 1 ? 's' : ''} changed` : 'Some files changed'} on both sides. Pick what to keep in each, then commit.`, 'ok', 7000)
+    else toast(msg, 'error')
     return undefined
   } finally {
     setBusy(-1)
@@ -825,7 +830,7 @@ function renderBanner() {
     h(
       'div',
       { class: 'banner' },
-      h('div', { class: 'row' }, icon('alert'), h('strong', null, `${labels[st.state]} in progress`)),
+      h('div', { class: 'row' }, icon('alert'), h('strong', null, `${labels[st.state]} in progress`), st.sides && h('span', { class: 'cf-route sm' }, sideChip('incoming', st.sides.incoming), icon('right', 12), sideChip('current', st.sides.current))),
       h(
         'div',
         { class: 'dim', style: { fontSize: '11.5px' } },
@@ -834,8 +839,9 @@ function renderBanner() {
       h(
         'div',
         { class: 'row' },
-        conflicts > 0 && h('button', { class: 'btn sm primary', onClick: resolveWithAi }, 'Resolve with AI'),
-        h('button', { class: `btn sm ${conflicts ? '' : 'primary'}`, disabled: conflicts > 0, onClick: () => run('continue', {}, { success: 'Continued' }) }, 'Continue'),
+        conflicts > 0 && h('button', { class: 'btn sm primary', onClick: openConflicts }, 'Resolve conflicts'),
+        conflicts > 0 && h('button', { class: 'btn sm', onClick: resolveWithAi }, 'Resolve with AI'),
+        h('button', { class: `btn sm ${conflicts ? '' : 'primary'}`, disabled: conflicts > 0, onClick: () => run('continue', {}, { success: st.state === 'merge' ? 'Merge committed' : 'Continued' }) }, st.state === 'merge' ? 'Commit merge' : 'Continue'),
         st.state !== 'merge' && h('button', { class: 'btn sm', onClick: () => run('skip', {}, { success: 'Skipped' }) }, 'Skip'),
         h(
           'button',
@@ -1710,8 +1716,8 @@ async function viewChanges() {
           actions: [
             iconBtn('more', 'Resolve', (e) =>
               menu(e.currentTarget, [
-                { label: 'Use mine (ours)', icon: 'left', onClick: () => run('useSide', { file: f.path, side: 'ours' }) },
-                { label: 'Use theirs', icon: 'right', onClick: () => run('useSide', { file: f.path, side: 'theirs' }) },
+                { label: `Accept current (${conflictSides().current})`, icon: 'left', onClick: () => run('useSide', { file: f.path, side: 'ours' }) },
+                { label: `Accept incoming (${conflictSides().incoming})`, icon: 'right', onClick: () => run('useSide', { file: f.path, side: 'theirs' }) },
                 { label: 'Mark as resolved', icon: 'check', onClick: () => run('stage', { files: [f.path] }) }
               ])
             )
@@ -1926,7 +1932,7 @@ function refPills(refs, lane) {
     }
     return el
   }
-  const pill = (cls, iconName, text, title) => lanePill(h('span', { class: `ref ${cls}`, title }, icon(iconName, 10), h('span', { class: 'ref-t' }, text)))
+  const pill = (cls, iconName, text, title) => lanePill(h('span', { class: `ref ${cls}`, title, 'data-ref': iconName === 'stash' ? null : text, 'data-kind': cls.includes('tag') ? 'tag' : cls.includes('remote') ? 'remote' : 'branch' }, icon(iconName, 10), h('span', { class: 'ref-t' }, text)))
   const isRemote = (r) => r.includes('/') && !r.startsWith('tag: ') && !state.localNames?.has(r)
   const remoteName = (r) => r.slice(0, r.indexOf('/'))
   const branchOf = (r) => r.slice(r.indexOf('/') + 1)
@@ -2412,16 +2418,18 @@ async function openCommit(hash) {
 async function commitContextMenu(e, c) {
   e.preventDefault()
   const point = { x: e.clientX, y: e.clientY }
+  const lab = e.target.closest?.('.ref[data-ref]')
+  const clicked = lab ? { name: lab.dataset.ref, kind: lab.dataset.kind } : null
   let full = c
   if (c.message == null) full = { ...c, ...(await call('commitShow', { hash: c.hash }).catch(() => ({ message: c.subject || '' }))), refs: c.refs, parents: c.parents }
-  commitMenu(point, full)
+  commitMenu(point, full, clicked)
 }
 
 /**
  * Everything Git Extensions offers on a revision, grouped the same way: checkout and new refs, the
  * actions on the current branch, the branches and tags at this commit, inspecting, and copying.
  */
-function commitMenu(anchor, c) {
+function commitMenu(anchor, c, clicked) {
   const cur = state.status?.branch || 'HEAD'
   const short = c.hash.slice(0, 7)
   const isHead = c.hash === state.status?.oid
@@ -2444,6 +2452,7 @@ function commitMenu(anchor, c) {
         { label: 'Push', icon: 'push', onClick: () => run('push', b === cur ? {} : { branch: b }, { success: `Pushed ${b}` }) },
         { label: 'Rename…', icon: 'edit', onClick: () => renameBranch(b) },
         { label: 'Show only this branch', icon: 'history', onClick: () => showBranchLog(b) },
+        b !== cur && cur && { label: mergeLabel(b, cur), full: `Merge ${b} → ${cur}`, icon: 'merge', onClick: () => mergeRef(b) },
         b !== cur && mrBoth(b, cur),
         b !== cur && { label: 'Delete…', icon: 'trash', danger: true, onClick: () => deleteBranch(b) }
       ]
@@ -2452,13 +2461,24 @@ function commitMenu(anchor, c) {
       label: `Tag ${t}`,
       icon: 'tag',
       items: [
+        cur && { label: mergeLabel(t, cur), full: `Merge tag ${t} → ${cur}`, icon: 'merge', onClick: () => mergeRef(t) },
         { label: 'Push tag', icon: 'push', onClick: () => run('tagPush', { name: t }, { success: `Pushed ${t}` }) },
         { label: 'Delete (local)…', icon: 'trash', danger: true, onClick: async () => (await confirmBox(`Delete tag ${t}?`, 'Only the local tag is deleted.', 'Delete', true)) && run('tagDelete', { name: t }) }
       ]
     }))
   ]
+  // What can be merged from here: the label right-clicked, else every branch and tag at this commit.
+  const pickRef = clicked?.name && clicked.name !== cur ? clicked.name : null
+  const mergeables = [...local.filter((b) => b !== cur), ...remote.filter((r) => !r.endsWith('/HEAD')), ...tags]
+  const mergeOne = (ref) => ({ label: mergeLabel(ref, cur), full: `Merge ${ref} → ${cur}`, icon: 'merge', onClick: () => mergeRef(ref) })
+  const mergeItem =
+    mergeables.length > 1
+      ? { label: `Merge into ${nm(cur)}`, icon: 'merge', items: [...mergeables.map(mergeOne), { label: `This commit (${short}) → ${nm(cur)}`, icon: 'commit', onClick: () => mergeRef(c.hash) }] }
+      : mergeOne(mergeables[0] || c.hash)
   menu(anchor, [
-    { header: `${short} · ${(c.subject || c.message || '').split('\n')[0].slice(0, 48)}` },
+    { header: pickRef ? `${clicked.kind === 'tag' ? 'Tag' : clicked.kind === 'remote' ? 'Remote branch' : 'Branch'} ${pickRef}` : `${short} · ${(c.subject || c.message || '').split('\n')[0].slice(0, 48)}` },
+    pickRef && cur && mergeOne(pickRef),
+    pickRef && '-',
     {
       label: 'Checkout',
       icon: 'right',
@@ -2474,9 +2494,9 @@ function commitMenu(anchor, c) {
     { label: 'Create tag here…', icon: 'tag', onClick: () => newTag(c.hash) },
     { label: 'New worktree here…', icon: 'worktree', onClick: () => addWorktree({ base: c.hash }) },
     '-',
-    !isHead && cur && { label: mergeLabel(local[0] || remote.find((r) => !r.endsWith('/HEAD')) || short, cur), full: `Merge ${local[0] || remote.find((r) => !r.endsWith('/HEAD')) || short} → ${cur}`, icon: 'merge', onClick: () => mergeRef(local[0] || c.hash) },
+    !pickRef && !isHead && cur && mergeItem,
     mrItem(local, remote, cur),
-    !isHead && { label: `Rebase ${cur} onto this…`, icon: 'merge', onClick: () => rebaseOnto(local[0] || c.hash) },
+    !isHead && { label: pickRef ? `Rebase ${nm(cur)} onto ${nm(pickRef)}…` : `Rebase ${cur} onto this…`, icon: 'merge', onClick: () => rebaseOnto(pickRef || local[0] || c.hash) },
     !isHead && { label: 'Cherry-pick', icon: 'commit', onClick: () => run('cherryPick', { hash: c.hash, mainline: isMerge }, { success: 'Cherry-picked' }) },
     { label: 'Revert…', icon: 'undo', onClick: async () => (await confirmBox(`Revert ${short}?`, 'A new commit that undoes it will be created.', 'Revert')) && run('revert', { hash: c.hash, mainline: isMerge }, { success: 'Reverted' }) },
     !isHead && {
@@ -2774,30 +2794,32 @@ async function newBranch(start) {
 }
 async function mergeRef(ref) {
   const cur = state.status?.branch || 'HEAD'
+  const name = /^[0-9a-f]{40}$/.test(ref) ? ref.slice(0, 7) : ref
   const r = await dialog({
-    title: `Merge ${ref.length === 40 ? ref.slice(0, 7) : ref} into ${cur}`,
+    title: `Merge ${name} → ${cur}`,
+    message: `Brings the changes of ${name} into ${cur}, the branch you are on. If both changed the same lines, you pick what to keep, side by side.`,
     fields: [
       {
         key: 'mode',
-        label: 'Strategy',
+        label: 'How',
         type: 'select',
         value: 'default',
         options: [
-          ['default', 'Fast-forward if possible'],
+          ['default', 'Merge (fast-forward when possible)'],
           ['noFf', 'Always create a merge commit'],
           ['ffOnly', 'Fast-forward only'],
-          ['squash', 'Squash (stage changes, no commit)']
+          ['squash', 'Squash into one change (you commit it)']
         ]
       },
-      { key: 'ai', label: 'If there are conflicts, resolve them with AI', type: 'check', value: true }
+      { key: 'ai', label: 'Let AI resolve conflicts instead', type: 'check', value: false }
     ],
     ok: 'Merge'
   })
   if (!r) return
   if (state.sheets.length) closeSheet()
   resetHistory()
-  const out = await run('merge', { ref, [r.mode]: r.mode !== 'default' }, { success: r.mode === 'squash' ? 'Squashed; review and commit' : 'Merged' })
-  if (out === undefined && r.ai && state.status?.files.some((f) => f.conflict)) resolveWithAi()
+  const out = await run('merge', { ref, [r.mode]: r.mode !== 'default' }, { success: r.mode === 'squash' ? 'Squashed; review and commit' : `Merged ${name} into ${cur}` })
+  if (out === undefined && state.status?.files.some((f) => f.conflict)) r.ai ? resolveWithAi() : openConflicts()
 }
 async function rebaseOnto(ref) {
   const cur = state.status?.branch || 'HEAD'
@@ -2969,6 +2991,7 @@ function tagRow(t) {
         menu(e.currentTarget, [
           { label: 'Checkout (detached)', icon: 'right', onClick: () => checkout(t.name, { detach: true }) },
           { label: 'New branch from tag…', icon: 'plus', onClick: () => newBranch(t.name) },
+          state.status?.branch && { label: mergeLabel(t.name, state.status.branch), full: `Merge tag ${t.name} → ${state.status.branch}`, icon: 'merge', onClick: () => mergeRef(t.name) },
           { label: 'Push tag', icon: 'push', onClick: () => run('tagPush', { name: t.name }, { success: `Pushed ${t.name}` }) },
           '-',
           { label: 'Delete (local)…', icon: 'trash', danger: true, onClick: async () => (await confirmBox(`Delete tag ${t.name}?`, 'Only the local tag is deleted.', 'Delete', true)) && run('tagDelete', { name: t.name }) }
@@ -5753,7 +5776,71 @@ async function cleanupBranches() {
   document.addEventListener('keydown', onKey)
 }
 
-/** Resolve a conflicted file block by block: ours, theirs or both, then save and mark resolved. */
+/** The two sides of the operation in progress, by name: Current is HEAD (git's "ours"), Incoming is what comes in. */
+function conflictSides(block) {
+  const st = state.status || {}
+  const s = st.sides || {}
+  const cur = s.current || (block?.oursLabel && block.oursLabel !== 'HEAD' ? block.oursLabel : st.branch) || 'HEAD'
+  const inc = s.incoming || block?.theirsLabel || 'incoming'
+  return { current: cur, incoming: inc, op: { merge: 'Merging', rebase: 'Rebasing', 'cherry-pick': 'Cherry-picking', revert: 'Reverting' }[st.state] || 'Merging' }
+}
+const sideChip = (kind, name) => h('span', { class: `side-chip ${kind}` }, h('span', { class: 'side-k' }, kind === 'current' ? 'Current' : 'Incoming'), h('span', { class: 'side-n mono', title: name }, name))
+
+/** The conflicts of the operation in progress, in one place: each file, then Commit (or Abort). */
+function openConflicts() {
+  const st = state.status
+  if (!st?.state) return toast('Nothing is being merged right now')
+  const files = st.files.filter((f) => f.conflict)
+  const sides = conflictSides()
+  const body = h('div', { class: 'cf-hub' })
+  const finishLabel = st.state === 'merge' ? 'Commit merge' : 'Continue'
+  body.append(
+    h('div', { class: 'cf-route' }, sideChip('incoming', sides.incoming), icon('right', 14), sideChip('current', sides.current)),
+    h(
+      'p',
+      { class: 'cf-lead' },
+      files.length
+        ? `${sides.op} ${sides.incoming} into ${sides.current}. ${files.length} file${files.length > 1 ? 's' : ''} changed on both sides: pick what to keep in each.`
+        : `No conflicts left. ${finishLabel} to finish.`
+    )
+  )
+  const list = h('div', { class: 'cf-files' })
+  for (const f of files)
+    list.append(
+      h(
+        'div',
+        { class: 'cf-file' },
+        icon('alert', 13),
+        h('button', { class: 'link-btn grow ellipsis cf-name', title: `Resolve ${f.path}`, onClick: () => resolveConflict(f.path) }, f.path),
+        h('button', { class: 'btn sm', title: `Keep ${sides.current}'s version of the whole file`, onClick: () => takeWhole(f.path, 'ours') }, 'Accept current'),
+        h('button', { class: 'btn sm', title: `Keep ${sides.incoming}'s version of the whole file`, onClick: () => takeWhole(f.path, 'theirs') }, 'Accept incoming'),
+        h('button', { class: 'btn sm primary', onClick: () => resolveConflict(f.path) }, 'Resolve')
+      )
+    )
+  if (files.length) body.append(list)
+  else body.append(h('div', { class: 'empty cf-done' }, icon('check', 28), h('div', null, 'All conflicts resolved')))
+  async function takeWhole(file, side) {
+    await run('useSide', { file, side }, { success: `${basename(file)}: kept ${side === 'ours' ? sides.current : sides.incoming}` })
+    reopen()
+  }
+  const reopen = () => {
+    if (state.sheets.includes(sheet)) closeSheet()
+    if (state.status?.state) openConflicts()
+  }
+  openSheet(`Conflicts · ${sides.incoming} → ${sides.current}`, body, [
+    h('button', { class: 'btn sm danger', onClick: async () => (await confirmBox(`Abort ${st.state}?`, `${sides.current} goes back to how it was before.`, 'Abort', true)) && (closeSheet(), run('abort', {}, { success: 'Aborted' })) }, 'Abort'),
+    files.length > 0 && h('button', { class: 'btn sm', onClick: () => (closeSheet(), resolveWithAi()) }, 'Resolve with AI'),
+    h('button', { class: 'btn sm primary', disabled: files.length > 0, title: files.length ? 'Resolve every file first' : '', onClick: () => (closeSheet(), run('continue', {}, { success: st.state === 'merge' ? 'Merge committed' : 'Continued' })) }, icon('check', 12), finishLabel)
+  ])
+  const sheet = state.sheets[state.sheets.length - 1]
+  sheet.el.classList.add('wide-sheet')
+  placeSheet(sheet.el)
+}
+
+/**
+ * Resolve one file, conflict by conflict: Current (left) or Incoming (right), each with its branch's
+ * name, or both; the result is shown and can be edited. Saving opens the next conflicted file.
+ */
 async function resolveConflict(file) {
   let text
   try {
@@ -5769,7 +5856,7 @@ async function resolveConflict(file) {
     if (lines[i].startsWith('<<<<<<<')) {
       parts.push(buf.join(eolStr))
       buf = []
-      const block = { ours: [], base: [], theirs: [], oursLabel: lines[i].slice(8).trim(), theirsLabel: '', choice: null }
+      const block = { ours: [], base: [], theirs: [], oursLabel: lines[i].slice(8).trim(), theirsLabel: '', choice: null, result: null }
       let where = 'ours'
       for (i++; i < lines.length; i++) {
         const l = lines[i]
@@ -5786,45 +5873,98 @@ async function resolveConflict(file) {
   parts.push(buf.join(eolStr))
   const blocks = parts.filter((x) => typeof x === 'object')
   if (!blocks.length) {
-    if (await confirmBox('No conflict markers left', `${file} has no conflict markers. Mark it as resolved?`, 'Mark resolved')) run('stage', { files: [file] }, { success: 'Marked resolved' })
+    if (await confirmBox('No conflict markers left', `${file} has no conflict markers. Mark it as resolved?`, 'Mark resolved')) {
+      await run('stage', { files: [file] }, { success: 'Marked resolved' })
+      nextConflict(file)
+    }
     return
   }
+  const sides = conflictSides(blocks[0])
+  const all = (state.status?.files || []).filter((f) => f.conflict).map((f) => f.path)
+  const pos = all.indexOf(file)
   const body = h('div', { class: 'resolver' })
-  const saveBtn = h('button', { class: 'btn sm primary', disabled: true, onClick: save }, icon('check', 12), 'Save & mark resolved')
-  const progress = h('span', { class: 'dim' })
+  const saveBtn = h('button', { class: 'btn sm primary', disabled: true, onClick: save }, icon('check', 12), all.length > 1 ? 'Save & next file' : 'Save & mark resolved')
+  const progress = h('span', { class: 'res-progress' })
   const update = () => {
     const done = blocks.filter((b) => b.choice).length
     progress.textContent = `${done} of ${blocks.length} resolved`
+    progress.classList.toggle('ok', done === blocks.length)
     saveBtn.disabled = done !== blocks.length
   }
+  body.append(
+    h(
+      'div',
+      { class: 'res-top' },
+      h('div', { class: 'cf-route' }, sideChip('incoming', sides.incoming), icon('right', 14), sideChip('current', sides.current)),
+      h('span', { class: 'grow' }),
+      pos >= 0 && all.length > 1 && h('span', { class: 'dim' }, `File ${pos + 1} of ${all.length}`),
+      h('button', { class: 'btn sm', title: `Keep ${sides.current}'s side in every conflict below`, onClick: () => blocks.forEach((b) => b.pick('ours')) }, 'Accept all current'),
+      h('button', { class: 'btn sm', title: `Keep ${sides.incoming}'s side in every conflict below`, onClick: () => blocks.forEach((b) => b.pick('theirs')) }, 'Accept all incoming')
+    )
+  )
   blocks.forEach((b, n) => {
-    const code = (ls, cls) => h('pre', { class: `res-code ${cls}` }, ls.join('\n') || ' ')
     const card = h('div', { class: 'res-block' })
-    const pick = (choice) => {
+    const result = h('textarea', { class: 'res-result mono', spellcheck: 'false', rows: 3 })
+    const resultBox = h('div', { class: 'res-result-box hidden' }, h('div', { class: 'res-label' }, 'Result', h('span', { class: 'dim' }, ' · you can edit it')), result)
+    result.addEventListener('input', () => {
+      b.result = result.value.split('\n')
+      b.choice ||= 'edit'
+      update()
+    })
+    const side = (which, name, ls) =>
+      h(
+        'div',
+        { class: `res-side ${which === 'ours' ? 'current' : 'incoming'}`, role: 'button', tabindex: 0, title: `Use this (${name})`, onClick: () => b.pick(which), onKeydown: (e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), b.pick(which)) },
+        h('div', { class: 'res-side-head' }, h('span', { class: 'side-k' }, which === 'ours' ? 'Current' : 'Incoming'), h('span', { class: 'mono side-n', title: name }, `(${name})`), h('span', { class: 'grow' }), h('span', { class: 'res-pick' }, icon('check', 11), 'Use this')),
+        h('pre', { class: 'res-code' }, ls.join('\n') || ' ')
+      )
+    b.pick = (choice) => {
       b.choice = choice
+      b.result = choice === 'ours' ? b.ours : choice === 'theirs' ? b.theirs : [...b.ours, ...b.theirs]
+      result.value = b.result.join('\n')
+      result.rows = Math.min(14, Math.max(2, b.result.length))
+      resultBox.classList.remove('hidden')
+      card.dataset.c = choice
       card.querySelectorAll('.res-actions .btn').forEach((x) => x.classList.toggle('primary', x.dataset.c === choice))
       card.classList.add('done')
       update()
     }
     card.append(
-      h('div', { class: 'res-head' }, h('strong', null, `Conflict ${n + 1}`), h('span', { class: 'grow' }), h('div', { class: 'res-actions' }, ...[['ours', 'Use mine'], ['theirs', 'Use theirs'], ['both', 'Use both']].map(([c, l]) => h('button', { class: 'btn sm', 'data-c': c, onClick: () => pick(c) }, l)))),
-      h('div', { class: 'res-sides' }, h('div', null, h('div', { class: 'res-label' }, `Mine · ${b.oursLabel || 'HEAD'}`), code(b.ours, 'ours')), h('div', null, h('div', { class: 'res-label' }, `Theirs · ${b.theirsLabel || 'incoming'}`), code(b.theirs, 'theirs')))
+      h(
+        'div',
+        { class: 'res-head' },
+        h('strong', null, `Conflict ${n + 1} of ${blocks.length}`),
+        h('span', { class: 'grow' }),
+        h('div', { class: 'res-actions' }, ...[['ours', 'Accept current'], ['theirs', 'Accept incoming'], ['both', 'Accept both']].map(([c, l]) => h('button', { class: 'btn sm', 'data-c': c, onClick: () => b.pick(c) }, l)))
+      ),
+      h('div', { class: 'res-sides' }, side('ours', sides.current, b.ours), side('theirs', sides.incoming, b.theirs)),
+      resultBox
     )
     body.append(card)
   })
   update()
   async function save() {
-    const out = parts.map((x) => (typeof x === 'string' ? x : (x.choice === 'ours' ? x.ours : x.choice === 'theirs' ? x.theirs : [...x.ours, ...x.theirs]).join(eolStr))).join(eolStr)
+    const out = parts.map((x) => (typeof x === 'string' ? x : x.result.join(eolStr))).join(eolStr)
     try {
       await call('writeWorkFile', { file, text: out, stage: true })
       toast(`${basename(file)} resolved`)
       closeSheet()
-      refreshAll()
+      await refreshAll()
+      nextConflict(file)
     } catch (e) {
       toast(e.message, 'error')
     }
   }
   openSheet(`Resolve ${basename(file)}`, body, [progress, saveBtn])
+  const sheet = state.sheets[state.sheets.length - 1]
+  sheet.el.classList.add('wide-sheet')
+  placeSheet(sheet.el)
+}
+/** After a file is resolved: the next conflicted one, or the conflicts page to commit. */
+function nextConflict(done) {
+  const left = (state.status?.files || []).filter((f) => f.conflict && f.path !== done)
+  if (left.length) return resolveConflict(left[0].path)
+  if (state.status?.state) openConflicts()
 }
 
 /** A pull/merge request's diff; click a line to comment on it. */

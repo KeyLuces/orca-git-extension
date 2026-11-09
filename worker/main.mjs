@@ -126,6 +126,30 @@ async function gitDir(repo) {
   return (await paths(repo)).gitDir
 }
 
+/**
+ * The two sides of a merge, rebase, cherry-pick or revert in progress, by name, so conflicts read as
+ * "Current (main)" and "Incoming (feature-x)". Current is always what HEAD holds (git's "ours").
+ */
+async function stateSides(repo, d, state, branch) {
+  const read = (f) => (existsSync(path.join(d, f)) ? readFileSync(path.join(d, f), 'utf8').trim() : '')
+  const nameOf = async (sha) => (sha ? (await git(repo, ['name-rev', '--name-only', '--no-undefined', '--exclude=refs/stash', sha]).catch(() => '')).trim().replace(/^(remotes\/|tags\/)/, '').replace(/\^0$/, '') || sha.slice(0, 7) : '')
+  const subject = async (sha) => (await git(repo, ['log', '-1', '--format=%s', sha]).catch(() => '')).trim()
+  if (state === 'merge') {
+    const msg = read('MERGE_MSG').split('\n')[0]
+    const m = msg.match(/^Merge (?:remote-tracking )?(branch|tag|commit) '([^']+)'/)
+    return { current: branch || 'HEAD', incoming: m ? m[2] : await nameOf(read('MERGE_HEAD').split('\n')[0]), incomingKind: m ? m[1] : 'commit' }
+  }
+  if (state === 'rebase') {
+    const dir = existsSync(path.join(d, 'rebase-merge')) ? 'rebase-merge' : 'rebase-apply'
+    const head = read(`${dir}/head-name`).replace(/^refs\/heads\//, '')
+    const onto = read(`${dir}/onto`)
+    const stop = read(`${dir}/stopped-sha`) || read('REBASE_HEAD')
+    return { current: await nameOf(onto), incoming: head ? `${head}${stop ? ` @ ${stop.slice(0, 7)}` : ''}` : stop.slice(0, 7), incomingKind: 'commit', incomingSubject: stop ? await subject(stop) : '' }
+  }
+  const pick = read(state === 'cherry-pick' ? 'CHERRY_PICK_HEAD' : 'REVERT_HEAD')
+  return { current: branch || 'HEAD', incoming: pick.slice(0, 7), incomingKind: 'commit', incomingSubject: pick ? await subject(pick) : '' }
+}
+
 async function repoState(repo) {
   const d = await gitDir(repo)
   if (existsSync(path.join(d, 'rebase-merge')) || existsSync(path.join(d, 'rebase-apply')))
@@ -268,7 +292,8 @@ async function status(repo, { untracked = 'all' } = {}) {
   const st = parseStatus(raw)
   const stashCount = +(raw.match(/(?:^|\0)# stash (\d+)/)?.[1] || 0)
   const bisect = existsSync(path.join(d, 'BISECT_LOG'))
-  return { ...st, state, stashCount, toplevel, bisect, refsSig }
+  const sides = state ? await stateSides(repo, d, state, st.branch).catch(() => null) : null
+  return { ...st, state, stashCount, toplevel, bisect, refsSig, sides }
 }
 
 async function diff(repo, { file, staged, untracked, context = 3 }) {
