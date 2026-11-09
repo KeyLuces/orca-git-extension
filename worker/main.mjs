@@ -1,9 +1,13 @@
 // Git Control worker: runs git for the panel. No dependencies, plain Node.
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { constants, existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+
+// For files in the working tree: a cloned repository can commit them as symlinks, and writing through
+// one would overwrite a file outside the repository. O_NOFOLLOW makes the write fail instead.
+const NO_FOLLOW_WRITE = constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | (constants.O_NOFOLLOW ?? 0)
 
 // Orca starts workers with a minimal environment. git (global config, credential helpers) and
 // the Orca CLI need the usual user folders, so fill in whatever is missing.
@@ -898,7 +902,7 @@ async function openGraphTab(repo, { focus = true } = {}) {
     try {
       if (readdirSync(top).includes(old)) rmSync(path.join(top, old), { force: true })
     } catch {}
-  writeFileSync(file, JSON.stringify({ repo: top }) + '\n')
+  writeFileSync(file, JSON.stringify({ repo: top }) + '\n', { flag: NO_FOLLOW_WRITE })
   const r = await runProc(ORCA_BIN, ['file', 'open', file, '--worktree', `path:${top}`, ...(focus ? ['--focus'] : []), '--json'], {
     timeout: 15_000
   })
@@ -2912,7 +2916,7 @@ const ops = {
     if (/[\r\n]/.test(line)) throw new GitError('one pattern per line, please')
     const file = path.join((await paths(r)).toplevel, '.gitignore')
     const cur = existsSync(file) ? readFileSync(file, 'utf8') : ''
-    if (!cur.split(/\r?\n/).includes(line)) writeFileSync(file, cur + (cur && !cur.endsWith('\n') ? '\n' : '') + line + '\n')
+    if (!cur.split(/\r?\n/).includes(line)) writeFileSync(file, cur + (cur && !cur.endsWith('\n') ? '\n' : '') + line + '\n', { flag: NO_FOLLOW_WRITE })
     return ''
   },
 
