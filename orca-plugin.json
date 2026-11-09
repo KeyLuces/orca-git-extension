@@ -4,8 +4,8 @@
   "execution": "trusted-worker",
   "id": "git-control",
   "name": "Git Control",
-  "version": "0.8.4",
-  "description": "A Git client inside Orca: commit graph, commits, branches, stashes and worktrees, plus GitHub and GitLab merge requests and pipelines, with your existing Git login. In a full tab and the right sidebar.",
+  "version": "0.8.5",
+  "description": "A Git client inside Orca, with AI: commit graph, commits, merges with a side-by-side conflict resolver, interactive rebase, stashes and worktrees, plus GitHub and GitLab merge requests (approve and merge) and every branch's pipelines, with your existing Git login. In a full tab and the right sidebar.",
   "license": "MIT",
   "author": {
     "name": "SatangBudsai"
@@ -25,7 +25,7 @@
     {
       "path": "assets/promo/commit.png",
       "alt": "The Commit tab with changed files on the left and a file diff on the right",
-      "caption": "Stage and commit with the diff in view"
+      "caption": "Commit with the diff in view, checked first"
     },
     {
       "path": "assets/promo/merge-request.png",
@@ -43,9 +43,9 @@
       "caption": "Step through a failed pipeline's errors"
     },
     {
-      "path": "assets/promo/commands.png",
-      "alt": "The command palette listing Pull, Pull with rebase and Push",
-      "caption": "Every action by name with Ctrl+K"
+      "path": "assets/promo/pipelines.png",
+      "alt": "The Pipelines tab: every branch's runs with status, commit, trigger, branch or merge request, stages and who started them",
+      "caption": "Every branch's pipelines on one page"
     }
   ],
   "engines": {

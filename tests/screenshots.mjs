@@ -166,12 +166,29 @@ try {
             { id: head.slice(0, 12) + 'b'.repeat(28), title: 'feat(search): price and brand filters', author_name: 'Satang B.', created_at: iso(2 * 86400) }
           ])
       }
-      if (/\/repository\/commits\/[0-9a-f]+$/.test(p)) return send({ last_pipeline: { id: 318, status: 'failed', web_url: 'https://gitlab.example.test/acme/web/-/pipelines/318' } })
-      if (/\/pipelines$/.test(p))
-        return send([
-          { id: 318, status: 'failed', ref: 'feature/search-filters', sha: head, web_url: 'https://gitlab.example.test/acme/web/-/pipelines/318', created_at: iso(5000), updated_at: iso(4600), duration: 412, user: { username: 'satang' } },
-          { id: 311, status: 'success', ref: 'feature/search-filters', sha: head, web_url: 'https://gitlab.example.test/acme/web/-/pipelines/311', created_at: iso(90000), updated_at: iso(89500), duration: 388, user: { username: 'satang' } }
-        ])
+      // the project's recent pipelines: one branch's, or every branch's for the Pipelines tab
+      const PIPES = [
+        { id: 324, status: 'running', ref: 'refs/merge-requests/142/head', sha: 'c52c11e9a8', source: 'merge_request_event', at: 240, who: ['mali', 'Mali K.'], title: 'feat(search): keep the chosen filters in the URL' },
+        { id: 321, status: 'success', ref: 'v1.4.0', tag: true, sha: '024b47e1a2', source: 'push', at: 1500, dur: 346, who: ['satang', 'Satang B.'], title: 'chore(release): 1.4.0' },
+        { id: 318, status: 'failed', ref: 'feature/search-filters', sha: head, source: 'push', at: 5000, dur: 412, who: ['satang', 'Satang B.'], title: 'feat(search): price and brand filters' },
+        { id: 316, status: 'success', ref: 'main', sha: 'fcfb7493b1', source: 'push', at: 9000, dur: 362, who: ['niran', 'Niran P.'], title: 'fix(cart): round the total once, at the end' },
+        { id: 314, status: 'success', ref: 'refs/merge-requests/139/head', sha: '4251660c0d', source: 'merge_request_event', at: 15000, dur: 331, who: ['ploy', 'Ploy S.'], title: 'feat(account): order history page' },
+        { id: 311, status: 'success', ref: 'feature/search-filters', sha: head, source: 'push', at: 90000, dur: 388, who: ['satang', 'Satang B.'], title: 'feat(search): show result counts beside each filter' },
+        { id: 305, status: 'canceled', ref: 'feature/checkout-flow', sha: '2f1080d7e4', source: 'web', at: 170000, dur: 95, who: ['mali', 'Mali K.'], title: 'feat(checkout): card payment with 3-D Secure' }
+      ]
+      const pjson = (x) => ({ id: x.id, status: x.status, ref: x.ref, sha: x.sha, source: x.source, web_url: `https://gitlab.example.test/acme/web/-/pipelines/${x.id}`, created_at: iso(x.at), updated_at: iso(x.at - (x.dur || 0)) })
+      const pc = p.match(/\/repository\/commits\/([0-9a-f]+)$/)
+      if (pc && pc[1] !== head && PIPES.some((x) => x.sha === pc[1])) return send({ title: PIPES.find((x) => x.sha === pc[1]).title })
+      if (/\/repository\/commits\/[0-9a-f]+$/.test(p)) return send({ title: 'feat(search): price and brand filters', last_pipeline: { id: 318, status: 'failed', web_url: 'https://gitlab.example.test/acme/web/-/pipelines/318' } })
+      if (/\/pipelines$/.test(p)) return send(PIPES.filter((x) => !u.search.includes('ref=') || u.search.includes('ref=' + encodeURIComponent(x.ref))).map(pjson))
+      const pd = p.match(/\/pipelines\/(\d+)$/)
+      if (pd) {
+        const x = PIPES.find((y) => y.id === +pd[1]) || PIPES[0]
+        return send({ ...pjson(x), user: { username: x.who[0], name: x.who[1] }, duration: x.dur ?? null, finished_at: x.status === 'running' ? null : iso(x.at - (x.dur || 0)), tag: !!x.tag })
+      }
+      const pj = p.match(/\/pipelines\/(\d+)\/jobs$/)
+      if (pj && +pj[1] === 324) return send([{ id: 9105, name: 'deploy preview', stage: 'deploy', status: 'created' }, { id: 9104, name: 'e2e', stage: 'test', status: 'running' }, { id: 9103, name: 'unit tests', stage: 'test', status: 'success' }, { id: 9101, name: 'build', stage: 'build', status: 'success' }])
+      if (pj && +pj[1] !== 318) return send([{ id: 9205, name: 'deploy', stage: 'deploy', status: +pj[1] === 305 ? 'canceled' : 'success' }, { id: 9203, name: 'unit tests', stage: 'test', status: 'success' }, { id: 9201, name: 'build', stage: 'build', status: 'success' }])
       if (/\/pipelines\/\d+\/jobs$/.test(p))
         return send([
           { id: 9001, name: 'install', stage: 'build', status: 'success', duration: 41, web_url: 'https://x/j/9001' },
@@ -310,14 +327,11 @@ try {
   await shot('new-merge-request')
   await page.keyboard.press('Escape')
 
-  // 6. Ctrl+K: every action by name
-  await sleep(300)
-  await page.keyboard.down('Control')
-  await page.keyboard.press('KeyK')
-  await page.keyboard.up('Control')
-  await until(() => page.$('.palette').then(Boolean), 'palette')
-  await page.keyboard.type('pu')
-  await shot('commands')
+  // 6. the Pipelines tab: every branch's runs on one page
+  await clickText('.tab', 'Pipelines')
+  await until(() => page.$$eval('.pipe-list .pipe-row', (r) => r.length >= 6), 'pipelines tab')
+  await sleep(600)
+  await shot('pipelines')
 } catch (e) {
   console.log('FAILED', e.stack)
   process.exitCode = 1

@@ -36,15 +36,17 @@ straight to a shared main branch is pointed out first. **Ctrl+Z** undoes the las
 ![The Commit tab: changed files on the left, the diff on the right](assets/screenshots/commit.png)
 
 ### Review merge requests
-**Review & MR** has three tabs: **To review** (waiting for you: asked to review or assigned, and not approved
-by you yet), **Opened by me** and **All open**, each with its count. Approve or Merge right from the list, or tick
-several and approve or merge them together; an approved one leaves To review, a merged one leaves the list.
+**Review & MR** has three tabs: **To review** (asked to review or assigned to you), **Opened by me** and **All**;
+the count is what still waits for your approval, and it shows as soon as a project opens. Search, filter by project
+or label, and see new comments since you last looked. Approve or merge right from the list, or tick several and do
+them together. An approved one stays, marked **Approved · waiting merge**; one with conflicts is marked
+**Conflicts**; while its pipeline runs the button reads **Merge when CI passes**. Only a real merge removes it.
 
 Click one to read it like on GitHub or GitLab: the description, reviewers and approvals, the activity with inline
 comments, its commits and changes. Under the description sits the merge box, laid out like GitLab's: the
-pipeline, the approvals with **Approve** (or **Revoke approval**), then **Merge** with *Delete source branch*
-and *Squash commits*, or the reason it cannot be merged yet (and **Set to auto-merge** while the pipeline runs).
-**AI review**, **Comment** and **Request changes** are at the bottom.
+pipeline, the approvals with **Approve** on the right (or **Revoke**), then **Merge now** with *Delete source
+branch* and *Squash commits* (or **Merge when pipeline passes**), or the reason it cannot be merged yet.
+**Explain**, **AI review**, **Comment** and **Request changes** are at the bottom.
 
 ![A merge request's detail page with description, reviewers, approvals and activity](assets/screenshots/merge-request.png)
 
@@ -76,11 +78,17 @@ pipeline without leaving Orca. Works with GitHub Actions and GitLab CI.
 
 ![A failed GitLab job's log with its error lines highlighted](assets/screenshots/pipeline.png)
 
+### Every pipeline on one page
+The **Pipelines** tab lists the latest runs of every branch, laid out like GitLab's: the status with how long it
+took, the commit's message, what started it (push, merge request, schedule, by hand), the branch, tag or merge
+request (as !142), each stage as a dot, and who ran it. Filter by running, failed or passed, or by text; it
+updates by itself while runs go on, and a click opens the run's jobs and logs.
+
+![The Pipelines tab with every branch's runs, their stages and who started them](assets/screenshots/pipelines.png)
+
 ### Work by keyboard
 **Ctrl+K** opens every command by name (fetch, pull, push, stash, new branch, any tab). In the graph,
-↑ ↓ (or j k) move, Enter opens, / searches and Esc closes.
-
-![The command palette filtering to pull and push](assets/screenshots/commands.png)
+↑ ↓ (or j k) move, Enter opens, / searches and Esc closes. **Ctrl+Z** undoes the last action.
 
 ### And also
 - **Fetch, Pull, Push** show how many commits wait (↑ green to push, ↓ amber to pull, red when the branch
