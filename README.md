@@ -50,6 +50,12 @@ description are filled in the way GitLab does it, assignees and reviewers come f
 
 ![The new merge request dialog with assignees and reviewers](assets/screenshots/new-merge-request.png)
 
+### Merge and resolve conflicts
+Right-click any branch or tag label in the graph (or a tag in the sidebar): the first item merges that one into
+your branch. If both sides changed the same lines, the conflicts page names them, **Incoming (their branch)** and
+**Current (your branch)**, and lets you keep one side for all files at once, let **AI resolve all** (or one file),
+or go file by file, conflict by conflict, side by side, with the result editable. Then **Commit merge**.
+
 ### Fix a failing pipeline
 The **CI** badge next to the branch shows the latest pipeline. Click it to see the jobs by stage, open
 the failed one and step straight through its error lines. Retry a job, the failed jobs or the whole

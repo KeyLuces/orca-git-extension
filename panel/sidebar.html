@@ -1411,6 +1411,20 @@ body.compact .img-preview.two, .side-panel .img-preview.two { grid-template-colu
 .res-result-box .res-label { font-size: 11.5px; font-weight: 600; margin-bottom: 6px; }
 .res-result { width: 100%; box-sizing: border-box; font-size: 12px; resize: vertical; }
 
+/* conflicts page: one step for all files, then file by file, then what is done */
+.cf-all { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 10px 12px; border-radius: 10px; background: color-mix(in srgb, var(--fg, #fff) 4%, transparent); border: 1px solid var(--border, rgba(127,127,127,.25)); }
+.cf-all-k { font-weight: 600; margin-right: 4px; }
+.cf-all .cf-cur { border-color: color-mix(in srgb, #2f9e44 55%, transparent); }
+.cf-all .cf-inc { border-color: color-mix(in srgb, #3b6fd8 60%, transparent); }
+.cf-state { font-size: 11.5px; display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.cf-state:empty { display: none; }
+.cf-file.cf-working { background: color-mix(in srgb, #a371f7 10%, transparent); }
+.cf-file.cf-ok { color: var(--add, #3fb950); }
+.cf-file.cf-ok .cf-state { color: var(--add, #3fb950); }
+.cf-file.cf-ai .cf-state { color: #a371f7; }
+.cf-ready { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-radius: 10px; color: var(--add, #3fb950); font-weight: 600; background: color-mix(in srgb, var(--add, #3fb950) 10%, transparent); border: 1px solid color-mix(in srgb, var(--add, #3fb950) 40%, transparent); }
+.res-ai { min-height: 160px; }
+
 </style>
   </head>
   <body class="side-panel">
@@ -1573,7 +1587,7 @@ function pluginUpdated() {
     { class: 'update-bar' },
     icon('refresh', 13),
     h('span', { class: 'grow' }, 'Git Control was updated. Reload this tab to use the new version (approve it in Orca first if it asks).'),
-    h('button', { class: 'btn sm primary', onClick: () => location.reload() }, 'Reload')
+    h('button', { class: 'btn sm primary', onClick: () => location.reload() }, icon('refresh', 12), 'Reload')
   )
   document.body.prepend(bar)
 }
@@ -2270,8 +2284,8 @@ function renderBanner() {
       h(
         'div',
         { class: 'row' },
-        conflicts > 0 && h('button', { class: 'btn sm primary', onClick: openConflicts }, 'Resolve conflicts'),
-        conflicts > 0 && h('button', { class: 'btn sm', onClick: resolveWithAi }, 'Resolve with AI'),
+        conflicts > 0 && h('button', { class: 'btn sm primary', onClick: openConflicts }, icon('edit', 12), 'Resolve conflicts'),
+        conflicts > 0 && h('button', { class: 'btn sm', onClick: resolveWithAi }, icon('wand', 12), 'Resolve with AI'),
         h('button', { class: `btn sm ${conflicts ? '' : 'primary'}`, disabled: conflicts > 0, onClick: () => run('continue', {}, { success: st.state === 'merge' ? 'Merge committed' : 'Continued' }) }, st.state === 'merge' ? 'Commit merge' : 'Continue'),
         st.state !== 'merge' && h('button', { class: 'btn sm', onClick: () => run('skip', {}, { success: 'Skipped' }) }, 'Skip'),
         h(
@@ -2501,7 +2515,7 @@ function emptyRepo() {
     { class: 'empty' },
     icon('worktree', 32),
     h('div', null, 'No repository for this workspace'),
-    h('div', { style: { marginTop: '10px' } }, h('button', { class: 'btn', onClick: (e) => repoMenu(e.currentTarget) }, 'Choose repository'))
+    h('div', { style: { marginTop: '10px' } }, h('button', { class: 'btn', onClick: (e) => repoMenu(e.currentTarget) }, icon('repo', 12), 'Choose repository'))
   )
 }
 
@@ -3110,6 +3124,7 @@ async function viewChanges() {
                 }
               })
           },
+          icon('wand', 12),
           'AI message'
         )
       ),
@@ -3550,7 +3565,7 @@ function loadMoreSentinel() {
       loadingMore = false
     }
   }
-  const btn = h('button', { class: 'btn sm load-more', onClick: more }, 'Load more')
+  const btn = h('button', { class: 'btn sm load-more', onClick: more }, icon('down', 12), 'Load more')
   moreObserver?.disconnect()
   const io = (moreObserver = new IntersectionObserver((ents) => ents.some((e) => e.isIntersecting) && (io.disconnect(), more()), { root: $('#main'), rootMargin: '1500px' }))
   requestAnimationFrame(() => btn.isConnected && io.observe(btn))
@@ -3629,8 +3644,8 @@ async function viewHistory() {
           h(
             'div',
             { class: 'empty-actions' },
-            !H.all && h('button', { class: 'btn sm primary', onClick: () => setAll(true) }, 'Search all branches'),
-            h('button', { class: 'btn sm', onClick: () => ((search.value = ''), runSearch('')) }, 'Clear search')
+            !H.all && h('button', { class: 'btn sm primary', onClick: () => setAll(true) }, icon('search', 12), 'Search all branches'),
+            h('button', { class: 'btn sm', onClick: () => ((search.value = ''), runSearch('')) }, icon('x', 12), 'Clear search')
           ),
         !H.search && h('div', { class: 'empty-actions' }, h('button', { class: 'btn sm primary', onClick: () => setTab('changes') }, icon('commit', 12), 'Make the first commit'))
       )
@@ -4257,7 +4272,7 @@ async function rebaseOnto(ref) {
   if (!(await confirmBox(`Rebase ${cur} onto ${ref}?`, 'Your commits will be replayed on top of it. Avoid this on branches others already pulled.', 'Rebase'))) return
   resetHistory()
   const out = await run('rebase', { onto: ref }, { success: 'Rebased' })
-  if (out === undefined && state.status?.files.some((f) => f.conflict) && (await confirmBox('Rebase hit conflicts', 'Resolve them with AI in a new terminal?', 'Resolve with AI'))) resolveWithAi()
+  if (out === undefined && state.status?.files.some((f) => f.conflict) && true) openConflicts()
 }
 async function newTag(hash) {
   const r = await dialog({
@@ -4578,7 +4593,7 @@ async function viewWorktrees() {
               icon('open', 12),
               'Open in Orca'
             ),
-          !w.current && h('button', { class: 'btn sm', title: 'Show this worktree in the panel without switching Orca', onClick: () => pinRepo(w.path) }, 'View here'),
+          !w.current && h('button', { class: 'btn sm', title: 'Show this worktree in the panel without switching Orca', onClick: () => pinRepo(w.path) }, icon('open', 12), 'View here'),
           h('span', { class: 'grow' }),
           !w.main &&
             iconBtn('more', 'More', (e) =>
@@ -4875,8 +4890,8 @@ async function identityProfiles() {
       h(
         'div',
         { class: 'idp-actions' },
-        state.repo && !isLocal && h('button', { class: 'btn sm', title: 'Commit as this identity in this repository only', onClick: () => apply(p, 'local') }, 'Use for this repo'),
-        !isGlobal && h('button', { class: 'btn sm', title: 'Make this the identity for every repository', onClick: () => apply(p, 'global') }, 'Set global'),
+        state.repo && !isLocal && h('button', { class: 'btn sm', title: 'Commit as this identity in this repository only', onClick: () => apply(p, 'local') }, icon('check', 12), 'Use for this repo'),
+        !isGlobal && h('button', { class: 'btn sm', title: 'Make this the identity for every repository', onClick: () => apply(p, 'global') }, icon('globe', 12), 'Set global'),
         iconBtn('edit', 'Edit profile', () => edit(p)),
         iconBtn('trash', 'Delete profile (Git settings stay as they are)', async () => (await confirmBox(`Delete profile ${p.label || p.name}?`, 'Only the saved profile is removed; your Git settings stay as they are.', 'Delete', true)) && save(list.filter((x) => x.id !== p.id)))
       )
@@ -5420,7 +5435,7 @@ async function interactiveRebase(base) {
             closeSheet()
             resetHistory()
             const out = await run('rebaseInteractive', { base, todo: todo.map(({ hash, action }) => ({ hash, action })) }, { success: 'Rebased' })
-            if (out === undefined && state.status?.files.some((f) => f.conflict) && (await confirmBox('Rebase hit conflicts', 'Resolve them with AI in a new terminal?', 'Resolve with AI'))) resolveWithAi()
+            if (out === undefined && state.status?.files.some((f) => f.conflict) && true) openConflicts()
           }
         },
         'Start rebase'
@@ -6043,10 +6058,11 @@ async function mergeRequestDialog(target, source, swapped) {
                 body.classList.remove('generating')
                 title.readOnly = body.readOnly = false
                 b.disabled = false
-                append(clear(b), ['Write with AI'])
+                append(clear(b), [icon('wand', 12), 'Write with AI'])
               }
             }
           },
+          icon('wand', 12),
           'Write with AI'
         )
       ),
@@ -6749,7 +6765,7 @@ async function reviewDetailSheet(it, tab = 'overview') {
     const rows = []
     if (ci)
       rows.push(
-        rowEl(`ci-${ci}`, ciIcon(ci), h('span', { class: 'grow' }, h('b', null, `Pipeline ${PIPE_LABEL[ci]?.toLowerCase() || ci}`), d.headSha && h('span', { class: 'dim mono' }, ` for ${d.headSha.slice(0, 8)}`)), h('button', { class: 'btn sm', onClick: () => go('pipeline') }, 'View pipeline'))
+        rowEl(`ci-${ci}`, ciIcon(ci), h('span', { class: 'grow' }, h('b', null, `Pipeline ${PIPE_LABEL[ci]?.toLowerCase() || ci}`), d.headSha && h('span', { class: 'dim mono' }, ` for ${d.headSha.slice(0, 8)}`)), h('button', { class: 'btn sm', onClick: () => go('pipeline') }, icon('pipeline', 12), 'View pipeline'))
       )
     const approvedBy = d.reviewers.filter((r) => r.state === 'approved').map((r) => r.name)
     const need = d.approvals.required
@@ -6763,8 +6779,8 @@ async function reviewDetailSheet(it, tab = 'overview') {
       rowEl(
         apOk ? 'ok' : '',
         icon(apOk ? 'check' : 'user', 13),
-        open && d.canApprove && !d.myApproved && h('button', { class: 'btn sm primary mrw-approve', onClick: (e) => act(e.currentTarget, 'approve', null, 'Approving…') }, 'Approve'),
-        open && d.myApproved && d.canUnapprove && h('button', { class: 'btn sm mrw-revoke', onClick: (e) => act(e.currentTarget, 'unapprove', null, 'Revoking…') }, 'Revoke approval'),
+        open && d.canApprove && !d.myApproved && h('button', { class: 'btn sm primary mrw-approve', onClick: (e) => act(e.currentTarget, 'approve', null, 'Approving…') }, icon('check', 12), 'Approve'),
+        open && d.myApproved && d.canUnapprove && h('button', { class: 'btn sm mrw-revoke', onClick: (e) => act(e.currentTarget, 'unapprove', null, 'Revoking…') }, icon('undo', 12), 'Revoke approval'),
         h('span', { class: 'grow' }, ...apText, d.myApproved && h('span', { class: 'mrw-you' }, ' · you approved'))
       )
     )
@@ -6791,7 +6807,7 @@ async function reviewDetailSheet(it, tab = 'overview') {
             ? h('button', { class: 'btn primary mrw-merge-btn', onClick: async (e) => (await confirmBox(`Merge ${mrRef(it)}${target}?`, `${it.title}${squash.checked ? '\nCommits are squashed into one.' : ''}${remove.checked ? `\nThe branch ${d.source} is deleted afterwards.` : ''}`, 'Merge')) && act(e.currentTarget, 'merge', opts(), 'Merging…') }, 'Merge')
             : m.canAuto && !m.autoSet
               ? h('button', { class: 'btn primary mrw-merge-btn', title: 'GitLab merges it as soon as the pipeline passes', onClick: (e) => act(e.currentTarget, 'merge', { ...opts(), auto: true }, 'Setting…') }, 'Set to auto-merge')
-              : !m.autoSet && h('button', { class: 'btn mrw-merge-btn', disabled: true, title: m.reason || '' }, 'Merge')
+              : !m.autoSet && h('button', { class: 'btn mrw-merge-btn', disabled: true, title: m.reason || '' }, icon('merge', 12), 'Merge')
         )
       )
     }
@@ -6829,9 +6845,9 @@ async function reviewDetailSheet(it, tab = 'overview') {
     'div',
     { class: 'mrd-bar' },
     h('span', { class: 'dim grow' }, own ? `Your own ${mrNoun(it)}` : d.state !== 'open' ? `This ${mrNoun(it)} is ${d.state}` : 'Approve and merge are in the box under the description'),
-    h('button', { class: 'btn', onClick: () => aiReviewModal(it) }, 'AI review'),
+    h('button', { class: 'btn', onClick: () => aiReviewModal(it) }, icon('wand', 12), 'AI review'),
     d.state === 'open' && h('button', { class: 'btn', onClick: () => reviewDialog(it, 'comment') }, icon('edit', 12), 'Comment'),
-    d.state === 'open' && !own && h('button', { class: 'btn', onClick: () => reviewDialog(it, 'changes') }, 'Request changes')
+    d.state === 'open' && !own && h('button', { class: 'btn', onClick: () => reviewDialog(it, 'changes') }, icon('x', 12), 'Request changes')
   )
   append(clear(body), [head, tabs, pane, bar])
   go(tab === 'commits' ? 'commits' : 'overview')
@@ -6951,7 +6967,7 @@ async function openPipelines({ branch, sha, openId } = {}) {
           { class: 'pipe-failed' },
           icon('alert', 15),
           h('div', { class: 'grow' }, h('b', null, `${plural(failed.length, 'job')} failed`), h('div', { class: 'dim' }, failed.map((j) => j.name).join(', '))),
-          h('button', { class: 'btn sm primary', onClick: () => showLog(p, failed[0], data) }, 'Show the error')
+          h('button', { class: 'btn sm primary', onClick: () => showLog(p, failed[0], data) }, icon('alert', 12), 'Show the error')
         ),
       h(
         'div',
@@ -7217,51 +7233,150 @@ function conflictSides(block) {
 }
 const sideChip = (kind, name) => h('span', { class: `side-chip ${kind}` }, h('span', { class: 'side-k' }, kind === 'current' ? 'Current' : 'Incoming'), h('span', { class: 'side-n mono', title: name }, name))
 
-/** The conflicts of the operation in progress, in one place: each file, then Commit (or Abort). */
+/** How each file of the operation in progress was resolved (current, incoming, AI, by hand), for the conflicts page. */
+const cfLog = new Map()
+/** The conflicts of the operation in progress, in one place: every file, all at once or one by one, then Commit. */
 function openConflicts() {
   const st = state.status
   if (!st?.state) return toast('Nothing is being merged right now')
   const files = st.files.filter((f) => f.conflict)
   const sides = conflictSides()
+  const opKey = `${st.state}:${sides.incoming}>${sides.current}`
+  if (cfLog.key !== opKey) (cfLog.clear(), (cfLog.key = opKey)) // a new merge starts clean
   const body = h('div', { class: 'cf-hub' })
   const finishLabel = st.state === 'merge' ? 'Commit merge' : 'Continue'
+  let busy = false
+  const reopen = () => {
+    if (state.sheets.includes(sheet)) closeSheet()
+    if (state.status?.state) openConflicts()
+  }
+  /** Keep one side of whole files (several at once): one refresh at the end. */
+  async function takeWhole(paths, side) {
+    if (busy) return
+    busy = true
+    setBusy(1)
+    const name = side === 'ours' ? sides.current : sides.incoming
+    let n = 0
+    try {
+      for (const p of paths) {
+        await call('useSide', { file: p, side })
+        cfLog.set(p, side === 'ours' ? 'current' : 'incoming')
+        n++
+      }
+      toast(`Kept ${name} in ${n} file${n > 1 ? 's' : ''}`)
+    } catch (e) {
+      toast(e.message, 'error')
+    } finally {
+      setBusy(-1)
+      busy = false
+      await refreshAll()
+      reopen()
+    }
+  }
+  /** AI resolves the files one by one; each is saved and staged, then shown as "AI · Review". */
+  async function aiFiles(paths) {
+    if (busy) return
+    busy = true
+    let done = 0
+    const fails = []
+    for (const p of paths) {
+      const row = body.querySelector(`.cf-file[data-path="${CSS.escape(p)}"]`)
+      row?.classList.add('cf-working')
+      const tag = row?.querySelector('.cf-state')
+      if (tag) append(clear(tag), [h('span', { class: 'ai-dots' }, h('i'), h('i'), h('i')), 'AI is resolving…'])
+      try {
+        const r = await request('ai.resolveFile', { repo: state.repo, file: p }, 118000)
+        await call('writeWorkFile', { file: p, text: r.text, stage: true })
+        cfLog.set(p, 'ai')
+        done++
+        row?.classList.replace('cf-working', 'cf-ok')
+        if (tag) append(clear(tag), [icon('check', 11), `Resolved by ${r.agent}`])
+      } catch (e) {
+        fails.push(`${basename(p)}: ${e.message}`)
+        row?.classList.remove('cf-working')
+        if (tag) append(clear(tag), [icon('alert', 11), 'AI could not resolve it'])
+      }
+    }
+    busy = false
+    if (done) toast(`AI resolved ${done} file${done > 1 ? 's' : ''}. Review them before you commit.`, 'ok', 7000)
+    if (fails.length) toast(fails.join('\n'), 'error', 9000)
+    await refreshAll()
+    reopen()
+  }
+  const left = files.map((f) => f.path)
+  const done = [...cfLog.entries()].filter(([p]) => !left.includes(p))
+
   body.append(
     h('div', { class: 'cf-route' }, sideChip('incoming', sides.incoming), icon('right', 14), sideChip('current', sides.current)),
     h(
       'p',
       { class: 'cf-lead' },
       files.length
-        ? `${sides.op} ${sides.incoming} into ${sides.current}. ${files.length} file${files.length > 1 ? 's' : ''} changed on both sides: pick what to keep in each.`
-        : `No conflicts left. ${finishLabel} to finish.`
+        ? `${sides.op} ${sides.incoming} into ${sides.current}. ${files.length} file${files.length > 1 ? 's' : ''} changed on both sides. Keep one side for all of them, let AI do it, or go file by file.`
+        : `Every conflict is resolved. Check the result, then ${finishLabel.toLowerCase()}.`
     )
   )
-  const list = h('div', { class: 'cf-files' })
-  for (const f of files)
-    list.append(
+  // one step for everything
+  if (files.length)
+    body.append(
       h(
         'div',
-        { class: 'cf-file' },
-        icon('alert', 13),
-        h('button', { class: 'link-btn grow ellipsis cf-name', title: `Resolve ${f.path}`, onClick: () => resolveConflict(f.path) }, f.path),
-        h('button', { class: 'btn sm', title: `Keep ${sides.current}'s version of the whole file`, onClick: () => takeWhole(f.path, 'ours') }, 'Accept current'),
-        h('button', { class: 'btn sm', title: `Keep ${sides.incoming}'s version of the whole file`, onClick: () => takeWhole(f.path, 'theirs') }, 'Accept incoming'),
-        h('button', { class: 'btn sm primary', onClick: () => resolveConflict(f.path) }, 'Resolve')
+        { class: 'cf-all' },
+        h('span', { class: 'cf-all-k' }, files.length > 1 ? `All ${files.length} files` : 'This file'),
+        h('button', { class: 'btn sm cf-cur', title: `Keep ${sides.current}'s version wherever they conflict`, onClick: () => takeWhole(left, 'ours') }, icon('left', 12), `Accept all current`),
+        h('button', { class: 'btn sm cf-inc', title: `Keep ${sides.incoming}'s version wherever they conflict`, onClick: () => takeWhole(left, 'theirs') }, `Accept all incoming`, icon('right', 12)),
+        h('span', { class: 'grow' }),
+        h('button', { class: 'btn sm ai-gen', title: 'AI merges both sides of every file; you review before committing', onClick: () => aiFiles(left) }, icon('wand', 13), files.length > 1 ? `AI resolve all ${files.length}` : 'AI resolve')
       )
     )
-  if (files.length) body.append(list)
-  else body.append(h('div', { class: 'empty cf-done' }, icon('check', 28), h('div', null, 'All conflicts resolved')))
-  async function takeWhole(file, side) {
-    await run('useSide', { file, side }, { success: `${basename(file)}: kept ${side === 'ours' ? sides.current : sides.incoming}` })
-    reopen()
+  // file by file
+  if (files.length) {
+    body.append(h('div', { class: 'section-head' }, 'To resolve', h('span', { class: 'count' }, files.length)))
+    const list = h('div', { class: 'cf-files' })
+    for (const f of files)
+      list.append(
+        h(
+          'div',
+          { class: 'cf-file', 'data-path': f.path },
+          icon('alert', 13),
+          h('button', { class: 'link-btn grow ellipsis cf-name', title: `Resolve ${f.path} conflict by conflict`, onClick: () => resolveConflict(f.path) }, f.path),
+          h('span', { class: 'cf-state dim' }),
+          h('button', { class: 'btn sm', title: `Keep ${sides.current}'s version of this file`, onClick: () => takeWhole([f.path], 'ours') }, 'Current'),
+          h('button', { class: 'btn sm', title: `Keep ${sides.incoming}'s version of this file`, onClick: () => takeWhole([f.path], 'theirs') }, 'Incoming'),
+          h('button', { class: 'btn sm', title: 'Let AI merge this file; you review it', onClick: () => aiFiles([f.path]) }, icon('wand', 12), 'AI'),
+          h('button', { class: 'btn sm primary', onClick: () => resolveConflict(f.path) }, icon('edit', 12), 'Resolve')
+        )
+      )
+    body.append(list)
   }
-  const reopen = () => {
-    if (state.sheets.includes(sheet)) closeSheet()
-    if (state.status?.state) openConflicts()
+  // what is done: how, with a look at the result
+  if (done.length) {
+    const how = { current: `Kept current (${sides.current})`, incoming: `Kept incoming (${sides.incoming})`, ai: 'Resolved by AI', manual: 'Resolved by you' }
+    body.append(h('div', { class: 'section-head' }, 'Resolved', h('span', { class: 'count' }, done.length)))
+    const list = h('div', { class: 'cf-files' })
+    for (const [p, kind] of done)
+      list.append(
+        h(
+          'div',
+          { class: `cf-file cf-ok ${kind === 'ai' ? 'cf-ai' : ''}` },
+          icon('check', 13),
+          h('span', { class: 'grow ellipsis mono cf-name' }, p),
+          h('span', { class: 'cf-state' }, how[kind] || 'Resolved'),
+          h('button', { class: 'btn sm', title: 'See the result against your branch', onClick: () => showDiff(`${basename(p)} · result`, () => call('diff', { file: p, staged: true })) }, 'Review')
+        )
+      )
+    body.append(list)
+  }
+  if (!files.length && !done.length) body.append(h('div', { class: 'empty cf-done' }, icon('check', 28), h('div', null, 'All conflicts resolved')))
+  else if (!files.length) body.append(h('div', { class: 'cf-ready' }, icon('check', 16), h('span', null, 'All conflicts resolved'), h('span', { class: 'grow' }), h('button', { class: 'btn primary', onClick: () => finish() }, icon('check', 12), finishLabel)))
+  function finish() {
+    closeSheet()
+    cfLog.clear()
+    run('continue', {}, { success: st.state === 'merge' ? 'Merge committed' : 'Continued' })
   }
   openSheet(`Conflicts · ${sides.incoming} → ${sides.current}`, body, [
-    h('button', { class: 'btn sm danger', onClick: async () => (await confirmBox(`Abort ${st.state}?`, `${sides.current} goes back to how it was before.`, 'Abort', true)) && (closeSheet(), run('abort', {}, { success: 'Aborted' })) }, 'Abort'),
-    files.length > 0 && h('button', { class: 'btn sm', onClick: () => (closeSheet(), resolveWithAi()) }, 'Resolve with AI'),
-    h('button', { class: 'btn sm primary', disabled: files.length > 0, title: files.length ? 'Resolve every file first' : '', onClick: () => (closeSheet(), run('continue', {}, { success: st.state === 'merge' ? 'Merge committed' : 'Continued' })) }, icon('check', 12), finishLabel)
+    h('button', { class: 'btn sm danger', onClick: async () => (await confirmBox(`Abort ${st.state}?`, `${sides.current} goes back to how it was before.`, 'Abort', true)) && (closeSheet(), cfLog.clear(), run('abort', {}, { success: 'Aborted' })) }, 'Abort'),
+    h('button', { class: 'btn sm primary', disabled: files.length > 0, title: files.length ? 'Resolve every file first' : '', onClick: finish }, icon('check', 12), finishLabel)
   ])
   const sheet = state.sheets[state.sheets.length - 1]
   sheet.el.classList.add('wide-sheet')
@@ -7330,7 +7445,8 @@ async function resolveConflict(file) {
       h('span', { class: 'grow' }),
       pos >= 0 && all.length > 1 && h('span', { class: 'dim' }, `File ${pos + 1} of ${all.length}`),
       h('button', { class: 'btn sm', title: `Keep ${sides.current}'s side in every conflict below`, onClick: () => blocks.forEach((b) => b.pick('ours')) }, 'Accept all current'),
-      h('button', { class: 'btn sm', title: `Keep ${sides.incoming}'s side in every conflict below`, onClick: () => blocks.forEach((b) => b.pick('theirs')) }, 'Accept all incoming')
+      h('button', { class: 'btn sm', title: `Keep ${sides.incoming}'s side in every conflict below`, onClick: () => blocks.forEach((b) => b.pick('theirs')) }, 'Accept all incoming'),
+      h('button', { class: 'btn sm ai-gen', title: 'AI merges both sides of this file; you check and edit before saving', onClick: (e) => aiSuggest(e.currentTarget) }, icon('wand', 13), 'AI resolve')
     )
   )
   blocks.forEach((b, n) => {
@@ -7374,10 +7490,39 @@ async function resolveConflict(file) {
     body.append(card)
   })
   update()
+  // AI: the whole file merged by AI, shown for checking and editing; Save writes it
+  let aiText = null
+  const aiArea = h('textarea', { class: 'res-result mono res-ai', spellcheck: 'false' })
+  async function aiSuggest(btn) {
+    btn.disabled = true
+    const t0 = Date.now()
+    const tick = () => append(clear(btn), [h('span', { class: 'ai-dots' }, h('i'), h('i'), h('i')), `AI is resolving… ${Math.floor((Date.now() - t0) / 1000)}s`])
+    tick()
+    const timer = setInterval(tick, 1000)
+    try {
+      const r = await request('ai.resolveFile', { repo: state.repo, file }, 118000)
+      aiText = r.text
+      aiArea.value = r.text
+      aiArea.rows = Math.min(30, Math.max(8, r.text.split('\n').length))
+      body.querySelectorAll('.res-block').forEach((x) => x.remove())
+      body.append(h('div', { class: 'res-block done' }, h('div', { class: 'res-head' }, h('strong', null, `Resolved by ${r.agent}`), h('span', { class: 'dim' }, ' · check it, edit if needed, then save')), h('div', { class: 'res-result-box' }, aiArea)))
+      progress.textContent = 'AI result ready'
+      progress.classList.add('ok')
+      saveBtn.disabled = false
+      btn.remove()
+    } catch (e) {
+      toast(e.message, 'error')
+      btn.disabled = false
+      append(clear(btn), [icon('wand', 13), 'AI resolve'])
+    } finally {
+      clearInterval(timer)
+    }
+  }
   async function save() {
-    const out = parts.map((x) => (typeof x === 'string' ? x : x.result.join(eolStr))).join(eolStr)
+    const out = aiText != null ? aiArea.value : parts.map((x) => (typeof x === 'string' ? x : x.result.join(eolStr))).join(eolStr)
     try {
       await call('writeWorkFile', { file, text: out, stage: true })
+      cfLog.set(file, aiText != null ? 'ai' : 'manual')
       toast(`${basename(file)} resolved`)
       closeSheet()
       await refreshAll()
@@ -7401,7 +7546,7 @@ function nextConflict(done) {
 /** A pull/merge request's diff; click a line to comment on it. */
 async function reviewDiffSheet(it) {
   openSheet(`${it.repo} ${it.provider === 'github' ? '#' : '!'}${it.number} · ${it.title}`, h('div', { class: 'inline-skeleton', style: { margin: '12px' } }, h('span'), h('span'), h('span')), [
-    h('button', { class: 'btn sm', onClick: () => aiReviewModal(it) }, 'AI review'),
+    h('button', { class: 'btn sm', onClick: () => aiReviewModal(it) }, icon('wand', 12), 'AI review'),
     h('button', { class: 'btn sm primary', onClick: () => reviewDialog(it) }, icon('edit', 12), 'Review')
   ])
   const sheet = state.sheets[state.sheets.length - 1]

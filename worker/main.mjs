@@ -1961,6 +1961,35 @@ async function reviewMaterial(it) {
 }
 
 /** Review a pull/merge request with the AI agent: summary, issues with file and line, a verdict. */
+/**
+ * Resolve one conflicted file with AI: it gets the file with its conflict markers and both sides' names
+ * and returns the whole file, merged. Nothing is written here; the panel shows it or saves it.
+ */
+async function aiResolveFile(repo, file, agent) {
+  const a = AI[agent] || AI.claude
+  const full = await workPath(repo, file)
+  const text = readFileSync(full, 'utf8')
+  if (!/^<<<<<<< /m.test(text)) throw new GitError(`${file} has no conflict markers`)
+  if (text.length > 200_000) throw new GitError(`${file} is too large for AI (over 200 KB)`)
+  const st = await status(repo, { untracked: 'normal' }).catch(() => null)
+  const s = st?.sides || {}
+  const prompt = [
+    `Resolve the git merge conflicts in the file below (${file}).`,
+    `"Current" (between <<<<<<< and =======) is ${s.current || 'HEAD'}; "Incoming" (between ======= and >>>>>>>) is ${s.incoming || 'the other side'}.`,
+    'Keep the intent of both sides: combine them when both changes are needed, otherwise keep the one that is clearly right.',
+    'Output ONLY the complete resolved file: no conflict markers, no code fences, no explanations.',
+    `\n${text}`
+  ].join('\n')
+  const r = await runProc(a.bin, a.args, { cwd: repo, input: prompt, timeout: 110_000, shell: a.shell })
+  if (r.code !== 0) throw new GitError(r.code === -1 ? `${a.name} CLI (${a.bin}) was not found on PATH` : r.stderr.trim().split('\n').slice(-3).join('\n') || `${a.name} failed`)
+  let out = r.stdout.replace(/^\s*```[\w-]*\n/, '').replace(/\n```\s*$/, '')
+  if (/^(<<<<<<<|>>>>>>>) /m.test(out)) throw new GitError(`${a.name} left conflict markers in ${file}`)
+  if (!out.trim() && text.trim()) throw new GitError(`${a.name} returned nothing for ${file}`)
+  if (text.endsWith('\n') && !out.endsWith('\n')) out += '\n'
+  if (text.includes('\r\n') && !out.includes('\r\n')) out = out.replace(/\n/g, '\r\n')
+  return { text: out, agent: a.name }
+}
+
 async function aiReview(input, agent) {
   const a = AI[agent] || AI.claude
   const mat = await reviewMaterial(input)
@@ -2898,6 +2927,7 @@ Click to open Git Control`
     )
     return { agent: await agentSetting(), agents: Object.entries(AI).map(([id, v]) => ({ id, name: v.name, available: available[id] })) }
   })
+  orca.panels.handle('ai.resolveFile', async ({ repo, file, agent } = {}) => aiResolveFile(req(repo, 'repo'), req(file, 'file'), AI[agent] ? agent : await agentSetting()))
   orca.panels.handle('ai.resolve', async ({ repo } = {}) => aiResolve(orca, req(repo, 'repo'), await agentSetting()))
   orca.panels.handle('repo.ignoreGraphFiles', async ({ repo } = {}) => ignoreGraphFiles(req(repo, 'repo')).then(() => ({ ok: true })))
   orca.panels.handle('mr.info', async ({ repo, target, source } = {}) => mrInfo(req(repo, 'repo'), target || 'HEAD', source))
