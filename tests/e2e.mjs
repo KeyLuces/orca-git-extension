@@ -780,7 +780,7 @@ await step('Inbox (GitLab, saved Git login): to review, assigned, opened by me, 
   }
   await seg2('To review', 'MR assigned', 'MR mine')
   await seg2('Opened by me', 'MR mine', 'MR assigned')
-  await seg2('All open', 'MR repo')
+  await seg2('All', 'MR repo')
   await seg2('To review', 'MR review')
   // follows the repository's remote: another project's MR shows only with "All repos"
   if (await page.$eval('.reviews', (r) => r.textContent.includes('MR other repo'))) throw new Error('another repo listed by default')
@@ -830,15 +830,15 @@ await step('Review & MR list: approve leaves To review, multi-select merge, real
   await until(() => exists('.reviews .rv-tabs'), 'tabs')
   await page.evaluate(() => [...document.querySelectorAll('.reviews .rv-tabs button')].find((b) => b.textContent.startsWith('To review')).click())
   // MR review (11) was approved on its page: it is no longer waiting for me
-  await until(() => page.$eval('.reviews .rv-list', (r) => !r.textContent.includes('MR review') && r.textContent.includes('MR assigned')).catch(() => false), 'approved MR left To review', 20000)
+  await until(() => page.evaluate(() => [...document.querySelectorAll('.reviews .rv-list .review-row')].some((r) => r.textContent.includes('MR review') && r.textContent.includes('waiting merge')) && document.querySelector('.reviews .rv-list').textContent.includes('MR assigned')), 'approved MR stays in To review, marked waiting merge', 20000)
   api.calls = []
   await page.evaluate(() => [...document.querySelectorAll('.review-row')].find((r) => r.textContent.includes('MR assigned')).querySelector('.rv-approve').click())
   await until(() => api.calls.some((c) => c.method === 'POST' && c.path.endsWith('/merge_requests/12/approve')), 'row approve sent', 20000)
   await until(() => exists('.review-row.rv-done-approve'), 'row shows it was approved')
-  await until(() => page.$eval('.reviews .rv-list', (r) => !r.textContent.includes('MR assigned')).catch(() => false), 'row left To review', 20000)
-  // All open still has them, with "You approved"
-  await page.evaluate(() => [...document.querySelectorAll('.reviews .rv-tabs button')].find((b) => b.textContent.startsWith('All open')).click())
-  await until(() => page.$$eval('.review-row', (rs) => rs.some((r) => r.textContent.includes('MR assigned') && r.textContent.includes('You approved'))), 'All open shows You approved after a real refresh', 20000)
+  await until(() => page.evaluate(() => [...document.querySelectorAll('.reviews .rv-list .review-row')].some((r) => r.textContent.includes('MR assigned') && r.textContent.includes('waiting merge'))), 'row stays, marked waiting merge', 20000)
+  // All has them too, marked waiting merge after a real refresh
+  await page.evaluate(() => [...document.querySelectorAll('.reviews .rv-tabs button')].find((b) => b.textContent.startsWith('All')).click())
+  await until(() => page.evaluate(() => [...document.querySelectorAll('.review-row')].some((r) => r.textContent.includes('MR assigned') && r.textContent.includes('waiting merge'))), 'All shows waiting merge after a real refresh', 20000)
   // select two, merge both
   for (const name of ['MR assigned', 'MR repo'])
     await page.evaluate((n) => [...document.querySelectorAll('.review-row')].find((r) => r.textContent.includes(n)).querySelector('.rv-check').click(), name)
@@ -888,7 +888,22 @@ await step('pipeline (GitLab): CI badge opens the pipeline, its jobs and the fai
   await clickSel('.sheet .sheet-close').catch(() => {})
 })
 
+await step('Pipelines tab: every branch runs in one list, filter, open one', async () => {
+  g('remote', 'set-url', 'origin', 'https://gitlab2.example.test/team/app.git')
+  process.env.GITX_API_BASE = API + '/api/v4'
+  await tab('Pipelines')
+  await until(() => page.$$eval('.pipe-list .pipe-row', (r) => r.some((x) => x.textContent.includes('#100'))), 'pipeline #100 listed', 20000)
+  await page.evaluate(() => [...document.querySelectorAll('.pipes-tab .rv-filter button')].find((b) => b.textContent.startsWith('Failed')).click())
+  await until(() => page.$$eval('.pipe-list .pipe-row', (r) => r.length === 1 && r[0].classList.contains('pr-failed')), 'failed filter')
+  await shot('23-pipelines-tab')
+  await clickText('.pipe-list .pipe-row', '#100')
+  await until(() => page.$$eval('.pipe-job', (j) => j.length > 0), 'opens the pipeline', 20000)
+  await page.keyboard.press('Escape')
+  await clickSel('.sheet .sheet-close').catch(() => {})
+})
+
 await step('pipeline (GitHub): commit menu → Pipeline shows the run, jobs and log', async () => {
+  await tab('Graph')
   g('remote', 'set-url', 'origin', 'https://github.example.test/team/app.git'); g('config', 'gitcontrol.provider', 'github')
   process.env.GITX_API_BASE = API
   await refresh()

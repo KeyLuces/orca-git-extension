@@ -1576,3 +1576,23 @@ body.dragging-ref [data-drop-ref] { outline: 1px dashed color-mix(in srgb, var(-
 .fx-blame .bl { position: relative; }
 .bl-age { width: 4px; align-self: stretch; flex: none; background: color-mix(in srgb, var(--mod) calc(var(--heat, 1) * 100%), color-mix(in srgb, var(--ren) 40%, transparent)); opacity: calc(.25 + var(--heat, 1) * .75); }
 .fx-note { padding: 8px 12px; font-size: 12px; }
+
+/* ---------- v0.8.1 ---------- */
+.pill.rv-waiting { display: inline-flex; align-items: center; gap: 4px; color: var(--mod); background: color-mix(in srgb, var(--mod) 16%, transparent); border: 1px solid color-mix(in srgb, var(--mod) 40%, transparent); font-weight: 600; }
+.pill.rv-running { display: inline-flex; align-items: center; gap: 5px; color: var(--info); background: color-mix(in srgb, var(--info) 14%, transparent); }
+.spinner.sm { width: 10px; height: 10px; border-width: 1.5px; }
+.review-row.rv-done-approve { animation: rv-approved 1.1s ease; }
+@keyframes rv-approved { 0% { background: color-mix(in srgb, var(--add) 28%, transparent); } 60% { background: color-mix(in srgb, var(--mod) 16%, transparent); } 100% { background: transparent; } }
+.review-row.rv-done-approve .rv-result { color: var(--mod); }
+.rv-n.hot-bad { background: color-mix(in srgb, var(--del) 30%, transparent); color: var(--del); }
+/* new merge request: a roomier dialog */
+.dialog.mr-dialog { width: min(880px, calc(100vw - 32px)) !important; max-width: none !important; }
+.mr-dialog textarea { min-height: 220px; }
+/* pipelines tab */
+.pipe-list { display: flex; flex-direction: column; padding: 0 16px 16px; gap: 6px; }
+.pipe-list .pipe-row { display: flex; align-items: center; gap: 12px; width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--card); color: var(--t1); font: inherit; text-align: left; cursor: pointer; }
+.pipe-list .pipe-row:hover { border-color: var(--line-hi); background: var(--card-hi); }
+.pipe-list .pr-failed { border-left: 3px solid var(--del); }
+.pipe-list .pr-running, .pipe-list .pr-pending { border-left: 3px solid var(--info); }
+.pipe-list .pr-passed { border-left: 3px solid var(--add); }
+.pipe-meta { font-size: 11.5px; margin-top: 3px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }

@@ -1240,7 +1240,7 @@ async function forgeCall(w, via, method, apiPath, body, cwd) {
   if (via === 'cli') {
     const bin = w.kind === 'github' ? 'gh' : 'glab'
     const args = ['api', '--hostname', w.host, '-X', method, apiPath.replace(/^\//, '')]
-    if (body) args.push('--input', '-')
+    if (body) args.push('-H', 'Content-Type: application/json', '--input', '-')
     const r = await runProc(bin, args, { cwd, input: body ? JSON.stringify(body) : undefined, timeout: 60_000 })
     if (r.code !== 0) throw new GitError((r.stderr || r.stdout).trim().split('\n').slice(-3).join('\n') || `${bin} api failed`)
     return jsonOf(r)
@@ -1319,12 +1319,14 @@ const pipeId = (v) => {
 }
 
 /** Pipelines for a branch (default: the checked-out one), newest first. */
-async function pipelines(repo, { branch, sha } = {}) {
+async function pipelines(repo, { branch, sha, all } = {}) {
   const { w, via } = await pipeTarget(repo)
-  const b = branch ? req(branch, 'branch') : (await headInfo(repo)).branch
+  // all: every branch's recent runs (the Pipelines tab); otherwise one branch (the current one by default)
+  const b = all ? null : branch ? req(branch, 'branch') : (await headInfo(repo)).branch
+  const n = all ? 50 : 20
   if (w.kind === 'github') {
     const q = sha ? `head_sha=${encodeURIComponent(sha)}` : b ? `branch=${encodeURIComponent(b)}` : ''
-    const r = await forgeCall(w, via, 'GET', `/repos/${w.path}/actions/runs?per_page=20${q ? '&' + q : ''}`, null, repo)
+    const r = await forgeCall(w, via, 'GET', `/repos/${w.path}/actions/runs?per_page=${n}${q ? '&' + q : ''}`, null, repo)
     return {
       kind: 'github',
       host: w.host,
@@ -1347,7 +1349,7 @@ async function pipelines(repo, { branch, sha } = {}) {
   }
   const p = projectPath(w.path)
   const q = sha ? `sha=${encodeURIComponent(sha)}` : b ? `ref=${encodeURIComponent(b)}` : ''
-  const list = await forgeCall(w, via, 'GET', `/projects/${p}/pipelines?per_page=20${q ? '&' + q : ''}`, null, repo)
+  const list = await forgeCall(w, via, 'GET', `/projects/${p}/pipelines?per_page=${n}${q ? '&' + q : ''}`, null, repo)
   return {
     kind: 'gitlab',
     host: w.host,
@@ -1476,6 +1478,10 @@ async function mrCreateApi(repo, info, { title, body, draft, assignees = [], rev
         ...(squash !== undefined ? { squash: !!squash } : {})
       }
     })
+    // read back what GitLab kept: an option it did not take is set again on the new merge request
+    const want = { ...(removeSource !== undefined ? { remove_source_branch: !!removeSource } : {}), ...(squash !== undefined ? { squash: !!squash } : {}) }
+    const differs = (removeSource !== undefined && !!mr.force_remove_source_branch !== !!removeSource) || (squash !== undefined && !!mr.squash !== !!squash)
+    if (differs && mr.iid) await forgeApi(info, 'PUT', `${base}/${mr.iid}`, { cwd: repo, body: want }).catch(() => null)
     return { created: true, url: mr.web_url, number: mr.iid }
   } catch (e) {
     if (e.status !== 409 && !/already exists/i.test(e.message)) throw e
@@ -1822,7 +1828,15 @@ async function reviewMerge(w, via, it) {
   }
   const body = { squash: !!o.squash, should_remove_source_branch: !!o.removeSource }
   if (o.auto) body.merge_when_pipeline_succeeds = true
+  const before = await forgeCall(w, via, 'GET', `/${w.mr}`).catch(() => null)
   const r = await forgeCall(w, via, 'PUT', `/${w.mr}/merge`, body)
+  // "Delete source branch" was asked for and the branch is still there after the merge: delete it
+  const src = before?.source_branch
+  const project = w.mr.split('/merge_requests/')[0]
+  if (o.removeSource && !o.auto && r?.state === 'merged' && src && before?.source_project_id === before?.target_project_id) {
+    const path = `/${project}/repository/branches/${encodeURIComponent(src)}`
+    if (await forgeCall(w, via, 'GET', path).then(Boolean, () => false)) await forgeCall(w, via, 'DELETE', path).catch(() => null)
+  }
   return { ok: true, state: r?.state === 'merged' ? 'merged' : o.auto ? 'auto' : r?.state || 'merged' }
 }
 
@@ -2865,6 +2879,10 @@ const NO_REPO_OK = new Set(['configList', 'configSet', 'configUnset', 'init', 'c
 
 let ORCA = null
 export default function activate(orca) {
+  // Orca accepts only plain JSON answers: a field left undefined (or NaN) made it refuse the whole reply
+  // ("answered with a non-JSON value"). Every handler's answer is made plain JSON on the way out.
+  const handle = orca.panels.handle.bind(orca.panels)
+  orca = { ...orca, panels: { ...orca.panels, handle: (name, fn) => handle(name, async (input) => { const r = await fn(input); return r === undefined ? null : JSON.parse(JSON.stringify(r)) }) } }
   ORCA = orca
   orca.panels.handle('git', async (input) => {
     const { op, repo } = input || {}

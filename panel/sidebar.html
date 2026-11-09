@@ -1585,6 +1585,26 @@ body.dragging-ref [data-drop-ref] { outline: 1px dashed color-mix(in srgb, var(-
 .bl-age { width: 4px; align-self: stretch; flex: none; background: color-mix(in srgb, var(--mod) calc(var(--heat, 1) * 100%), color-mix(in srgb, var(--ren) 40%, transparent)); opacity: calc(.25 + var(--heat, 1) * .75); }
 .fx-note { padding: 8px 12px; font-size: 12px; }
 
+/* ---------- v0.8.1 ---------- */
+.pill.rv-waiting { display: inline-flex; align-items: center; gap: 4px; color: var(--mod); background: color-mix(in srgb, var(--mod) 16%, transparent); border: 1px solid color-mix(in srgb, var(--mod) 40%, transparent); font-weight: 600; }
+.pill.rv-running { display: inline-flex; align-items: center; gap: 5px; color: var(--info); background: color-mix(in srgb, var(--info) 14%, transparent); }
+.spinner.sm { width: 10px; height: 10px; border-width: 1.5px; }
+.review-row.rv-done-approve { animation: rv-approved 1.1s ease; }
+@keyframes rv-approved { 0% { background: color-mix(in srgb, var(--add) 28%, transparent); } 60% { background: color-mix(in srgb, var(--mod) 16%, transparent); } 100% { background: transparent; } }
+.review-row.rv-done-approve .rv-result { color: var(--mod); }
+.rv-n.hot-bad { background: color-mix(in srgb, var(--del) 30%, transparent); color: var(--del); }
+/* new merge request: a roomier dialog */
+.dialog.mr-dialog { width: min(880px, calc(100vw - 32px)) !important; max-width: none !important; }
+.mr-dialog textarea { min-height: 220px; }
+/* pipelines tab */
+.pipe-list { display: flex; flex-direction: column; padding: 0 16px 16px; gap: 6px; }
+.pipe-list .pipe-row { display: flex; align-items: center; gap: 12px; width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--card); color: var(--t1); font: inherit; text-align: left; cursor: pointer; }
+.pipe-list .pipe-row:hover { border-color: var(--line-hi); background: var(--card-hi); }
+.pipe-list .pr-failed { border-left: 3px solid var(--del); }
+.pipe-list .pr-running, .pipe-list .pr-pending { border-left: 3px solid var(--info); }
+.pipe-list .pr-passed { border-left: 3px solid var(--add); }
+.pipe-meta { font-size: 11.5px; margin-top: 3px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+
 </style>
   </head>
   <body class="side-panel">
@@ -1657,6 +1677,7 @@ const ICONS = {
   x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
   down: '<path d="m6 9 6 6 6-6"/>',
   up: '<path d="m18 15-6-6-6 6"/>',
+  pipeline: '<circle cx="5" cy="12" r="2.2"/><circle cx="19" cy="12" r="2.2"/><rect x="9.5" y="9" width="5" height="6" rx="1.2"/><path d="M7.2 12h2.3M14.5 12h2.3"/>',
   left: '<path d="m15 18-6-6 6-6"/>',
   right: '<path d="m9 18 6-6-6-6"/>',
   more: '<circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/>',
@@ -2475,6 +2496,7 @@ const TABS = [
   ['branches', 'Branches', 'branch'],
   ['worktrees', 'Worktrees', 'worktree'],
   ['stash', 'Stash', 'stash'],
+  ['pipelines', 'Pipelines', 'pipeline'],
   ['reflog', 'Reflog', 'undo'],
   ['settings', 'Settings', 'settings']
 ].filter(([id]) => !(IN_TAB && id === 'branches')) // the tab shows branches in its sidebar
@@ -2537,6 +2559,7 @@ async function refreshAll(full = false) {
         state.status = st
         state.refs = refs
         state.loadingRepo = false
+        prefetchReviews()
       } catch (e) {
         if (repo !== state.repo) return
         state.status = null
@@ -2621,7 +2644,7 @@ async function renderView({ force = false } = {}) {
     )
     return
   }
-  const views = { changes: viewChanges, history: viewHistory, branches: viewBranches, worktrees: viewWorktrees, stash: viewStash, reflog: viewReflog, reviews: viewReviews, settings: viewSettings }
+  const views = { changes: viewChanges, history: viewHistory, branches: viewBranches, worktrees: viewWorktrees, stash: viewStash, reflog: viewReflog, reviews: viewReviews, pipelines: viewPipelinesTab, settings: viewSettings }
   if (!views[state.tab]) state.tab = 'history'
   // Nothing on screen yet (first open, no snapshot): show placeholder rows instead of a blank area.
   if (!main.querySelector('.view')) {
@@ -2635,7 +2658,7 @@ async function renderView({ force = false } = {}) {
   try {
     el = await views[state.tab]()
   } catch (e) {
-    el = h('div', { class: 'empty' }, icon('alert', 28), h('div', null, e.message))
+    el = h('div', { class: 'view' }, state.tab === 'history' && searchBox && h('div', { class: 'history-bar' }, h('div', { class: 'graph-search-wrap' }, searchBox, iconBtn('x', 'Clear search', () => ((searchBox.value = ''), (state.history.search = ''), resetHistory(), renderView()), { class: 'icon-btn search-clear' }))), h('div', { class: 'empty' }, icon('alert', 28), h('div', null, e.message)))
   }
   if (seq !== renderSeq) return
   if (lastTabRendered !== state.tab) el.classList.add('view-enter')
@@ -6515,11 +6538,27 @@ function reviewCount() {
 /** Waiting for me: I am asked to review it or it is assigned to me, it is not mine, and I have not approved it yet. */
 const isMine = (it) => it.roles.includes('mine') || (!!it.me && it.author === it.me)
 const needsMe = (it) => (it.roles.includes('review') || it.roles.includes('assigned')) && !isMine(it) && !it.myApproved
+/** Mine to look at: asked to review or assigned, not my own (approved ones stay, marked Waiting merge). */
+const forMe = (it) => (it.roles.includes('review') || it.roles.includes('assigned')) && !isMine(it)
 const RV_TABS = [
-  ['todo', 'To review', needsMe],
+  ['todo', 'To review', forMe],
   ['mine', 'Opened by me', isMine],
-  ['all', 'All open', () => true]
+  ['all', 'All', () => true]
 ]
+const ciBusy = (it) => it.ci === 'running' || it.ci === 'pending'
+/**
+ * The Review & MR count without opening the tab: the last list at once (from this device), then a
+ * fresh one in the background, at most every two minutes per repository.
+ */
+function prefetchReviews() {
+  if (!IN_TAB || !state.repo) return
+  if (!state.reviews || state.reviews.repo !== state.repo) {
+    const cached = store.get('reviewsCache', null)
+    if (cached?.repo === state.repo) (state.reviews = cached), renderTabs()
+  }
+  const fresh = state.reviews?.repo === state.repo && Date.now() - state.reviews.at < 120000
+  if (!fresh && !reviewsLoading) loadReviews(true).catch(() => {})
+}
 async function loadReviews(force) {
   if (!force && state.reviews && state.reviews.repo === state.repo && Date.now() - state.reviews.at < 120000) return state.reviews
   const repo = state.repo
@@ -6577,7 +6616,7 @@ async function viewReviews() {
     'div',
     { class: 'segmented rv-filter rv-tabs' },
     RV_TABS.map(([k, l, fn]) => {
-      const n = scoped.filter(fn).length
+      const n = scoped.filter(k === 'todo' ? needsMe : fn).length
       return h('button', { class: filter === k ? 'on' : '', onClick: () => ((state.reviewFilter = k), state.rvSel.clear(), renderView({ force: true })) }, l, h('span', { class: `rv-n ${k === 'todo' && n ? 'hot' : ''}` }, String(n)))
     })
   )
@@ -6648,7 +6687,7 @@ async function viewReviews() {
   for (const e of data.errors || []) root.append(h('div', { class: 'banner' }, h('div', { class: 'row' }, icon('alert'), h('span', null, e))))
 
   const fn = RV_TABS.find(([k]) => k === filter)[2]
-  const items = scoped.filter(fn)
+  const items = scoped.filter(fn).sort((a, b) => (needsMe(b) ? 1 : 0) - (needsMe(a) ? 1 : 0))
   for (const u of [...state.rvSel]) if (!items.some((it) => it.url === u)) state.rvSel.delete(u)
   const selAll = h('input', { type: 'checkbox', class: 'rv-check', title: 'Select all', 'aria-label': 'Select all' })
   selAll.checked = items.length > 0 && items.every((it) => state.rvSel.has(it.url))
@@ -6664,7 +6703,7 @@ async function viewReviews() {
       'div',
       { class: 'section-head rv-head' },
       items.length > 0 && selAll,
-      { todo: 'Waiting for your review', mine: 'Opened by you', all: 'All open' }[filter],
+      { todo: 'Waiting for you (to review, or approved and waiting merge)', mine: 'Opened by you', all: 'All merge requests' }[filter],
       h('span', { class: 'count' }, items.length)
     )
   )
@@ -6740,8 +6779,8 @@ async function doReviewAction(it, action, options) {
   if (action === 'merge' && !options) {
     const d = await request('reviews.detail', { ...it, ci: undefined }, 90000)
     if (d.state !== 'open') throw new Error(`it is already ${d.state}`)
-    if (!d.merge?.ready) throw new Error(d.merge?.reason || 'it cannot be merged yet')
-    options = { squash: d.merge.squash, removeSource: d.merge.removeSource }
+    if (!d.merge?.ready && !d.merge?.canAuto) throw new Error(d.merge?.reason || 'it cannot be merged yet')
+    options = { squash: d.merge.squash, removeSource: d.merge.removeSource, auto: !d.merge.ready }
   }
   const r = await request('reviews.act', { ...it, ci: undefined, action, options }, 90000)
   // the list changes at once; the real data follows
@@ -6762,9 +6801,9 @@ async function rowDone(row, action, it) {
   row.classList.remove('rv-busy')
   row.classList.add('rv-done', `rv-done-${action}`)
   const badge = row.querySelector('.rv-result')
-  if (badge) append(clear(badge), [icon(action === 'merge' ? 'merge' : 'check', 12), { approve: 'Approved', unapprove: 'Revoked', merge: 'Merged' }[action]])
+  if (badge) append(clear(badge), [icon(action === 'merge' ? 'merge' : 'check', 12), { approve: 'Approved · waiting merge', unapprove: 'Approval revoked', merge: 'Merged' }[action]])
   await new Promise((r) => setTimeout(r, 650))
-  const stays = action !== 'merge' && (state.reviewFilter === 'all' || (state.reviewFilter === 'mine' && isMine(it)))
+  const stays = action !== 'merge'
   if (stays) return
   row.style.height = row.offsetHeight + 'px'
   row.offsetHeight // start the collapse from the current height
@@ -6820,7 +6859,8 @@ function reviewRow(it, { onSelect, filter } = {}) {
         it.roles.includes('mine') && h('span', { class: 'pill role' }, 'Mine'),
         it.ci && h('span', { class: `ci ci-${it.ci}`, title: `CI: ${it.ci}` }, ciIcon(it.ci), it.ci),
         approvals,
-        it.myApproved && h('span', { class: 'pill rv-mine-ok' }, icon('check', 10), 'You approved'),
+        it.myApproved && h('span', { class: 'pill rv-waiting', title: 'You approved it; it is not merged yet' }, icon('check', 10), 'Approved · waiting merge'),
+        ciBusy(it) && h('span', { class: 'pill rv-running', title: 'The pipeline is still running' }, h('span', { class: 'spinner sm' }), 'Pipeline running'),
         (() => {
           const n = rvNewComments(it)
           return n > 0 && h('span', { class: 'pill rv-new', title: 'New since you last opened it' }, `${n} new comment${n > 1 ? 's' : ''}`)
@@ -6840,7 +6880,7 @@ function reviewRow(it, { onSelect, filter } = {}) {
       { class: 'review-actions' },
       h('span', { class: 'rv-result' }),
       !isMine(it) && !it.myApproved && h('button', { class: 'btn sm rv-approve', title: `Approve ${mrRef(it)}`, onClick: act('approve') }, icon('check', 12), 'Approve'),
-      h('button', { class: 'btn sm rv-merge', title: `Merge ${mrRef(it)} (when it can be merged)`, onClick: act('merge') }, icon('merge', 12), 'Merge'),
+      h('button', { class: `btn sm rv-merge ${it.myApproved || isMine(it) ? 'primary' : ''}`, title: ciBusy(it) ? `GitLab merges ${mrRef(it)} as soon as its pipeline passes` : `Merge ${mrRef(it)} now (if it can be merged)`, onClick: act('merge') }, icon('merge', 12), ciBusy(it) ? 'Merge when CI passes' : 'Merge now'),
       h('button', { class: 'icon-btn', title: `Open the ${noun} in the browser`, onClick: (e) => (e.stopPropagation(), open()) }, icon('open', 14)),
       h('span', { class: 'review-chev', 'aria-hidden': 'true' }, icon('right', 14))
     )
@@ -7111,7 +7151,8 @@ async function reviewDetailSheet(it, tab = 'overview') {
       h('span', { class: `mrd-state s-${d.draft && d.state === 'open' ? 'draft' : d.state}` }, stateLabel),
       d.source && h('span', { class: 'mrd-route' }, h('span', { class: 'ref' }, icon('branch', 10), h('span', { class: 'ref-t' }, d.source)), icon('right', 12), h('span', { class: 'ref' }, icon('branch', 10), h('span', { class: 'ref-t' }, d.target))),
       h('span', { class: 'dim' }, `${d.author} · opened ${ago(d.created)} · ${it.repo}`),
-      it.ci && h('button', { class: `ci ci-${it.ci}`, title: 'See the pipeline', onClick: () => go('pipeline') }, ciIcon(it.ci), `CI ${it.ci}`)
+      it.ci && h('button', { class: `ci ci-${it.ci}`, title: 'See the pipeline', onClick: () => go('pipeline') }, ciBusy(it) ? h('span', { class: 'spinner sm' }) : ciIcon(it.ci), `CI ${it.ci}`),
+      d.state === 'open' && d.myApproved && h('span', { class: 'pill rv-waiting' }, icon('check', 10), 'Approved · waiting merge')
     )
   )
   const counts = { commits: d.commits.length, changes: d.stats.files }
@@ -7222,7 +7263,7 @@ async function reviewDetailSheet(it, tab = 'overview') {
     const rows = []
     if (ci)
       rows.push(
-        rowEl(`ci-${ci}`, ciIcon(ci), h('span', { class: 'grow' }, h('b', null, `Pipeline ${PIPE_LABEL[ci]?.toLowerCase() || ci}`), d.headSha && h('span', { class: 'dim mono' }, ` for ${d.headSha.slice(0, 8)}`)), h('button', { class: 'btn sm', onClick: () => go('pipeline') }, icon('pipeline', 12), 'View pipeline'))
+        rowEl(`ci-${ci}`, ci === 'running' || ci === 'pending' ? h('span', { class: 'spinner sm' }) : ciIcon(ci), h('span', { class: 'grow' }, h('b', null, `Pipeline ${PIPE_LABEL[ci]?.toLowerCase() || ci}`), d.headSha && h('span', { class: 'dim mono' }, ` for ${d.headSha.slice(0, 8)}`)), h('button', { class: 'btn sm', onClick: () => go('pipeline') }, icon('pipeline', 12), 'View pipeline'))
       )
     const approvedBy = d.reviewers.filter((r) => r.state === 'approved').map((r) => r.name)
     const need = d.approvals.required
@@ -7236,9 +7277,10 @@ async function reviewDetailSheet(it, tab = 'overview') {
       rowEl(
         apOk ? 'ok' : '',
         icon(apOk ? 'check' : 'user', 13),
+        h('span', { class: 'grow' }, ...apText, d.myApproved && h('span', { class: 'mrw-you' }, ' · you approved')),
         open && d.canApprove && !d.myApproved && h('button', { class: 'btn sm primary mrw-approve', onClick: (e) => act(e.currentTarget, 'approve', null, 'Approving…') }, icon('check', 12), 'Approve'),
-        open && d.myApproved && d.canUnapprove && h('button', { class: 'btn sm mrw-revoke', onClick: (e) => act(e.currentTarget, 'unapprove', null, 'Revoking…') }, icon('undo', 12), 'Revoke approval'),
-        h('span', { class: 'grow' }, ...apText, d.myApproved && h('span', { class: 'mrw-you' }, ' · you approved'))
+        open && d.myApproved && h('span', { class: 'pill rv-waiting' }, icon('check', 10), 'Approved'),
+        open && d.myApproved && d.canUnapprove && h('button', { class: 'btn sm mrw-revoke', title: 'Take back your approval', onClick: (e) => act(e.currentTarget, 'unapprove', null, 'Revoking…') }, 'Revoke')
       )
     )
     if (!open) rows.push(rowEl(d.state === 'merged' ? 'merged' : '', icon(d.state === 'merged' ? 'merge' : 'x', 13), h('span', { class: 'grow' }, h('b', null, d.state === 'merged' ? 'Merged' : 'Closed'))))
@@ -7261,9 +7303,9 @@ async function reviewDetailSheet(it, tab = 'overview') {
             can && h('div', { class: 'mrw-opts' }, h('label', { class: 'check' }, remove, 'Delete source branch'), h('label', { class: 'check' }, squash, 'Squash commits'))
           ),
           m.ready
-            ? h('button', { class: 'btn primary mrw-merge-btn', onClick: async (e) => (await confirmBox(`Merge ${mrRef(it)}${target}?`, `${it.title}${squash.checked ? '\nCommits are squashed into one.' : ''}${remove.checked ? `\nThe branch ${d.source} is deleted afterwards.` : ''}`, 'Merge')) && act(e.currentTarget, 'merge', opts(), 'Merging…') }, 'Merge')
+            ? h('button', { class: 'btn primary mrw-merge-btn', onClick: async (e) => (await confirmBox(`Merge ${mrRef(it)}${target} now?`, `${it.title}${squash.checked ? '\nCommits are squashed into one.' : ''}${remove.checked ? `\nThe branch ${d.source} is deleted afterwards.` : ''}`, 'Merge')) && act(e.currentTarget, 'merge', opts(), 'Merging…') }, icon('merge', 12), 'Merge now')
             : m.canAuto && !m.autoSet
-              ? h('button', { class: 'btn primary mrw-merge-btn', title: 'GitLab merges it as soon as the pipeline passes', onClick: (e) => act(e.currentTarget, 'merge', { ...opts(), auto: true }, 'Setting…') }, 'Set to auto-merge')
+              ? h('button', { class: 'btn primary mrw-merge-btn', title: 'GitLab merges it as soon as the pipeline passes', onClick: (e) => act(e.currentTarget, 'merge', { ...opts(), auto: true }, 'Setting…') }, h('span', { class: 'spinner sm' }), 'Merge when pipeline passes')
               : !m.autoSet && h('button', { class: 'btn mrw-merge-btn', disabled: true, title: m.reason || '' }, icon('merge', 12), 'Merge')
         )
       )
@@ -7322,6 +7364,66 @@ const ciIcon = (st) => icon(st === 'passed' ? 'check' : st === 'failed' ? 'x' : 
 const PIPE_LABEL = { passed: 'Passed', failed: 'Failed', running: 'Running', pending: 'Pending', canceled: 'Canceled', manual: 'Manual' }
 const dur = (s) => (s == null ? '' : s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`)
 const pipeBadge = (st) => h('span', { class: `ci ci-${st} pipe-state` }, ciIcon(st), PIPE_LABEL[st] || st)
+
+/* =========================================================================
+   Pipelines tab: the latest runs of every branch in one place
+   ========================================================================= */
+let pipesTimer = null
+async function viewPipelinesTab() {
+  clearTimeout(pipesTimer)
+  const root = h('div', { class: 'view pipes-tab' })
+  let data
+  try {
+    data = await call('pipelines', { all: true })
+  } catch (e) {
+    root.append(h('div', { class: 'empty' }, icon('pipeline', 28), h('div', null, e.message), h('div', { class: 'dim' }, 'Pipelines show for repositories on GitHub or GitLab that your Git login can reach.')))
+    return root
+  }
+  const f = (state.pipeFilter ||= { state: 'all', text: '' })
+  const counts = { all: data.items.length, running: 0, failed: 0, passed: 0 }
+  for (const p of data.items) {
+    if (p.state === 'running' || p.state === 'pending') counts.running++
+    else if (p.state === 'failed') counts.failed++
+    else if (p.state === 'passed') counts.passed++
+  }
+  const chips = h(
+    'div',
+    { class: 'segmented rv-filter' },
+    [
+      ['all', 'All'],
+      ['running', 'Running'],
+      ['failed', 'Failed'],
+      ['passed', 'Passed']
+    ].map(([k, l]) => h('button', { class: f.state === k ? 'on' : '', onClick: () => ((f.state = k), renderView({ force: true })) }, l, h('span', { class: `rv-n ${k === 'failed' && counts.failed ? 'hot-bad' : k === 'running' && counts.running ? 'hot' : ''}` }, String(counts[k]))))
+  )
+  const search = h('input', { type: 'text', class: 'rv-search', placeholder: 'Filter by branch, title or who started it…', value: f.text, onInput: (e) => ((f.text = e.target.value), draw()) })
+  root.append(
+    h('div', { class: 'history-bar' }, chips, h('span', { class: 'grow' }), h('span', { class: 'dim', style: { fontSize: '11.5px' } }, `${data.kind === 'github' ? 'GitHub Actions' : 'GitLab CI'} · ${data.host}`), h('button', { class: 'btn sm', onClick: () => openLink(data.web) }, icon('open', 12), 'Open in browser'), h('button', { class: 'btn sm', onClick: () => renderView({ force: true }) }, icon('refresh', 12), 'Refresh')),
+    h('div', { class: 'rv-filters' }, h('div', { class: 'rv-search-wrap' }, icon('search', 12), search))
+  )
+  const list = h('div', { class: 'pipe-list' })
+  root.append(list)
+  function draw() {
+    const words = f.text.toLowerCase().split(/\s+/).filter(Boolean)
+    const items = data.items.filter((p) => (f.state === 'all' || (f.state === 'running' ? p.state === 'running' || p.state === 'pending' : p.state === f.state)) && words.every((w) => `${p.branch} ${p.title} ${p.name} ${p.by} ${p.sha}`.toLowerCase().includes(w)))
+    clear(list)
+    if (!items.length) return list.append(h('div', { class: 'empty' }, icon('check', 28), h('div', null, data.items.length ? 'Nothing matches' : 'No pipelines yet')))
+    for (const p of items)
+      list.append(
+        h(
+          'button',
+          { class: `pipe-row pr-${p.state}`, onClick: () => openPipelines({ branch: p.branch, openId: p.id }) },
+          pipeBadge(p.state),
+          h('div', { class: 'grow', style: { minWidth: 0 } }, h('div', { class: 'ellipsis' }, h('b', null, p.name), p.title && h('span', { class: 'dim' }, ` · ${p.title}`)), h('div', { class: 'dim pipe-meta' }, h('span', { class: 'ref' }, icon('branch', 10), h('span', { class: 'ref-t' }, p.branch || '?')), ` ${(p.sha || '').slice(0, 7)} · ${p.by || ''} · ${ago(p.at)}${p.duration != null ? ` · ${dur(p.duration)}` : ''}`)),
+          icon('right', 14)
+        )
+      )
+  }
+  draw()
+  // runs still going: look again shortly while the tab is open
+  if (counts.running) pipesTimer = setTimeout(() => state.tab === 'pipelines' && !document.querySelector('.overlay, .sheet') && renderView({ force: true }), 15000)
+  return root
+}
 
 /** Open the pipeline sheet: the list for the branch, or straight into one pipeline. */
 async function openPipelines({ branch, sha, openId } = {}) {
