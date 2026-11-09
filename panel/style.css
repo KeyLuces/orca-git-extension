@@ -1596,3 +1596,8 @@ body.dragging-ref [data-drop-ref] { outline: 1px dashed color-mix(in srgb, var(-
 .pipe-list .pr-running, .pipe-list .pr-pending { border-left: 3px solid var(--info); }
 .pipe-list .pr-passed { border-left: 3px solid var(--add); }
 .pipe-meta { font-size: 11.5px; margin-top: 3px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+
+/* tabs: an icon before each name */
+nav.tabs .tab { display: inline-flex; align-items: center; gap: 6px; }
+nav.tabs .tab > svg { flex: none; opacity: .7; }
+nav.tabs .tab.active > svg { opacity: 1; color: var(--ren); }

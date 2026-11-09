@@ -865,23 +865,23 @@ function renderBanner() {
    tabs
    ========================================================================= */
 const TABS = [
-  ['history', IN_TAB ? 'Graph' : 'History', 'history'],
-  ['changes', IN_TAB ? 'Commit' : 'Changes', 'file'],
-  ['reviews', 'Review & MR', 'merge'],
+  ['history', IN_TAB ? 'Graph' : 'History', 'layers'],
+  ['changes', IN_TAB ? 'Commit' : 'Changes', 'commit'],
+  ['reviews', 'Review & MR', 'pr'],
+  ['pipelines', 'Pipelines', 'pipeline'],
   ['branches', 'Branches', 'branch'],
   ['worktrees', 'Worktrees', 'worktree'],
   ['stash', 'Stash', 'stash'],
-  ['pipelines', 'Pipelines', 'pipeline'],
-  ['reflog', 'Reflog', 'undo'],
+  ['reflog', 'Reflog', 'history'],
   ['settings', 'Settings', 'settings']
 ].filter(([id]) => !(IN_TAB && id === 'branches')) // the tab shows branches in its sidebar
 function renderTabs() {
   const nav = clear($('#tabs'))
   const st = state.status
-  for (const [id, label] of TABS) {
+  for (const [id, label, ic] of TABS) {
     const count = id === 'changes' ? st?.files.length : id === 'stash' ? st?.stashCount : id === 'reviews' ? reviewCount() : 0
     nav.append(
-      h('button', { class: `tab ${state.tab === id ? 'active' : ''}`, onClick: () => setTab(id) }, label, count ? h('span', { class: `badge tb-${id}` }, count) : null)
+      h('button', { class: `tab ${state.tab === id ? 'active' : ''}`, onClick: () => setTab(id) }, icon(ic, 13), label, count ? h('span', { class: `badge tb-${id}` }, count) : null)
     )
   }
   // on a narrow screen the tabs scroll: keep the chosen one in view
