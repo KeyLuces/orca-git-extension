@@ -1154,6 +1154,107 @@ await step('command log lists the git commands that ran', async () => {
   await clickSel('.sheet .sheet-close').catch(() => page.keyboard.press('Escape'))
 })
 
+await step('before committing: a secret-looking file and token are flagged; Go back keeps it uncommitted', async () => {
+  g('switch', '-q', 'main')
+  write('.env', 'API_TOKEN=ghp_' + 'a'.repeat(36) + '\n')
+  g('add', '.env')
+  await refresh()
+  await tab('Commit')
+  await until(() => page.evaluate(() => (document.querySelector('.view')?.textContent || '').includes('.env')), '.env listed as staged')
+  await new Promise((r) => setTimeout(r, 300))
+  await fill('.commit-box textarea', 'add env')
+  const before = g('rev-parse', 'HEAD')
+  await clickSel('.commit-box .split .btn:first-child')
+  await until(() => exists('.precommit'), 'second-look dialog').catch(async (e) => { throw new Error(e.message + ' | overlay=' + (await exists('.overlay')) + ' | head=' + (g('rev-parse', 'HEAD') !== before) + ' | errors=' + consoleErrors.slice(-3).join(' / ')) })
+  const t = await page.$eval('.precommit', (d) => d.textContent)
+  if (!/\.env looks like a secrets file/.test(t) || !/GitHub token/.test(t)) throw new Error('warnings: ' + t)
+  await shot('18-precommit')
+  await clickText('.precommit .btn', 'Go back')
+  await new Promise((r) => setTimeout(r, 500))
+  if (g('rev-parse', 'HEAD') !== before) throw new Error('committed after Go back')
+  g('reset', '-q', '--', '.env')
+  rmSync(path.join(repo, '.env'))
+  await refresh()
+})
+
+await step('AI explains a commit in plain words', async () => {
+  fakes['ai.explain'] = async () => ({ text: '## What changed\n- Adds **b**\n\n## Why\nTesting.\n\n## Watch out\nNothing special.', agent: 'Claude Code' })
+  await tab('Graph')
+  await until(() => exists('.commit-row'), 'graph rows')
+  await clickSel('.commit-row')
+  await until(() => page.$$eval('.btn', (b) => b.some((x) => x.textContent.trim() === 'Explain')), 'Explain button')
+  await clickText('.btn', 'Explain')
+  await until(() => page.$eval('.explain', (x) => x.textContent.includes('What changed') && x.querySelector('strong')?.textContent === 'b').catch(() => false), 'explanation shown')
+  await shot('19-explain')
+  delete fakes['ai.explain']
+  await page.keyboard.press('Escape')
+  await clickSel('.sheet .sheet-close').catch(() => {})
+})
+
+await step('drag a branch onto the current one offers Merge; onto another, Rebase', async () => {
+  g('switch', '-q', 'main')
+  g('branch', '-f', 'dnd-x', 'HEAD~1')
+  await refresh()
+  await until(() => page.evaluate(() => [...document.querySelectorAll('[data-drag-ref]')].some((x) => x.dataset.dragRef === 'dnd-x')), 'dnd-x shown', 15000)
+  const drop = (from, to) =>
+    page.evaluate(
+      (f, t) => {
+        const s = [...document.querySelectorAll('[data-drag-ref]')].find((x) => x.dataset.dragRef === f)
+        const d = [...document.querySelectorAll('[data-drop-ref]')].find((x) => x.dataset.dropRef === t)
+        if (!s || !d) return `missing ${!s ? f : t}`
+        const dt = new DataTransfer()
+        const r = d.getBoundingClientRect()
+        const opt = { bubbles: true, cancelable: true, dataTransfer: dt, clientX: r.left + 10, clientY: r.top + 5 }
+        s.dispatchEvent(new DragEvent('dragstart', opt))
+        d.dispatchEvent(new DragEvent('dragover', opt))
+        d.dispatchEvent(new DragEvent('drop', opt))
+        s.dispatchEvent(new DragEvent('dragend', opt))
+        return 'ok'
+      },
+      from,
+      to
+    )
+  const r1 = await drop('dnd-x', 'main')
+  if (r1 !== 'ok') throw new Error(r1)
+  await until(() => page.$$eval('.menu button', (b) => b.some((x) => x.textContent.includes('Merge dnd-x → main'))), 'Merge offered')
+  await shot('20-drag-merge')
+  await page.keyboard.press('Escape')
+  const r2 = await drop('main', 'dnd-x')
+  if (r2 !== 'ok') throw new Error(r2)
+  await until(() => page.$$eval('.menu button', (b) => b.some((x) => x.textContent.includes('Rebase main onto dnd-x'))), 'Rebase offered')
+  await page.keyboard.press('Escape')
+  g('branch', '-D', 'dnd-x')
+})
+
+await step('Ctrl+Z asks to undo the last action', async () => {
+  write('undo2.txt', 'u\n'); g('add', '.'); g('commit', '-qm', 'Commit for Ctrl+Z')
+  await refresh()
+  await tab('Graph')
+  await page.evaluate(() => document.activeElement?.blur())
+  await page.keyboard.down('Control'); await page.keyboard.press('KeyZ'); await page.keyboard.up('Control')
+  await dialogOpen()
+  const t = await page.$eval('.overlay .dialog', (d) => d.textContent)
+  if (!/undo/i.test(t)) throw new Error('undo dialog: ' + t.slice(0, 120))
+  await page.keyboard.press('Escape')
+})
+
+await step('one page per file: its history with the diff, and who wrote each line', async () => {
+  write('b.txt', readFileSync(path.join(repo, 'b.txt'), 'utf8') + 'more\n')
+  await refresh()
+  await tab('Commit')
+  await clickInRow('.item', 'b.txt', 'More')
+  await clickText('.menu button', 'File history')
+  await until(() => page.$$eval('.fx-row', (r) => r.length > 0), 'history rows')
+  await until(() => exists('.fx-diff .dv, .fx-diff .dv-file, .fx-diff-head'), 'diff of the newest change')
+  await shot('21-file-history')
+  await clickText('.fx-tabs .mrd-tab', 'Who wrote each line')
+  await until(() => page.$$eval('.fx-blame .bl', (r) => r.length > 0), 'blame lines')
+  await shot('22-file-blame')
+  await clickSel('.sheet .sheet-close').catch(() => page.keyboard.press('Escape'))
+  g('checkout', '--', 'b.txt')
+  await refresh()
+})
+
 await step('identity profiles: save once, use for this repo or set global with one click', async () => {
   await tab('Settings')
   await until(() => exists('.idp-section'), 'profiles section')

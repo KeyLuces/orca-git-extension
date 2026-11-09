@@ -1642,6 +1642,7 @@ async function viewChanges() {
       if (!(await confirmBox('Nothing staged', 'Stage all changes and commit them?', 'Stage all & commit'))) return
       await call('stageAll').catch((e) => toast(e.message, 'error'))
     }
+    if (!state.amend && !(await preCommitCheck())) return
     const out = await run('commit', args, { success: extra.push || !state.amend ? undefined : 'Amended', quiet: true })
     // forgot a file or a typo? one click puts the last commit back in the box to amend
     if (out !== undefined && !extra.push && !state.amend) toast('Committed', 'ok', 8000, { label: 'Amend', run: () => ((state.amend = true), call('lastMessage').then((m) => ((state.commitDraft = m || ''), setTab('changes'), renderView({ force: true })), () => setTab('changes'))) })
@@ -1948,7 +1949,11 @@ function refPills(refs, lane) {
     }
     return el
   }
-  const pill = (cls, iconName, text, title) => lanePill(h('span', { class: `ref ${cls}`, title, 'data-ref': iconName === 'stash' ? null : text, 'data-kind': cls.includes('tag') ? 'tag' : cls.includes('remote') ? 'remote' : 'branch' }, icon(iconName, 10), h('span', { class: 'ref-t' }, text)))
+  const pill = (cls, iconName, text, title) => {
+    const kind = cls.includes('tag') ? 'tag' : cls.includes('remote') ? 'remote' : 'branch'
+    const ok = iconName !== 'stash'
+    return lanePill(h('span', { class: `ref ${cls}`, title, 'data-ref': ok ? text : null, 'data-kind': kind, draggable: ok ? 'true' : null, 'data-drag-ref': ok ? text : null, 'data-drag-kind': ok ? kind : null, 'data-drop-ref': ok && kind !== 'tag' ? text : null, 'data-drop-kind': ok ? kind : null }, icon(iconName, 10), h('span', { class: 'ref-t' }, text)))
+  }
   const isRemote = (r) => r.includes('/') && !r.startsWith('tag: ') && !state.localNames?.has(r)
   const remoteName = (r) => r.slice(0, r.indexOf('/'))
   const branchOf = (r) => r.slice(r.indexOf('/') + 1)
@@ -2398,6 +2403,7 @@ function commitBody(c, { inline = false } = {}) {
         { class: 'actions-wrap' },
         h('button', { class: 'btn sm', onClick: () => checkoutCommit(c.hash) }, icon('commit', 12), 'Checkout'),
         h('button', { class: 'btn sm', onClick: () => newBranch(c.hash) }, icon('branch', 12), 'Branch'),
+        h('button', { class: 'btn sm ai-gen', title: 'AI explains what this commit changes and why', onClick: () => explainSheet({ hash: c.hash, subject: (c.message || '').split('\n')[0] }) }, icon('wand', 12), 'Explain'),
         // a branch of this commit that is not the one you are on: merge it in one click
         (() => {
           const cur = state.status?.branch
@@ -2917,7 +2923,7 @@ function localBranchRow(b) {
   const b0 = b
   return h(
     'div',
-    { class: `item ${b.current ? 'current' : ''}`, title: `${b.name}${b.upstream ? ` → ${b.upstream}` : ''}\n${b.subject}`, onDblclick: () => !b.current && checkout(b.name) },
+    { class: `item ${b.current ? 'current' : ''}`, draggable: 'true', 'data-drag-ref': b.name, 'data-drag-kind': 'branch', 'data-drop-ref': b.name, 'data-drop-kind': 'branch', title: `${b.name}${b.upstream ? ` → ${b.upstream}` : ''}\n${b.subject}\nDrag onto another branch to merge or rebase`, onDblclick: () => !b.current && checkout(b.name) },
     b.current ? icon('check', 13) : icon('branch', 13),
     h('span', { class: 'grow ellipsis' }, b.name),
     h('span', { class: 'meta-right row' }, trackInfo(b), h('span', { class: 'dim', style: { fontSize: '11px' } }, ago(b.date))),
@@ -2959,7 +2965,7 @@ function remoteBranchRow(b, local) {
   const curNow = () => state.status?.branch // read when the menu opens, not when the row was drawn
   return h(
     'div',
-    { class: 'item', title: `${b.name}\n${b.subject}` },
+    { class: 'item', draggable: 'true', 'data-drag-ref': b.name, 'data-drag-kind': 'remote', 'data-drop-ref': b.name, 'data-drop-kind': 'remote', title: `${b.name}\n${b.subject}` },
     icon('globe', 13),
     h('span', { class: 'grow ellipsis' }, b.name),
     h('span', { class: 'meta-right dim', style: { fontSize: '11px' } }, ago(b.date)),
@@ -2995,7 +3001,7 @@ function remoteBranchRow(b, local) {
 function tagRow(t) {
   return h(
     'div',
-    { class: 'item', title: `${t.name}\n${t.subject}` },
+    { class: 'item', draggable: 'true', 'data-drag-ref': t.name, 'data-drag-kind': 'tag', title: `${t.name}\n${t.subject}` },
     icon('tag', 13),
     h('span', { class: 'grow ellipsis' }, t.name),
     h('span', { class: 'meta-right dim mono' }, t.hash),
@@ -3737,30 +3743,190 @@ async function sheetWith(title, loader) {
   }
 }
 
-function fileHistory(file) {
-  return sheetWith(`History · ${basename(file)}`, async () => commitList(await call('log', { file, limit: 300 }), { graph: false }))
+/* ---------- 1. a second look before committing ---------- */
+/** true to go on with the commit; asks first when something staged looks risky. */
+async function preCommitCheck() {
+  let r
+  try {
+    r = await call('commitCheck')
+  } catch {
+    return true
+  }
+  const skipMain = store.get('noMainWarn', {})[state.repo]
+  const ws = r.warnings.filter((w) => !(w.kind === 'branch' && skipMain))
+  if (!ws.length) return true
+  return new Promise((resolve) => {
+    const quiet = h('input', { type: 'checkbox' })
+    const done = (ok) => {
+      overlay.remove()
+      document.removeEventListener('keydown', onKey)
+      if (ok && quiet.checked) store.set('noMainWarn', { ...store.get('noMainWarn', {}), [state.repo]: true })
+      resolve(ok)
+    }
+    const onKey = (e) => isTopOverlay(overlay) && e.key === 'Escape' && done(false)
+    const ic = { secret: 'alert', big: 'file', branch: 'branch' }
+    const box = h(
+      'div',
+      { class: 'dialog choice-dialog precommit', role: 'dialog' },
+      h('h3', null, 'Before you commit'),
+      h('p', { class: 'dim' }, 'A few things are worth a second look. Nothing is committed until you choose.'),
+      h('div', { class: 'pc-list' }, ws.map((w) => h('div', { class: `pc-item k-${w.kind}` }, icon(ic[w.kind] || 'alert', 13), h('span', null, w.text)))),
+      ws.some((w) => w.kind === 'secret') && h('p', { class: 'pc-hint' }, 'Secrets in history are hard to remove and stay readable by everyone with the repository. Unstage the file, or move the value to an ignored .env file.'),
+      ws.some((w) => w.kind === 'branch') && h('label', { class: 'check' }, quiet, `Don't ask about ${r.branch} again in this repository`),
+      h('div', { class: 'buttons' }, h('button', { class: 'btn', onClick: () => done(false) }, 'Go back'), h('span', { class: 'grow' }), h('button', { class: `btn ${ws.some((w) => w.kind === 'secret') ? 'danger' : 'primary'}`, onClick: () => done(true) }, 'Commit anyway'))
+    )
+    const overlay = h('div', { class: 'overlay', onMousedown: (e) => e.target === overlay && done(false) }, box)
+    mountOverlay(overlay, () => done(false))
+    document.addEventListener('keydown', onKey)
+  })
 }
 
-function blameSheet(file, rev) {
-  return sheetWith(`Blame · ${basename(file)}${rev ? ` @ ${rev.slice(0, 7)}` : ''}`, async () => {
+/* ---------- 2. AI explains a commit or a merge request ---------- */
+async function explainSheet(target) {
+  const what = target.item ? `${mrRef(target.item)} · ${target.item.title}` : `${target.hash.slice(0, 7)}${target.subject ? ` · ${target.subject}` : ''}`
+  const body = h('div', { class: 'explain' })
+  openSheet(`Explain · ${what}`, body)
+  const sheet = state.sheets[state.sheets.length - 1]
+  sheet.el.classList.add('wide-sheet')
+  placeSheet(sheet.el)
+  const status = h('div', { class: 'ai-status' })
+  const run1 = async () => {
+    clear(body).append(h('div', { class: 'explain-wait' }, h('span', { class: 'ai-dots' }, h('i'), h('i'), h('i')), status))
+    const stop = aiTicker(status, 'AI', target.item ? 'the merge request' : 'the commit')
+    try {
+      const r = await request('ai.explain', target.item ? { item: { ...target.item, ci: undefined } } : { repo: state.repo, hash: target.hash }, 118000)
+      stop()
+      if (!sheet.el.isConnected) return
+      clear(body).append(
+        h('div', { class: 'explain-head' }, icon('wand', 13), h('span', null, `Explained by ${r.agent}. It reads the diff; check anything important.`), h('span', { class: 'grow' }), h('button', { class: 'btn sm', onClick: run1 }, icon('refresh', 12), 'Explain again'), h('button', { class: 'btn sm', onClick: () => copy(r.text) }, icon('copy', 12), 'Copy')),
+        mdRender(r.text)
+      )
+    } catch (e) {
+      stop()
+      if (sheet.el.isConnected) clear(body).append(h('div', { class: 'empty' }, icon('alert', 28), h('div', null, e.message), h('button', { class: 'btn sm', style: { marginTop: '10px' }, onClick: run1 }, icon('refresh', 12), 'Try again')))
+    }
+  }
+  run1()
+}
+
+/* ---------- 3. drag a branch onto another: merge, rebase or push ---------- */
+let dragRef = null
+document.addEventListener('dragstart', (e) => {
+  const el = e.target.closest?.('[data-drag-ref]')
+  if (!el) return
+  dragRef = { name: el.dataset.dragRef, kind: el.dataset.dragKind }
+  e.dataTransfer.effectAllowed = 'move'
+  e.dataTransfer.setData('text/plain', dragRef.name)
+  document.body.classList.add('dragging-ref')
+})
+document.addEventListener('dragend', () => {
+  dragRef = null
+  document.body.classList.remove('dragging-ref')
+  document.querySelectorAll('.drop-on').forEach((x) => x.classList.remove('drop-on'))
+})
+const dropTarget = (e) => {
+  const el = e.target.closest?.('[data-drop-ref]')
+  return el && dragRef && el.dataset.dropRef !== dragRef.name ? el : null
+}
+document.addEventListener('dragover', (e) => {
+  const el = dropTarget(e)
+  if (!el) return
+  e.preventDefault()
+  document.querySelectorAll('.drop-on').forEach((x) => x !== el && x.classList.remove('drop-on'))
+  el.classList.add('drop-on')
+})
+document.addEventListener('drop', (e) => {
+  const el = dropTarget(e)
+  if (!el) return
+  e.preventDefault()
+  el.classList.remove('drop-on')
+  const src = dragRef
+  const dst = { name: el.dataset.dropRef, kind: el.dataset.dropKind }
+  const cur = state.status?.branch
+  const items = []
+  if (dst.kind === 'remote-group') {
+    if (src.kind === 'branch') items.push({ label: `Push ${nm(src.name)} to ${dst.name}`, icon: 'push', onClick: () => run('push', src.name === cur ? { remote: dst.name } : { branch: src.name, remote: dst.name }, { success: `Pushed ${src.name} to ${dst.name}` }) })
+  } else if (dst.name === cur) {
+    items.push({ label: mergeLabel(src.name, cur), full: `Merge ${src.name} → ${cur}`, icon: 'merge', onClick: () => mergeRef(src.name) })
+  } else if (src.name === cur) {
+    items.push({ label: `Rebase ${nm(cur)} onto ${nm(dst.name)}…`, icon: 'merge', onClick: () => rebaseOnto(dst.name) })
+    if (dst.kind !== 'tag') items.push(mrBoth(dst.name.replace(/^[^/]+\//, ''), cur))
+  } else {
+    items.push({ label: `Switch to ${nm(dst.name)}, then merge ${nm(src.name)} in`, icon: 'merge', onClick: async () => (await checkout(dst.name), state.status?.branch === dst.name && mergeRef(src.name)) })
+  }
+  if (!items.filter(Boolean).length) return toast(`Nothing to do with ${src.name} on ${dst.name}`)
+  menuPoint = { x: e.clientX, y: e.clientY }
+  menu(menuPoint, [{ header: `${src.name} → ${dst.name}` }, ...items])
+  menuPoint = null
+})
+
+/* ---------- 5. one page per file: its history with diffs, and who wrote each line ---------- */
+async function fileExplorer(file, tab = 'history', rev) {
+  const body = h('div', { class: 'fx' })
+  openSheet(`${basename(file)}`, body)
+  const sheet = state.sheets[state.sheets.length - 1]
+  sheet.el.classList.add('wide-sheet')
+  placeSheet(sheet.el)
+  const tabs = h('div', { class: 'mrd-tabs fx-tabs' })
+  const pane = h('div', { class: 'fx-pane' })
+  body.append(h('div', { class: 'fx-path mono dim' }, file), tabs, pane)
+  // t: the tab; r: a commit for "who wrote each line" as of that commit ("Lines at this point")
+  const go = (t, r) => {
+    tab = t
+    rev = t === 'blame' ? r : rev
+    clear(tabs).append(...[['history', 'History'], ['blame', 'Who wrote each line']].map(([k, l]) => h('button', { class: `mrd-tab ${tab === k ? 'on' : ''}`, onClick: () => go(k) }, l)))
+    clear(pane).append(h('div', { class: 'inline-skeleton', style: { margin: '12px' } }, h('span'), h('span'), h('span')))
+    ;(tab === 'history' ? historyPane() : blamePane()).then((el) => sheet.el.isConnected && tab === t && clear(pane).append(el), (e) => clear(pane).append(h('div', { class: 'empty' }, e.message)))
+  }
+  async function historyPane() {
+    const commits = await call('log', { file, limit: 300 })
+    if (!commits.length) return h('div', { class: 'empty' }, 'No history for this file')
+    const list = h('div', { class: 'fx-list' })
+    const diff = h('div', { class: 'fx-diff' })
+    const pick = async (c, row) => {
+      list.querySelectorAll('.sel').forEach((x) => x.classList.remove('sel'))
+      row.classList.add('sel')
+      clear(diff).append(h('div', { class: 'inline-skeleton', style: { margin: '12px' } }, h('span'), h('span')))
+      try {
+        const text = await call('commitFileDiff', { hash: c.hash, file })
+        clear(diff).append(
+          h('div', { class: 'fx-diff-head' }, h('b', null, c.subject), h('span', { class: 'dim' }, ` · ${c.author} · ${ago(c.time)}`), h('span', { class: 'grow' }), h('button', { class: 'btn sm', onClick: () => openCommit(c.hash) }, icon('commit', 12), 'Open commit'), h('button', { class: 'btn sm', onClick: () => go('blame', c.hash) }, icon('user', 12), 'Lines at this point')),
+          renderDiff(text, null, { images: { old: c.parents?.[0] || null, new: c.hash } })
+        )
+      } catch (e) {
+        clear(diff).append(h('div', { class: 'empty' }, e.message))
+      }
+    }
+    commits.forEach((c, i) => {
+      const row = h('button', { class: 'fx-row', onClick: () => pick(c, row) }, h('span', { class: 'mono dim' }, c.hash.slice(0, 7)), h('span', { class: 'grow ellipsis', title: c.subject }, c.subject), h('span', { class: 'dim fx-meta' }, `${c.author} · ${ago(c.time)}`))
+      list.append(row)
+      if (i === 0) setTimeout(() => pick(c, row), 0)
+    })
+    return h('div', { class: 'fx-split' }, list, diff)
+  }
+  async function blamePane() {
     const { commits, lines } = await call('blame', { file, rev })
-    const wrap = h('div', { class: 'blame' })
+    const times = Object.values(commits).map((c) => c.time || 0).filter(Boolean)
+    const min = Math.min(...times)
+    const max = Math.max(...times)
+    const wrap = h('div', { class: 'blame fx-blame' })
+    if (rev) wrap.append(h('div', { class: 'fx-note dim' }, `As of ${rev.slice(0, 7)}`))
     let prev = null
-    const shade = {}
-    let k = 0
     lines.forEach((l, i) => {
       const c = commits[l.h] || {}
-      if (!(l.h in shade)) shade[l.h] = k++ % 2
       const first = l.h !== prev
       prev = l.h
+      // newer lines are warmer: the age shows at a glance
+      const heat = max > min && c.time ? (c.time - min) / (max - min) : 1
       wrap.append(
         h(
           'div',
-          { class: `bl ${shade[l.h] ? 'alt' : ''} ${first ? 'first' : ''}` },
+          { class: `bl ${first ? 'first' : ''}`, style: { '--heat': heat.toFixed(2) } },
+          h('span', { class: 'bl-age' }),
           h(
             'span',
             { class: 'bl-meta', title: first ? `${c.summary || ''}\n${c.author || ''} · ${c.time ? fullDate(c.time) : ''}` : '', onClick: () => !/^0+$/.test(l.h) && openCommit(l.h) },
-            first ? [h('span', { class: 'mono' }, /^0+$/.test(l.h) ? 'uncommitted' : l.h.slice(0, 7)), ' ', h('span', { class: 'dim' }, `${c.author || ''} · ${c.time ? ago(c.time) : ''}`)] : ''
+            first ? [h('span', { class: 'mono' }, /^0+$/.test(l.h) ? 'not committed' : l.h.slice(0, 7)), ' ', h('span', { class: 'dim' }, `${c.author || ''} · ${c.time ? ago(c.time) : ''}`)] : ''
           ),
           h('span', { class: 'n' }, i + 1),
           h('span', { class: 'c' }, l.t)
@@ -3768,7 +3934,15 @@ function blameSheet(file, rev) {
       )
     })
     return wrap
-  })
+  }
+  return go(tab)
+}
+
+function fileHistory(file) {
+  return fileExplorer(file, 'history')
+}
+function blameSheet(file, rev) {
+  return fileExplorer(file, 'blame', rev)
 }
 
 function compareSheet(a, b) {
@@ -4193,6 +4367,10 @@ async function renderSide() {
     iconBtn('plus', 'New branch', (e) => (e.stopPropagation(), newBranch()))
   ])
   section('remote', 'Remotes', refs.remote.length, () => h('div', null, refs.remote.map((b) => remoteBranchRow(b, refs.local))))
+  // one remote: drop a branch on its heading to push it there
+  const remoteNames = [...new Set(refs.remote.map((b) => b.name.split('/')[0]))]
+  const rh = [...side.querySelectorAll('.side-head')].find((x) => x.textContent.startsWith('Remotes'))
+  if (rh && remoteNames.length === 1) Object.assign(rh.dataset, { dropRef: remoteNames[0], dropKind: 'remote-group' }), (rh.title = `Drop a branch here to push it to ${remoteNames[0]}`)
   section('tags', 'Tags', refs.tags.length, () => h('div', null, refs.tags.map((t) => tagRow(t))))
   side.scrollTop = scroll
 }
@@ -5519,6 +5697,7 @@ async function reviewDetailSheet(it, tab = 'overview') {
     'div',
     { class: 'mrd-bar' },
     h('span', { class: 'dim grow' }, own ? `Your own ${mrNoun(it)}` : d.state !== 'open' ? `This ${mrNoun(it)} is ${d.state}` : 'Approve and merge are in the box under the description'),
+    h('button', { class: 'btn', title: 'AI explains what this changes and why, in plain words', onClick: () => explainSheet({ item: it }) }, icon('wand', 12), 'Explain'),
     h('button', { class: 'btn', onClick: () => aiReviewModal(it) }, icon('wand', 12), 'AI review'),
     d.state === 'open' && h('button', { class: 'btn', onClick: () => reviewDialog(it, 'comment') }, icon('edit', 12), 'Comment'),
     d.state === 'open' && !own && h('button', { class: 'btn', onClick: () => reviewDialog(it, 'changes') }, icon('x', 12), 'Request changes')
@@ -6119,6 +6298,8 @@ function openConflicts() {
   const body = h('div', { class: 'cf-hub' })
   const finishLabel = st.state === 'merge' ? 'Commit merge' : 'Continue'
   let busy = false
+  // while an action runs, every button on the page shows it cannot be pressed
+  const setBusyPage = (on) => body.querySelectorAll('button').forEach((b) => (b.disabled = on))
   const reopen = () => {
     if (state.sheets.includes(sheet)) closeSheet()
     if (state.status?.state) openConflicts()
@@ -6134,6 +6315,7 @@ function openConflicts() {
     paths = stillConflicted(paths)
     if (!paths.length) return reopen()
     busy = true
+    setBusyPage(true)
     setBusy(1)
     const name = side === 'ours' ? sides.current : sides.incoming
     let n = 0
@@ -6159,6 +6341,7 @@ function openConflicts() {
     paths = stillConflicted(paths)
     if (!paths.length) return reopen()
     busy = true
+    setBusyPage(true)
     let done = 0
     const fails = []
     for (const p of paths) {
@@ -6236,6 +6419,7 @@ function openConflicts() {
     paths = stillConflicted(paths)
     if (!paths.length) return reopen()
     busy = true
+    setBusyPage(true)
     setBusy(1)
     let n = 0
     let whole = 0
@@ -6793,6 +6977,10 @@ $('#main')?.addEventListener(
 
 /** ↑/↓ (or j/k) move through the graph; Enter opens; / searches; Esc closes. Ctrl+K: commands. */
 document.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'z' && !e.target.closest?.('input, textarea, [contenteditable]') && !document.querySelector('.overlay, .menu') && state.repo) {
+    e.preventDefault()
+    return undoLast()
+  }
   if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'k') {
     if (!state.repo || document.querySelector('.overlay')) return
     e.preventDefault()
@@ -6856,7 +7044,8 @@ function commandPalette() {
     ['Merge request…', 'pr', () => mergeRequestDialog()],
     ['Go to the checked-out commit', 'current', () => goToHead()],
     ['Search commits', 'search', () => (setTab('history'), setTimeout(() => searchBox?.focus(), 50))],
-    ['Undo the last action', 'undo', () => undoLast()],
+    ['Undo the last action (Ctrl+Z)', 'undo', () => undoLast()],
+    ['Undo history: go back to any earlier point', 'history', () => setTab('reflog')],
     ['Refresh', 'refresh', () => manualRefresh()],
     [ROW_H > 28 ? 'Compact rows' : 'Comfortable rows', 'rows', () => setDensity(ROW_H > 28 ? 'compact' : 'comfortable')],
     ['Keyboard shortcuts', 'keyboard', () => shortcutsHelp()],

@@ -495,10 +495,21 @@ async function searchAll(repo, { all = false, limit = 200, skip = 0, search = ''
   const scan = (extra, format, tail = []) =>
     git(repo, ['log', '--date-order', `--max-count=${short ? want * 4 : want}`, `--format=${format}`, ...extra, ...scope, '--', ...tail]).catch(() => '')
   const glob = q.replace(/[*?[\]\\]/g, '\\$&') // the search text, literal, inside a pathspec pattern
+  // Files: a "*text*" pattern makes git diff every commit (seconds on a big history). Matching the
+  // files that exist now and asking for their exact paths is ~10x faster; the pattern is kept for
+  // small histories, where it also finds deleted files.
+  const fileScan = async () => {
+    if (short) return ''
+    const lower = q.toLowerCase()
+    const now = (await git(repo, ['ls-files', '-z']).catch(() => '')).split('\0').filter((f) => f && f.toLowerCase().includes(lower))
+    if (now.length && now.length <= 60) return scan(['--name-only'], `${RS}%H${US}%at`, now.map((f) => `:(literal)${f}`))
+    const count = +(await git(repo, ['rev-list', '--count', ...(all ? ['--all'] : ['HEAD'])]).catch(() => '0')) || 0
+    return count <= 5000 ? scan(['--name-only'], `${RS}%H${US}%at`, [`:(icase)*${glob}*`]) : ''
+  }
   const [msgRaw, authRaw, fileRaw, hash, refs] = await Promise.all([
     scan(['--grep', q, '-i', '--fixed-strings'], `%H${US}%at${US}%s${US}%b${RS}`),
     scan(['--author', q, '-i', '--fixed-strings'], `%H${US}%at${US}%an${US}%ae${RS}`),
-    short ? '' : scan(['--name-only'], `${RS}%H${US}%at`, [`:(icase)*${glob}*`]),
+    fileScan(),
     /^[0-9a-f]{4,40}$/i.test(q)
       ? git(repo, ['rev-parse', '--verify', '-q', `${q}^{commit}`], { okCodes: [0, 1] })
           .then((h) => (h.trim() ? git(repo, ['log', '-1', `--format=%H${US}%at`, h.trim()]).then((o) => [o.trim().split(US)]) : []))
@@ -2015,6 +2026,79 @@ async function aiResolveFile(repo, file, agent) {
   return { text: out, agent: a.name }
 }
 
+/**
+ * Before a commit: what is worth a second look. Secret-looking files or lines being added, big files,
+ * and committing straight to a main branch. Reads only what is staged; nothing is changed.
+ */
+const SECRET_FILE = /(^|\/)(\.env(\.(?!example$|sample$|template$)[\w.-]+)?|id_(rsa|dsa|ecdsa|ed25519)|[^/]+\.(pem|p12|pfx|key|keystore|jks)|credentials(\.json)?|secrets?\.(json|ya?ml|toml))$/i
+const SECRET_LINE = [
+  [/AKIA[0-9A-Z]{16}/, 'an AWS access key'],
+  [/-----BEGIN (RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY/, 'a private key'],
+  [/\bgh[pousr]_[A-Za-z0-9]{36,}/, 'a GitHub token'],
+  [/\bglpat-[A-Za-z0-9_-]{20,}/, 'a GitLab token'],
+  [/\bxox[abprs]-[A-Za-z0-9-]{10,}/, 'a Slack token'],
+  [/\bsk-(live|proj|ant)?[-_]?[A-Za-z0-9]{24,}/, 'an API secret key'],
+  [/\bAIza[0-9A-Za-z_-]{35}/, 'a Google API key']
+]
+async function commitCheck(repo) {
+  const st = await status(repo, { untracked: 'normal' })
+  const staged = st.files.filter((f) => f.x && f.x !== '.' && f.x !== '?' && !f.conflict).map((f) => f.path)
+  const warnings = []
+  for (const f of staged) if (SECRET_FILE.test(f)) warnings.push({ kind: 'secret', file: f, text: `${f} looks like a secrets file` })
+  // big files: their size in the index
+  const sizes = await Promise.all(staged.slice(0, 400).map((f) => git(repo, ['cat-file', '-s', `:${f}`]).then((s) => [f, +s.trim()], () => [f, 0])))
+  for (const [f, s] of sizes) if (s > 5 * 1024 * 1024) warnings.push({ kind: 'big', file: f, text: `${f} is ${(s / 1048576).toFixed(1)} MB (big files make the repository slow for everyone)` })
+  // secret-looking lines being added
+  const diff = await git(repo, ['diff', '--cached', '--no-color', '-U0', '--diff-filter=AM']).catch(() => '')
+  let file = ''
+  const seen = new Set()
+  for (const l of diff.slice(0, 3_000_000).split('\n')) {
+    if (l.startsWith('+++ b/')) file = l.slice(6)
+    else if (l.startsWith('+') && !l.startsWith('+++'))
+      for (const [re, what] of SECRET_LINE)
+        if (re.test(l) && !seen.has(file + what)) {
+          seen.add(file + what)
+          warnings.push({ kind: 'secret', file, text: `${file} adds what looks like ${what}` })
+        }
+  }
+  // straight to a shared main branch: only when it tracks a branch on a server (not a folder or a solo repo)
+  if (st.branch && st.upstream && /^(main|master|production|prod|release)$/.test(st.branch)) {
+    const remote = st.upstream.split('/')[0]
+    const url = (await git(repo, ['config', '--get', `remote.${remote}.url`]).catch(() => '')).trim()
+    if (/^(https?:\/\/|ssh:\/\/|git@)/.test(url)) warnings.push({ kind: 'branch', text: `You are committing straight to ${st.branch}, which others pull from` })
+  }
+  return { warnings, branch: st.branch }
+}
+
+/** AI explains a commit or a pull/merge request in plain words: what changed, why, what to watch. */
+async function aiExplain(input, agent) {
+  const a = AI[agent] || AI.claude
+  let title = ''
+  let diff = ''
+  if (input.item) {
+    const m = await reviewMaterial(input.item)
+    title = `${m.title}\n\n${(m.body || '').slice(0, 3000)}`
+    diff = m.diff
+  } else {
+    const repo = req(input.repo, 'repo')
+    const hash = req(input.hash, 'hash')
+    diff = await git(repo, ['show', '--no-color', '--stat', '--patch', '-U2', '--format=%s%n%n%b', hash])
+  }
+  if (!diff.trim()) throw new GitError('Nothing to explain')
+  const prompt = [
+    `Explain this ${input.item ? 'pull/merge request' : 'commit'} to a teammate who has not seen it.`,
+    'Write Markdown with exactly these parts, short and concrete:',
+    '"## What changed" (3-6 bullets, by area or file), "## Why" (one or two sentences; say when you are guessing),',
+    '"## Watch out" (risks, behaviour changes or follow-ups; write "Nothing special." when there are none).',
+    String(input.instructions || '').trim() ? `Extra instructions: ${String(input.instructions).trim()}` : '',
+    title ? `\nTitle and description:\n${title}` : '',
+    `\nDiff:\n${diff.length > 80_000 ? diff.slice(0, 80_000) + '\n… (truncated)' : diff}`
+  ].join('\n')
+  const r = await runProc(a.bin, a.args, { cwd: os.tmpdir(), input: prompt, timeout: 110_000, shell: a.shell })
+  if (r.code !== 0) throw new GitError(r.code === -1 ? `${a.name} CLI (${a.bin}) was not found on PATH` : r.stderr.trim().split('\n').slice(-3).join('\n') || `${a.name} failed`)
+  return { text: r.stdout.trim(), agent: a.name }
+}
+
 async function aiReview(input, agent) {
   const a = AI[agent] || AI.claude
   const mat = await reviewMaterial(input)
@@ -2727,6 +2811,7 @@ const ops = {
     }
   },
   gitLog: async () => CMD_LOG.slice(-100),
+  commitCheck: (r) => commitCheck(r),
   rebaseTodo: async (r, a) => {
     const raw = await git(r, ['log', '--reverse', `--format=%H${SEP}%s`, `${req(a.base, 'base')}..HEAD`])
     return raw
@@ -2774,7 +2859,7 @@ const ops = {
 const READ_ONLY_OPS = new Set(['fileImage', 
   'status', 'diff', 'log', 'commitShow', 'commitFileDiff', 'refs', 'worktrees', 'stashList', 'stashShow', 'remotes',
   'configList', 'blame', 'showFile', 'treeFiles', 'compare', 'compareFileDiff', 'reflog', 'cleanPreview', 'submodules',
-  'aheadBehind', 'rebaseTodo', 'lastMessage', 'formatPatch', 'ciStatus', 'pipelines', 'pipelineJobs', 'jobLog', 'readWorkFile', 'branchCleanup', 'undoInfo', 'conflictText', 'gitLog'
+  'aheadBehind', 'rebaseTodo', 'lastMessage', 'formatPatch', 'ciStatus', 'pipelines', 'pipelineJobs', 'jobLog', 'readWorkFile', 'branchCleanup', 'undoInfo', 'conflictText', 'gitLog', 'commitCheck'
 ])
 const NO_REPO_OK = new Set(['configList', 'configSet', 'configUnset', 'init', 'clone'])
 
@@ -2974,6 +3059,7 @@ Click to open Git Control`
     )
     return { agent: await agentSetting(), agents: Object.entries(AI).map(([id, v]) => ({ id, name: v.name, available: available[id] })) }
   })
+  orca.panels.handle('ai.explain', async (input = {}) => aiExplain(input, AI[input.agent] ? input.agent : await agentSetting()))
   orca.panels.handle('ai.resolveFile', async ({ repo, file, agent } = {}) => aiResolveFile(req(repo, 'repo'), req(file, 'file'), AI[agent] ? agent : await agentSetting()))
   orca.panels.handle('ai.resolve', async ({ repo } = {}) => aiResolve(orca, req(repo, 'repo'), await agentSetting()))
   orca.panels.handle('repo.ignoreGraphFiles', async ({ repo } = {}) => ignoreGraphFiles(req(repo, 'repo')).then(() => ({ ok: true })))

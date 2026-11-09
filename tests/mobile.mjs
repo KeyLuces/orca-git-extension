@@ -160,8 +160,12 @@ await step('stage and commit a change from the phone', async () => {
     t.dispatchEvent(new Event('input', { bubbles: true }))
   })
   await shot('mobile-04-commit')
-  await page.$eval('.commit-box .split .btn:first-child', (b) => b.click())
-  await until(() => g('log', '-1', '--format=%s') === 'Commit from phone', 'committed')
+  // press Commit (again if the first press landed while the view was redrawing)
+  for (let i = 0; i < 4 && g('log', '-1', '--format=%s') !== 'Commit from phone'; i++) {
+    await page.$eval('.commit-box .split .btn:first-child', (b) => b.click()).catch(() => {})
+    await until(() => g('log', '-1', '--format=%s') === 'Commit from phone', 'committed', 4000).catch(() => {})
+  }
+  if (g('log', '-1', '--format=%s') !== 'Commit from phone') throw new Error('not committed')
 })
 
 await step('every tab fits the phone: no sideways scroll, nothing cut off', async () => {

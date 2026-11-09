@@ -22,11 +22,16 @@ The graph shows every branch with its own colour; the same colour marks that bra
 commit and its details open beside the graph, so you can step through commits with ↑ ↓ while the list
 stays in view. Search finds messages, authors, changed files, hashes, branches and tags as you type.
 Right-click any commit for checkout, branch, tag, merge, rebase, cherry-pick, revert, reset and more.
+Drag a branch onto the one you are on to merge it, onto another to rebase, or onto Remotes to push.
+**Explain** asks AI what a commit (or a merge request) changes and why, in plain words. A file's page shows
+its whole history with each change, and who wrote each line (newer lines are warmer).
 
 ### Commit
 The Commit tab lists your changes on the left and the selected file's diff on the right. Stage whole
 files or single hunks, write the message (or let **AI message** draft it), and commit. When nothing is
-left to commit but commits wait on your machine, the same button becomes **Push**.
+left to commit but commits wait on your machine, the same button becomes **Push**. Before committing,
+Git Control takes a second look: a secrets file, a token or key being added, a very big file, or a commit
+straight to a shared main branch is pointed out first. **Ctrl+Z** undoes the last action.
 
 ![The Commit tab: changed files on the left, the diff on the right](assets/screenshots/commit.png)
 
