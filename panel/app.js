@@ -1031,7 +1031,16 @@ async function renderView({ force = false } = {}) {
   if (seq !== renderSeq) return
   if (lastTabRendered !== state.tab) el.classList.add('view-enter')
   lastTabRendered = state.tab
+  // a field being typed in (the graph's search box is reused across redraws) keeps focus and caret
+  const typing = document.activeElement?.matches?.('input, textarea') ? document.activeElement : null
+  const caret = typing ? [typing.selectionStart, typing.selectionEnd] : null
   clear(main).append(el)
+  if (typing && typing.isConnected && document.activeElement !== typing) {
+    typing.focus({ preventScroll: true })
+    try {
+      typing.setSelectionRange(caret[0], caret[1])
+    } catch {}
+  }
   if (loading) main.prepend(loading)
   if (state.sheets.length) placeSheet(state.sheets[state.sheets.length - 1].el)
   main.scrollTop = keepScroll
@@ -2144,6 +2153,7 @@ async function viewHistory() {
     if (v === H.search) return
     H.search = v
     resetHistory()
+    $('#main').scrollTop = 0 // a new search starts at the top, the box in view
     renderView()
   }
   // One search box for the life of the panel: results redraw the view around it, never the box
@@ -2184,7 +2194,9 @@ async function viewHistory() {
   }
   const headBtn = h('button', { class: 'btn sm', title: 'Scroll to the checked-out commit', onClick: () => goToHead() }, icon('current', 12), 'HEAD')
   const dense = IN_TAB && iconBtn('rows', ROW_H > 28 ? 'Compact rows' : 'Comfortable rows', () => setDensity(ROW_H > 28 ? 'compact' : 'comfortable'), { class: `icon-btn density-btn ${ROW_H > 28 ? 'on' : ''}` })
-  root.append(h('div', { class: 'history-bar' }, search, seg, headBtn, dense))
+  // an × inside the box clears the search (Esc does too)
+  const searchWrap = h('div', { class: 'graph-search-wrap' }, search, H.search && iconBtn('x', 'Clear search', () => ((search.value = ''), runSearch('')), { class: 'icon-btn search-clear' }))
+  root.append(h('div', { class: 'history-bar' }, searchWrap, seg, headBtn, dense))
   if (IN_TAB) root.append(h('div', { class: 'date-float-wrap' }, h('div', { class: 'date-float', id: 'dateFloat' })))
 
   if (!H.commits.length) {

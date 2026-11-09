@@ -319,6 +319,18 @@ await step('search finds everything as you type (message, file, author, hash) an
   await until(() => page.$$eval('.commit-row .col-hash mark.hit', (m) => m.length > 0), 'hash highlighted')
   if (await page.$('.mode-select')) throw new Error('the search-in dropdown is still there')
   await shot('02c-search')
+  // nothing found: the search box stays, with what was typed, ready to change
+  await typeSearch('zzqq-nothing-here')
+  await until(() => page.evaluate(() => document.body.textContent.includes('Nothing matches')), 'nothing-found message')
+  await new Promise((r) => setTimeout(r, 400))
+  const box = await page.evaluate(() => {
+    const i = document.querySelector('.history-bar input')
+    if (!i || !i.isConnected) return 'missing'
+    const r = i.getBoundingClientRect()
+    return r.width > 50 && r.height > 10 && r.top >= 0 && r.top < innerHeight ? i.value : `hidden ${JSON.stringify(r)}`
+  })
+  if (box !== 'zzqq-nothing-here') throw new Error('search box after no results: ' + box)
+  await shot('02c-search-none')
   // Escape clears and brings the graph back
   await page.focus('.history-bar input')
   await page.keyboard.press('Escape')

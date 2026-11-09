@@ -44,15 +44,15 @@ const cover = () => `<!doctype html><html><head><meta charset="utf-8"><style>
 </style></head><body>
   <div class="glow"></div>
   <div class="head"><img src="data:image/png;base64,${icon()}"><h1>Git Control <span>for Orca</span></h1>
-  <p class="sub">A full Git client inside Orca, for GitHub and GitLab.</p></div>
+  <p class="sub">A full Git client inside Orca, for GitHub and GitLab, <b style="color:#b49be8">with AI</b>.</p></div>
   <div class="grid">${FEATS.map(([t, d, svg]) => `<div class="card"><i>${svg}</i><h3>${t}</h3><p>${d}</p></div>`).join('')}</div>
-  <div class="foot">Uses the Git login you already have &nbsp;·&nbsp; <b>Ctrl+K</b> for every command &nbsp;·&nbsp; Light and dark themes</div>
+  <div class="foot"><b>AI</b> commit messages, MR reviews and conflict resolving &nbsp;·&nbsp; Uses the Git login you already have &nbsp;·&nbsp; <b>Ctrl+K</b> for every command &nbsp;·&nbsp; Light and dark themes</div>
 </body></html>`
 
 
 // The marketplace cover (assets/cover.jpg, 1600×1000): logo, name and the main features beside real screens.
 const shot = (f) => readFileSync(path.join(SRC, f + '.png')).toString('base64')
-const COVER_FEATS = ['Commit graph with every branch in colour', 'Checkout, merge, rebase from a right-click', 'Worktrees: each branch in its own folder', 'Review and open merge requests', 'GitHub and GitLab CI pipelines', 'Stage hunks, AI commit message, undo']
+const COVER_FEATS = ['AI writes commits, reviews MRs, resolves conflicts', 'Commit graph with every branch in colour', 'Checkout, merge, rebase from a right-click', 'Worktrees: each branch in its own folder', 'Review and open merge requests', 'GitHub and GitLab CI pipelines', 'Stage hunks, stash, undo anything']
 const marketCover = () => `<!doctype html><html><head><meta charset="utf-8"><style>
   * { box-sizing: border-box; margin: 0; }
   html, body { width: 1600px; height: 1000px; overflow: hidden; }
@@ -67,6 +67,9 @@ const marketCover = () => `<!doctype html><html><head><meta charset="utf-8"><sty
   li { display: flex; gap: 14px; align-items: center; font-size: 20px; color: #d8d2e4; }
   li i { flex: none; width: 10px; height: 10px; border-radius: 50%; background: #8fb0f0; }
   li:nth-child(even) i { background: #b49be8; }
+  li:first-child { color: #efe9de; font-weight: 600; }
+  li:first-child i { background: linear-gradient(135deg, #8fb0f0, #b49be8); }
+  .ai-badge { display: inline-block; align-self: flex-start; margin-top: 18px; padding: 7px 16px; border-radius: 999px; font-size: 20px; font-weight: 650; color: #fff; background: linear-gradient(135deg, #5b7fd6, #9b7be0); box-shadow: 0 8px 24px rgba(120, 110, 220, .35); }
   .win { position: absolute; border-radius: 14px; overflow: hidden; border: 1px solid rgba(239,233,222,.14); background: #0d0d10; box-shadow: 0 30px 90px rgba(0,0,0,.7); }
   .bar { height: 30px; display: flex; align-items: center; gap: 7px; padding: 0 12px; background: #16161b; border-bottom: 1px solid rgba(239,233,222,.07); }
   .bar b { width: 10px; height: 10px; border-radius: 50%; background: #3a3946; }
@@ -80,6 +83,7 @@ const marketCover = () => `<!doctype html><html><head><meta charset="utf-8"><sty
   <div class="text">
     <img class="logo" src="data:image/png;base64,${icon()}">
     <h1>Git Control<span>for Orca</span></h1>
+    <div class="ai-badge">✦ with AI</div>
     <p class="sub">A full Git client inside Orca, for GitHub and GitLab.</p>
     <ul>${COVER_FEATS.map((x) => `<li><i></i>${x}</li>`).join('')}</ul>
   </div>

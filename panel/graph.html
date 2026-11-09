@@ -54,6 +54,22 @@
   --mono: ui-monospace, 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace;
   color-scheme: dark;
 }
+/* Dark, but soft: Orca's background lifted toward a calm slate (keeps the theme's tint), text a little
+   less than white, cards and lines a touch more distinct so it never looks washed out. */
+html:not(.light) {
+  --bg: color-mix(in srgb, var(--orca-background, #111216) 72%, #2c303a);
+  --fg: color-mix(in srgb, var(--orca-foreground, #e6e7ea) 94%, #9aa3b5);
+  --raised: color-mix(in srgb, var(--fg) 4%, var(--bg));
+  --card: color-mix(in srgb, var(--fg) 7%, var(--bg));
+  --card-hi: color-mix(in srgb, var(--fg) 11%, var(--bg));
+  --line: color-mix(in srgb, var(--fg) 11%, var(--bg));
+  --t1: color-mix(in srgb, var(--fg) 90%, var(--bg));
+  --ren: #79a7ef;
+  --add: #86c574;
+  --del: #e8899a;
+  --mod: #e0b25c;
+  --shadow: 0 10px 30px rgba(0, 0, 0, .28), 0 2px 6px rgba(0, 0, 0, .16);
+}
 html.light {
   --t1: color-mix(in srgb, var(--fg) 90%, var(--bg));
   --t2: color-mix(in srgb, var(--fg) 62%, var(--bg));
@@ -1437,6 +1453,12 @@ body:has(.cfg-save) #toasts { bottom: 64px; }
 .view .hover-actions .btn.sm { white-space: nowrap; }
 .side-panel .view .hover-actions .btn.sm, body.compact .view .hover-actions .btn.sm { font-size: 0; gap: 0; padding: 0 7px; }
 
+/* the graph's search bar stays at the top while the list scrolls */
+#main > .view > .history-bar:first-child { position: sticky; top: 0; z-index: 6; background: var(--bg); padding-top: 8px; margin-top: -8px; box-shadow: 0 1px 0 var(--line); }
+.graph-search-wrap { position: relative; flex: 1; min-width: 0; display: flex; }
+.graph-search-wrap .graph-search { flex: 1; padding-right: 28px; }
+.graph-search-wrap .search-clear { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); }
+
 </style>
   </head>
   <body class="wide">
@@ -2495,7 +2517,16 @@ async function renderView({ force = false } = {}) {
   if (seq !== renderSeq) return
   if (lastTabRendered !== state.tab) el.classList.add('view-enter')
   lastTabRendered = state.tab
+  // a field being typed in (the graph's search box is reused across redraws) keeps focus and caret
+  const typing = document.activeElement?.matches?.('input, textarea') ? document.activeElement : null
+  const caret = typing ? [typing.selectionStart, typing.selectionEnd] : null
   clear(main).append(el)
+  if (typing && typing.isConnected && document.activeElement !== typing) {
+    typing.focus({ preventScroll: true })
+    try {
+      typing.setSelectionRange(caret[0], caret[1])
+    } catch {}
+  }
   if (loading) main.prepend(loading)
   if (state.sheets.length) placeSheet(state.sheets[state.sheets.length - 1].el)
   main.scrollTop = keepScroll
@@ -3608,6 +3639,7 @@ async function viewHistory() {
     if (v === H.search) return
     H.search = v
     resetHistory()
+    $('#main').scrollTop = 0 // a new search starts at the top, the box in view
     renderView()
   }
   // One search box for the life of the panel: results redraw the view around it, never the box
@@ -3648,7 +3680,9 @@ async function viewHistory() {
   }
   const headBtn = h('button', { class: 'btn sm', title: 'Scroll to the checked-out commit', onClick: () => goToHead() }, icon('current', 12), 'HEAD')
   const dense = IN_TAB && iconBtn('rows', ROW_H > 28 ? 'Compact rows' : 'Comfortable rows', () => setDensity(ROW_H > 28 ? 'compact' : 'comfortable'), { class: `icon-btn density-btn ${ROW_H > 28 ? 'on' : ''}` })
-  root.append(h('div', { class: 'history-bar' }, search, seg, headBtn, dense))
+  // an × inside the box clears the search (Esc does too)
+  const searchWrap = h('div', { class: 'graph-search-wrap' }, search, H.search && iconBtn('x', 'Clear search', () => ((search.value = ''), runSearch('')), { class: 'icon-btn search-clear' }))
+  root.append(h('div', { class: 'history-bar' }, searchWrap, seg, headBtn, dense))
   if (IN_TAB) root.append(h('div', { class: 'date-float-wrap' }, h('div', { class: 'date-float', id: 'dateFloat' })))
 
   if (!H.commits.length) {
