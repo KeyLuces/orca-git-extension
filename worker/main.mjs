@@ -2594,6 +2594,9 @@ export default function activate(orca) {
   })
 
   // Find the repository for the focused Orca workspace, plus every local workspace for the picker.
+  // The repository the status bar last showed: what the person sees when they press it, used when
+  // the focused workspace cannot be told apart at that moment (no terminal yet, same name and branch).
+  let lastRepo = null
   async function resolveFocused() {
     const workspaces = await listWorkspaces(orca)
     let focused = null
@@ -2616,9 +2619,6 @@ export default function activate(orca) {
     if (focused) lastRepo = focused
     return { focused, workspaces }
   }
-  // The repository the status bar last showed: what the person sees when they press it, used when
-  // the focused workspace cannot be told apart at that moment (no terminal yet, same name and branch).
-  let lastRepo = null
   orca.panels.handle('repo.resolve', () => resolveFocused())
 
   // Status bar: "⎇ branch ↑1 ↓2 • 3" for the focused worktree; pressing it opens Git Control in a tab.
