@@ -49,6 +49,42 @@ const cover = () => `<!doctype html><html><head><meta charset="utf-8"><style>
   <div class="foot">Uses the Git login you already have &nbsp;·&nbsp; <b>Ctrl+K</b> for every command &nbsp;·&nbsp; Light and dark themes</div>
 </body></html>`
 
+
+// The marketplace cover (assets/cover.jpg, 1600×1000): logo, name and the main features beside real screens.
+const shot = (f) => readFileSync(path.join(SRC, f + '.png')).toString('base64')
+const COVER_FEATS = ['Commit graph with every branch in colour', 'Checkout, merge, rebase from a right-click', 'Worktrees: each branch in its own folder', 'Review and open merge requests', 'GitHub and GitLab CI pipelines', 'Stage hunks, AI commit message, undo']
+const marketCover = () => `<!doctype html><html><head><meta charset="utf-8"><style>
+  * { box-sizing: border-box; margin: 0; }
+  html, body { width: 1600px; height: 1000px; overflow: hidden; }
+  body { background: #0a0a0d; color: #efe9de; font-family: "Segoe UI", system-ui, sans-serif; position: relative; }
+  .glow { position: absolute; left: 900px; top: 120px; width: 1000px; height: 800px; background: radial-gradient(closest-side, rgba(143,176,240,.14), transparent); }
+  .text { position: absolute; left: 88px; top: 0; bottom: 0; width: 560px; display: flex; flex-direction: column; justify-content: center; }
+  .logo { width: 112px; height: 112px; border-radius: 26px; box-shadow: 0 16px 40px rgba(0,0,0,.6); margin-bottom: 34px; }
+  h1 { font-size: 76px; font-weight: 650; letter-spacing: -0.025em; line-height: 1; }
+  h1 span { display: block; color: #8fb0f0; font-size: 44px; margin-top: 10px; letter-spacing: -0.01em; }
+  .sub { margin-top: 22px; font-size: 22px; line-height: 1.45; color: #a9a3b8; }
+  ul { list-style: none; padding: 0; margin-top: 34px; display: flex; flex-direction: column; gap: 14px; }
+  li { display: flex; gap: 14px; align-items: center; font-size: 20px; color: #d8d2e4; }
+  li i { flex: none; width: 10px; height: 10px; border-radius: 50%; background: #8fb0f0; }
+  li:nth-child(even) i { background: #b49be8; }
+  .win { position: absolute; border-radius: 14px; overflow: hidden; border: 1px solid rgba(239,233,222,.14); background: #0d0d10; box-shadow: 0 30px 90px rgba(0,0,0,.7); }
+  .bar { height: 30px; display: flex; align-items: center; gap: 7px; padding: 0 12px; background: #16161b; border-bottom: 1px solid rgba(239,233,222,.07); }
+  .bar b { width: 10px; height: 10px; border-radius: 50%; background: #3a3946; }
+  .win img { display: block; width: 100%; }
+  .w1 { left: 700px; top: 110px; width: 1020px; }
+  .w2 { left: 860px; top: 520px; width: 760px; }
+</style></head><body>
+  <div class="glow"></div>
+  <div class="win w1"><div class="bar"><b></b><b></b><b></b></div><img src="data:image/png;base64,${shot('graph')}"></div>
+  <div class="win w2"><div class="bar"><b></b><b></b><b></b></div><img src="data:image/png;base64,${shot('merge-request')}"></div>
+  <div class="text">
+    <img class="logo" src="data:image/png;base64,${icon()}">
+    <h1>Git Control<span>for Orca</span></h1>
+    <p class="sub">A full Git client inside Orca, for GitHub and GitLab.</p>
+    <ul>${COVER_FEATS.map((x) => `<li><i></i>${x}</li>`).join('')}</ul>
+  </div>
+</body></html>`
+
 const page = (s, img) => `<!doctype html><html><head><meta charset="utf-8"><style>
   * { box-sizing: border-box; margin: 0; }
   html, body { width: 1440px; height: 900px; overflow: hidden; }
@@ -92,6 +128,10 @@ try {
     await tab.screenshot({ path: path.join(OUT, `${s.file}.png`) })
     console.log('promo', s.file)
   }
+  await tab.setViewport({ width: 1600, height: 1000, deviceScaleFactor: 1 })
+  await tab.setContent(marketCover(), { waitUntil: 'load' })
+  await tab.screenshot({ path: path.join(PLUGIN, 'assets/cover.jpg'), type: 'jpeg', quality: 90 })
+  console.log('cover')
 } finally {
   await browser.close()
 }
