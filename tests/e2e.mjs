@@ -180,6 +180,27 @@ const toastText = () => page.$$eval('.toast', (t) => t.map((x) => x.textContent)
 const shot = (name) => page.screenshot({ path: path.join(SHOTS, `${name}.png`) })
 
 // ---------- run ----------
+/** At phone size: nothing may stick out sideways (inside a sideways-scrolling strip is fine). */
+const phoneIssues = []
+async function phoneCheck(name) {
+  await page.setViewport({ width: 390, height: 844 })
+  await new Promise((r) => setTimeout(r, 450))
+  const bad = await page.evaluate(() => {
+    const inScroller = (e) => { for (let p = e.parentElement; p; p = p.parentElement) { const o = getComputedStyle(p).overflowX; if (o === 'auto' || o === 'scroll') return true } return false }
+    const out = []
+    if (document.documentElement.scrollWidth > innerWidth + 1) out.push('page scrolls sideways')
+    for (const e of document.querySelectorAll('.sheet button, .sheet input, .sheet select, .overlay button, .overlay input, .overlay select')) {
+      if (!e.offsetParent) continue
+      const b = e.getBoundingClientRect()
+      if (b.width > 0 && (b.right > innerWidth + 1 || b.left < -1) && !inScroller(e)) out.push(`${e.tagName.toLowerCase()} "${(e.textContent || e.placeholder || '').trim().slice(0, 20)}" off-screen`)
+    }
+    return [...new Set(out)].slice(0, 8)
+  })
+  await shot('phone-' + name)
+  await page.setViewport({ width: 1500, height: 900 })
+  await new Promise((r) => setTimeout(r, 300))
+  if (bad.length) phoneIssues.push(`${name}: ${bad.join(', ')}`)
+}
 async function step(name, fn) {
   const t = Date.now()
   try {
@@ -777,6 +798,7 @@ await step('Inbox (GitLab, saved Git login): to review, assigned, opened by me, 
   const thread = await page.$eval('.mr-detail .mrd-thread', (x) => x.textContent)
   if (!thread.includes('Looks good to me') || !thread.includes('src/a.js:3') || thread.includes('added 1 commit')) throw new Error('activity: ' + thread)
   await shot('11b-mr-detail')
+  await phoneCheck('mr-detail')
   await clickText('.mrd-tab', 'Commits')
   await until(() => page.$$eval('.mrd-commit', (c) => c.some((x) => x.textContent.includes('Add review change'))), 'commits tab')
   if (await page.$eval('.mr-detail', (x) => /\bfalse\b|\bnull\b|undefined|\[object/.test(x.textContent))) throw new Error('stray false/null text on the detail page')
@@ -822,6 +844,7 @@ await step('Review & MR list: approve leaves To review, multi-select merge, real
     await page.evaluate((n) => [...document.querySelectorAll('.review-row')].find((r) => r.textContent.includes(n)).querySelector('.rv-check').click(), name)
   await until(() => page.$eval('.rv-bulk', (b) => b.classList.contains('on') && b.textContent.includes('2 selected')), 'bulk bar')
   await shot('11e-bulk')
+  await phoneCheck('mr-bulk')
   api.calls = []
   await clickText('.rv-bulk .btn', 'Merge 2')
   await until(() => exists('.overlay .dialog'), 'merge confirm')
@@ -970,6 +993,7 @@ await step('right-click a label merges that one; conflicts read Current (branch)
   if (!/Incoming\s*conf-a/.test(hub) || !/Current\s*conf-b/.test(hub) || !hub.includes('c.txt')) throw new Error('hub: ' + hub)
   await new Promise((r) => setTimeout(r, 500))
   await shot('10a-conflicts')
+  await phoneCheck('conflicts')
   await clickText('.cf-file .btn', 'Resolve')
   await until(() => page.$('.resolver .res-block'), 'resolver opens')
   const heads = await page.$$eval('.res-side-head', (hs) => hs.map((x) => x.textContent))
@@ -978,6 +1002,7 @@ await step('right-click a label merges that one; conflicts read Current (branch)
   await until(() => exists('.res-result-box:not(.hidden)'), 'result shown')
   await new Promise((r) => setTimeout(r, 500))
   await shot('10-resolver')
+  await phoneCheck('resolver')
   await clickText('.sheet .btn.primary', 'Save & mark resolved')
   await until(() => !g('diff', '--name-only', '--diff-filter=U'), 'no conflicts left')
   const out = readFileSync(path.join(repo, 'c.txt'), 'utf8')
@@ -1014,7 +1039,7 @@ await step('conflicts page: one file incoming, one by AI, the rest "accept all c
   const m2 = readFileSync(path.join(repo, 'm2.txt'), 'utf8')
   if (!m2.includes('A2') || !m2.includes('B2') || m2.includes('<<<<<<<')) throw new Error('m2: ' + m2)
   // the rest: accept all current
-  await until(() => exists('.cf-all'), 'page reopened again')
+  await until(() => page.evaluate(() => !!document.querySelector('.cf-all') && !document.querySelector('.cf-file[data-path="m2.txt"]:not(.cf-ok)')), 'page reopened without m2')
   await clickText('.cf-all .btn', 'Accept all current')
   await until(() => !g('diff', '--name-only', '--diff-filter=U'), 'no conflicts left')
   if (!readFileSync(path.join(repo, 'm3.txt'), 'utf8').includes('B3')) throw new Error('m3 did not keep current')
@@ -1078,6 +1103,7 @@ await step('reset explains each kind and how to get commits back', async () => {
   const t = await page.$eval('.choice-dialog', (d) => d.textContent)
   for (const want of ['Keep the changes, staged', 'Keep the changes, not staged', 'Throw the changes away', 'leave', 'Undo or from Reflog']) if (!t.includes(want)) throw new Error('reset dialog misses: ' + want + ' / ' + t.slice(0, 200))
   await shot('15-reset')
+  await phoneCheck('reset')
   await clickText('.choice-dialog .btn', 'Reset')
   await until(() => g('rev-parse', 'HEAD') === target, 'HEAD moved (mixed)')
   g('reset', '-q', '--hard', before)
@@ -1093,7 +1119,13 @@ await step('interactive rebase: squash one into the one above, reword one, summa
   await until(() => exists(`.commit-row[data-hash="${base}"]`), 'base row')
   await page.click(`.commit-row[data-hash="${base}"]`, { button: 'right' })
   await until(() => exists('.menu'), 'commit menu')
-  for (const b of await page.$$('.menu button')) if (/^More\b/.test(await b.evaluate((x) => x.textContent.trim()))) await b.hover()
+  for (const b of await page.$$('.menu button')) if (/^More\b/.test(await b.evaluate((x) => x.textContent.trim()))) {
+    await b.hover()
+    // hover opens it after a short pause; the keyboard way (→) when the pointer was not taken as hovering
+    const open = () => page.$$eval('.menu button', (bs) => bs.some((x) => x.textContent.includes('Interactive rebase from here')))
+    await new Promise((r) => setTimeout(r, 400))
+    if (!(await open())) (await b.focus(), await page.keyboard.press('ArrowRight'))
+  }
   await until(() => page.$$eval('.menu button', (bs) => bs.some((x) => x.textContent.includes('Interactive rebase from here'))), 'More submenu open')
   await clickText('.menu button', 'Interactive rebase from here')
   await until(() => page.$$eval('.rb-row', (r) => r.length === 3), 'three rows')
@@ -1104,6 +1136,7 @@ await step('interactive rebase: squash one into the one above, reword one, summa
   const sum = await page.$eval('.rb-summary', (x) => x.textContent)
   if (!/3 → 2 commits/.test(sum) || !/1 joined/.test(sum) || !/1 reworded/.test(sum)) throw new Error('summary: ' + sum)
   await shot('16-rebase')
+  await phoneCheck('rebase')
   await clickText('.rb-dialog .btn', 'Start')
   await until(() => g('log', '-2', '--format=%s') === 'rb three, renamed\nrb 1', 'history rewritten', 20000)
   if (!readFileSync(path.join(repo, 'rb2.txt'), 'utf8')) throw new Error('squashed change lost')
@@ -1155,6 +1188,10 @@ await step('no stray "false", "null" or "[object" text anywhere', async () => {
     return out
   })
   if (bad.length) throw new Error(bad.join('; '))
+})
+
+await step('pages that open on top fit a phone (MR, conflicts, rebase, reset)', async () => {
+  if (phoneIssues.length) throw new Error(phoneIssues.join('\n      '))
 })
 
 await step('no page errors', async () => {

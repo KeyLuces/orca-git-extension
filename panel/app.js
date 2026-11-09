@@ -2463,7 +2463,8 @@ async function commitContextMenu(e, c) {
 function commitMenu(anchor, c, clicked) {
   const cur = state.status?.branch || 'HEAD'
   const short = c.hash.slice(0, 7)
-  const isHead = c.hash === state.status?.oid
+  // the graph's own labels say which commit is checked out; the status can lag a commit made outside the app
+  const isHead = c.refs ? c.refs.some((r) => r === 'HEAD' || r.startsWith('HEAD -> ')) : c.hash === state.status?.oid
   const isMerge = (c.parents?.length ?? 0) > 1
   const bis = state.status?.bisect
   const refs = (c.refs || []).filter((r) => r !== 'HEAD')
@@ -6123,8 +6124,15 @@ function openConflicts() {
     if (state.status?.state) openConflicts()
   }
   /** Keep one side of whole files (several at once): one refresh at the end. */
+  // act only on files that still conflict (the page may be a moment behind what was just done)
+  const stillConflicted = (paths) => {
+    const now = new Set((state.status?.files || []).filter((f) => f.conflict).map((f) => f.path))
+    return paths.filter((x) => now.has(x))
+  }
   async function takeWhole(paths, side) {
     if (busy) return
+    paths = stillConflicted(paths)
+    if (!paths.length) return reopen()
     busy = true
     setBusy(1)
     const name = side === 'ours' ? sides.current : sides.incoming
@@ -6140,14 +6148,16 @@ function openConflicts() {
       toast(e.message, 'error')
     } finally {
       setBusy(-1)
+      await refreshAll() // the page stays busy until it shows the new state
       busy = false
-      await refreshAll()
       reopen()
     }
   }
   /** AI resolves the files one by one; each is saved and staged, then shown as "AI · Review". */
   async function aiFiles(paths) {
     if (busy) return
+    paths = stillConflicted(paths)
+    if (!paths.length) return reopen()
     busy = true
     let done = 0
     const fails = []
@@ -6169,10 +6179,10 @@ function openConflicts() {
         if (tag) append(clear(tag), [icon('alert', 11), 'AI could not resolve it'])
       }
     }
-    busy = false
     if (done) toast(`AI resolved ${done} file${done > 1 ? 's' : ''}. Review them before you commit.`, 'ok', 7000)
     if (fails.length) toast(fails.join('\n'), 'error', 9000)
     await refreshAll()
+    busy = false
     reopen()
   }
   const left = files.map((f) => f.path)
@@ -6223,6 +6233,8 @@ function openConflicts() {
   }
   async function applyAuto(paths) {
     if (busy) return
+    paths = stillConflicted(paths)
+    if (!paths.length) return reopen()
     busy = true
     setBusy(1)
     let n = 0
@@ -6238,8 +6250,8 @@ function openConflicts() {
       toast(e.message, 'error')
     } finally {
       setBusy(-1)
-      busy = false
       await refreshAll()
+      busy = false
       reopen()
     }
   }
