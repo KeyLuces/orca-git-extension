@@ -652,6 +652,8 @@ const apiServer = http.createServer((req, res) => {
     if (req.method === 'GET' && /merge_requests$/.test(u.pathname)) {
       const role = u.search.includes('reviewer_username') ? 'review' : u.search.includes('assignee_username') ? 'assigned' : u.search.includes('author_username') ? 'mine' : 'repo'
       const n = { review: 11, assigned: 12, mine: 13, repo: 14 }[role]
+      if (u.search.includes('state=merged'))
+        return send(200, api.merged.has(n) ? [{ iid: n, project_id: 5, state: 'merged', merged_at: new Date().toISOString(), web_url: `https://gitlab2.example.test/team/app/-/merge_requests/${n}`, title: `MR ${role}`, author: { username: 'dev' }, source_branch: 's' + n, target_branch: 'main', updated_at: new Date().toISOString(), references: { full: 'team/app!' + n } }] : [])
       if (api.merged.has(n)) return send(200, role === 'review' ? [{ iid: 99, project_id: 6, web_url: 'https://gitlab2.example.test/other/proj/-/merge_requests/99', title: 'MR other repo', author: { username: 'dev' }, source_branch: 'x', target_branch: 'main', updated_at: new Date().toISOString(), references: { full: 'other/proj!99' } }] : [])
       return send(200, [
         {
@@ -861,7 +863,9 @@ await step('Review & MR list: approve leaves To review, multi-select merge, real
   await until(() => ['12', '14'].every((n) => api.calls.some((c) => c.method === 'PUT' && c.path.endsWith(`/merge_requests/${n}/merge`))), 'both merges sent', 30000)
   const body = api.calls.find((c) => c.method === 'PUT')?.body || {}
   if (body.should_remove_source_branch !== true) throw new Error('merge options ' + JSON.stringify(body))
-  await until(() => page.$eval('.reviews .rv-list', (r) => !r.textContent.includes('MR assigned') && !r.textContent.includes('MR repo')).catch(() => false), 'merged ones left the list', 20000)
+  // under All they stay, marked Merged, with nothing to click but open
+  await until(() => page.$$eval('.reviews .review-row.rv-done', (rs) => ['MR assigned', 'MR repo'].every((t) => rs.some((r) => r.textContent.includes(t) && r.textContent.includes('Merged') && !r.querySelector('.rv-merge, .rv-approve, .rv-check')))).catch(() => false), 'merged ones marked Merged under All', 20000)
+  await until(() => page.$$eval('.reviews .review-row:not(.rv-done)', (rs) => !rs.some((r) => /MR assigned|MR repo/.test(r.textContent))).catch(() => false), 'no open row left for the merged ones', 20000)
   if (await page.$eval('.rv-bulk', (b) => b.classList.contains('on'))) throw new Error('bulk bar still showing')
   // search narrows the list; Clear filters brings it back (typed slowly: focus stays through redraws)
   await page.focus('.rv-search')

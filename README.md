@@ -36,7 +36,7 @@ straight to a shared main branch is pointed out first. **Ctrl+Z** undoes the las
 ![The Commit tab: changed files on the left, the diff on the right](assets/screenshots/commit.png)
 
 ### Review merge requests
-**Review & MR** has three tabs: **To review** (asked to review or assigned to you), **Opened by me** and **All**;
+**Review & MR** has three tabs: **To review** (asked to review or assigned to you), **Opened by me** and **All** (which also lists the latest merged ones, marked **Merged**);
 the count is what still waits for your approval, and it shows as soon as a project opens. Search, filter by project
 or label, and see new comments since you last looked. Approve or merge right from the list, or tick several and **Approve & merge** them together:
 they merge in the background while you keep working. Within one project they go one at a time, each waiting

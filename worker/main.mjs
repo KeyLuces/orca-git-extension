@@ -1660,18 +1660,26 @@ async function githubInbox(h, where, via) {
   if (via === 'cli') {
     const meR = await runProc('gh', ['api', 'user', '--jq', '.login'], { timeout: 20_000, env: h.host === 'github.com' ? undefined : { GH_HOST: h.host } }).catch(() => null)
     base.me = meR?.code === 0 ? meR.stdout.trim() : ''
-    const fields = 'number,title,url,repository,author,updatedAt,isDraft,labels,commentsCount'
+    const fields = 'number,title,url,repository,author,updatedAt,isDraft,labels,commentsCount,state'
     const env = h.host === 'github.com' ? undefined : { GH_HOST: h.host }
     const search = (...q) => runProc('gh', ['search', 'prs', ...q, '--state=open', '--json', fields, '--limit', '50'], { timeout: 30_000, env })
-    const [rev, asg, mine, repo] = await Promise.all([
+    const merged = (...q) => runProc('gh', ['search', 'prs', ...q, '--merged', '--sort', 'updated', '--json', fields, '--limit', '20'], { timeout: 30_000, env })
+    const none = Promise.resolve({ code: 0, stdout: '[]' })
+    const [rev, asg, mine, repo, dRev, dAsg, dMine, dRepo] = await Promise.all([
       search('--review-requested=@me'),
       search('--assignee=@me'),
       search('--author=@me'),
-      here ? search('--repo', here) : Promise.resolve({ code: 0, stdout: '[]' })
+      here ? search('--repo', here) : none,
+      merged('--review-requested=@me'),
+      merged('--assignee=@me'),
+      merged('--author=@me'),
+      here ? merged('--repo', here) : none
     ])
     if (rev.code !== 0 && asg.code !== 0) throw new GitError((rev.stderr || asg.stderr).trim() || 'gh could not list pull requests')
-    return collect([[jsonOf(rev), 'review'], [jsonOf(asg), 'assigned'], [jsonOf(mine), 'mine'], [jsonOf(repo), 'repo']], (p) => ({
+    const roles = ['review', 'assigned', 'mine', 'repo']
+    return collect([rev, asg, mine, repo, dRev, dAsg, dMine, dRepo].map((r, i) => [jsonOf(r), roles[i % 4]]), (p) => ({
       ...base,
+      state: p.state === 'MERGED' || p.state === 'merged' ? 'merged' : /closed/i.test(p.state || '') ? 'closed' : 'open',
       url: p.url,
       number: p.number,
       title: p.title,
@@ -1687,10 +1695,15 @@ async function githubInbox(h, where, via) {
   const me = await forgeApi(h, 'GET', '/user')
   if (!me?.login) throw new GitError(`could not tell who is signed in to ${h.host}`)
   base.me = me.login
-  const q = (s) => forgeApi(h, 'GET', `/search/issues?per_page=50&q=${encodeURIComponent(`is:pr is:open ${s}`)}`).then((r) => r?.items || [])
-  const [rev, asg, mine, repo] = await Promise.all([q(`review-requested:${me.login}`), q(`assignee:${me.login}`), q(`author:${me.login}`), here ? q(`repo:${here}`) : []])
-  return collect([[rev, 'review'], [asg, 'assigned'], [mine, 'mine'], [repo, 'repo']], (p) => ({
+  const q = (s, st = 'open', n = 50) => forgeApi(h, 'GET', `/search/issues?per_page=${n}&sort=updated&q=${encodeURIComponent(`is:pr is:${st} ${s}`)}`).then((r) => r?.items || [])
+  const scopes = [`review-requested:${me.login}`, `assignee:${me.login}`, `author:${me.login}`, here ? `repo:${here}` : null]
+  const roles = ['review', 'assigned', 'mine', 'repo']
+  // open ones, then the latest merged ones (for the All tab)
+  const lists = await Promise.all([...scopes.map((s) => (s ? q(s) : [])), ...scopes.map((s) => (s ? q(s, 'merged', 20).catch(() => []) : []))])
+  return collect(lists.map((l, i) => [l, roles[i % 4]]), (p) => ({
     ...base,
+    state: p.pull_request?.merged_at ? 'merged' : p.state === 'closed' ? 'closed' : 'open',
+    mergedAt: p.pull_request?.merged_at ? Date.parse(p.pull_request.merged_at) / 1000 : null,
     url: p.html_url,
     number: p.number,
     title: p.title,
@@ -1719,9 +1732,22 @@ async function gitlabInbox(h, where, via) {
   // never silently shown as empty
   const once = (p) => gitlabGet(h, via, p).then((r) => (Array.isArray(r) ? r : Promise.reject(new Error('no list'))))
   const soft = (p) => once(p).catch(() => new Promise((res) => setTimeout(res, 800)).then(() => once(p))).catch(() => null)
-  const [rev, asg, mine, repo] = await Promise.all([soft(`${q}&reviewer_username=${u}`), soft(`${q}&assignee_username=${u}`), soft(`${q}&author_username=${u}`), here ? soft(here) : []])
+  // merged ones too (for the All tab): the latest of each list
+  const done = (p) => p.replace('state=opened', 'state=merged').replace('per_page=50', 'per_page=20&order_by=updated_at')
+  const [rev, asg, mine, repo, dRev, dAsg, dMine, dRepo] = await Promise.all([
+    soft(`${q}&reviewer_username=${u}`),
+    soft(`${q}&assignee_username=${u}`),
+    soft(`${q}&author_username=${u}`),
+    here ? soft(here) : [],
+    soft(done(`${q}&reviewer_username=${u}`)),
+    soft(done(`${q}&assignee_username=${u}`)),
+    soft(done(`${q}&author_username=${u}`)),
+    here ? soft(done(here)) : []
+  ])
   if (rev === null && asg === null && mine === null) throw new GitError(`could not list merge requests on ${h.host} (it did not answer); showing the last list`)
-  return collect([[rev, 'review'], [asg, 'assigned'], [mine, 'mine'], [repo, 'repo']], (m) => ({
+  return collect([[rev, 'review'], [asg, 'assigned'], [mine, 'mine'], [repo, 'repo'], [dRev, 'review'], [dAsg, 'assigned'], [dMine, 'mine'], [dRepo, 'repo']], (m) => ({
+    state: m.state === 'merged' ? 'merged' : m.state === 'closed' ? 'closed' : 'open',
+    mergedAt: m.merged_at ? Date.parse(m.merged_at) / 1000 : null,
     provider: 'gitlab',
     host: h.host,
     protocol: h.protocol,
@@ -1783,7 +1809,7 @@ async function reviewsList(orca, repo) {
   providers.forEach((p) => delete p._h)
   items.sort((a, b) => b.updated - a.updated)
   await Promise.all(
-    items.slice(0, 40).map(async (it) => {
+    items.filter((it) => it.state === 'open').slice(0, 40).map(async (it) => {
       const [ci, ap] = await Promise.all([reviewCi(it).catch(() => null), reviewApprovals(it).catch(() => null)])
       it.ci = ci
       if (ap) Object.assign(it, ap)
@@ -3304,7 +3330,7 @@ Click to open Git Control`
     try {
       const { items, providers } = await reviewsList(orca)
       if (!providers.some((p) => p.signedIn)) return orca.host.call('statusBar.update', { id: 'reviews', visible: false }).catch(() => {})
-      const waiting = items.filter((i) => i.roles.includes('review') || i.roles.includes('assigned'))
+      const waiting = items.filter((i) => i.state === 'open' && (i.roles.includes('review') || i.roles.includes('assigned')))
       await orca.host.call('statusBar.update', {
         id: 'reviews',
         visible: waiting.length > 0,

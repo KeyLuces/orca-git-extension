@@ -1648,3 +1648,8 @@ body.compact .pc-ref, body.compact .pc-stages, body.compact .pc-by, .side-panel 
 .rv-q.run { background: color-mix(in srgb, #e0b050 16%, transparent); color: #d9a640; }
 .rv-q.bad { background: color-mix(in srgb, #e5534b 16%, transparent); color: #e5534b; }
 .review-row.rv-queued { opacity: .92; }
+.pill.rv-merged { display: inline-flex; align-items: center; gap: 4px; color: #a371f7; background: color-mix(in srgb, #a371f7 16%, transparent); border: 1px solid color-mix(in srgb, #a371f7 40%, transparent); font-weight: 600; }
+.pill.rv-closed { color: var(--del, #f85149); border: 1px solid color-mix(in srgb, var(--del, #f85149) 40%, transparent); }
+.review-row.rv-done .review-icon { color: #a371f7; }
+.review-row.rv-done .review-title > .ellipsis { opacity: .8; }
+.rv-check-gap { display: inline-block; width: 13px; flex: none; }

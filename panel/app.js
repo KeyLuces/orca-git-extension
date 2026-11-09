@@ -4923,12 +4923,14 @@ function reviewCount() {
 }
 /** Waiting for me: I am asked to review it or it is assigned to me, it is not mine, and I have not approved it yet. */
 const isMine = (it) => it.roles.includes('mine') || (!!it.me && it.author === it.me)
-const needsMe = (it) => (it.roles.includes('review') || it.roles.includes('assigned')) && !isMine(it) && !it.myApproved
+/** Still open (merged and closed ones are listed only under All). */
+const isOpenMr = (it) => !it.state || it.state === 'open'
+const needsMe = (it) => isOpenMr(it) && (it.roles.includes('review') || it.roles.includes('assigned')) && !isMine(it) && !it.myApproved
 /** Mine to look at: asked to review or assigned, not my own (approved ones stay, marked Waiting merge). */
-const forMe = (it) => (it.roles.includes('review') || it.roles.includes('assigned')) && !isMine(it)
+const forMe = (it) => isOpenMr(it) && (it.roles.includes('review') || it.roles.includes('assigned')) && !isMine(it)
 const RV_TABS = [
   ['todo', 'To review', forMe],
-  ['mine', 'Opened by me', isMine],
+  ['mine', 'Opened by me', (it) => isOpenMr(it) && isMine(it)],
   ['all', 'All', () => true]
 ]
 const ciBusy = (it) => it.ci === 'running' || it.ci === 'pending'
@@ -5076,13 +5078,14 @@ async function viewReviews() {
   for (const e of data.errors || []) root.append(h('div', { class: 'banner' }, h('div', { class: 'row' }, icon('alert'), h('span', null, e))))
 
   const fn = RV_TABS.find(([k]) => k === filter)[2]
-  const items = scoped.filter(fn).sort((a, b) => (needsMe(b) ? 1 : 0) - (needsMe(a) ? 1 : 0))
-  for (const u of [...state.rvSel]) if (!items.some((it) => it.url === u)) state.rvSel.delete(u)
+  const items = scoped.filter(fn).sort((a, b) => (isOpenMr(b) ? 1 : 0) - (isOpenMr(a) ? 1 : 0) || (needsMe(b) ? 1 : 0) - (needsMe(a) ? 1 : 0))
+  const openItems = items.filter(isOpenMr)
+  for (const u of [...state.rvSel]) if (!openItems.some((it) => it.url === u)) state.rvSel.delete(u)
   const selAll = h('input', { type: 'checkbox', class: 'rv-check', title: 'Select all', 'aria-label': 'Select all' })
-  selAll.checked = items.length > 0 && items.every((it) => state.rvSel.has(it.url))
-  selAll.indeterminate = !selAll.checked && items.some((it) => state.rvSel.has(it.url))
+  selAll.checked = openItems.length > 0 && openItems.every((it) => state.rvSel.has(it.url))
+  selAll.indeterminate = !selAll.checked && openItems.some((it) => state.rvSel.has(it.url))
   selAll.addEventListener('change', () => {
-    for (const it of items) selAll.checked ? state.rvSel.add(it.url) : state.rvSel.delete(it.url)
+    for (const it of openItems) selAll.checked ? state.rvSel.add(it.url) : state.rvSel.delete(it.url)
     root.querySelectorAll('.review-row').forEach((r) => r.classList.toggle('sel', state.rvSel.has(r.dataset.url)))
     root.querySelectorAll('.review-row .rv-check').forEach((c) => (c.checked = state.rvSel.has(c.closest('.review-row').dataset.url)))
     drawBulk()
@@ -5091,7 +5094,7 @@ async function viewReviews() {
     h(
       'div',
       { class: 'section-head rv-head' },
-      items.length > 0 && selAll,
+      openItems.length > 0 && selAll,
       { todo: 'Waiting for you (to review, or approved and waiting merge)', mine: 'Opened by you', all: 'All merge requests' }[filter],
       h('span', { class: 'count' }, items.length)
     )
@@ -5315,10 +5318,11 @@ function reviewRow(it, { onSelect, filter } = {}) {
     await runReviewActions([it], action, row.closest('.view'))
   }
   const approvals = it.approvedCount != null && h('span', { class: `rv-appr ${it.approvalsRequired && it.approvedCount >= it.approvalsRequired ? 'ok' : ''}`, title: 'Approvals' }, icon('check', 10), it.approvalsRequired ? `${it.approvedCount}/${it.approvalsRequired}` : String(it.approvedCount))
+  const done = !isOpenMr(it)
   const row = h(
     'div',
-    { class: `review-row ${state.rvSel.has(it.url) ? 'sel' : ''}`, 'data-url': it.url, role: 'button', tabindex: 0, title: `Open ${mrRef(it)}`, onClick: show, onKeydown: (e) => (e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget && (e.preventDefault(), show()) },
-    check,
+    { class: `review-row ${state.rvSel.has(it.url) ? 'sel' : ''} ${done ? 'rv-done' : ''}`, 'data-url': it.url, role: 'button', tabindex: 0, title: `Open ${mrRef(it)}`, onClick: show, onKeydown: (e) => (e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget && (e.preventDefault(), show()) },
+    done ? h('span', { class: 'rv-check-gap' }) : check,
     h('span', { class: 'review-icon' }, icon('merge', 15)),
     h(
       'div',
@@ -5327,7 +5331,9 @@ function reviewRow(it, { onSelect, filter } = {}) {
         'div',
         { class: 'review-title' },
         h('span', { class: 'ellipsis', title: it.title }, it.title),
-        it.draft && h('span', { class: 'pill' }, 'Draft'),
+        it.state === 'merged' && h('span', { class: 'pill rv-merged', title: it.mergedAt ? `Merged ${ago(it.mergedAt)}` : 'Merged' }, icon('merge', 10), 'Merged'),
+        it.state === 'closed' && h('span', { class: 'pill rv-closed' }, 'Closed'),
+        !done && it.draft && h('span', { class: 'pill' }, 'Draft'),
         it.roles.includes('review') && h('span', { class: 'pill role' }, 'Review requested'),
         it.roles.includes('assigned') && h('span', { class: 'pill role' }, 'Assigned'),
         it.roles.includes('mine') && h('span', { class: 'pill role' }, 'Mine'),
@@ -5354,8 +5360,8 @@ function reviewRow(it, { onSelect, filter } = {}) {
       'div',
       { class: 'review-actions' },
       h('span', { class: 'rv-result' }),
-      !isMine(it) && !it.myApproved && h('button', { class: 'btn sm rv-approve', title: `Approve ${mrRef(it)}`, onClick: act('approve') }, icon('check', 12), 'Approve'),
-      h('button', { class: `btn sm rv-merge ${it.myApproved || isMine(it) ? 'primary' : ''}`, title: ciBusy(it) ? `GitLab merges ${mrRef(it)} as soon as its pipeline passes` : `Merge ${mrRef(it)} now (if it can be merged)`, onClick: act('merge') }, icon('merge', 12), ciBusy(it) ? 'Merge when CI passes' : 'Merge now'),
+      !done && !isMine(it) && !it.myApproved && h('button', { class: 'btn sm rv-approve', title: `Approve ${mrRef(it)}`, onClick: act('approve') }, icon('check', 12), 'Approve'),
+      !done && h('button', { class: `btn sm rv-merge ${it.myApproved || isMine(it) ? 'primary' : ''}`, title: ciBusy(it) ? `GitLab merges ${mrRef(it)} as soon as its pipeline passes` : `Merge ${mrRef(it)} now (if it can be merged)`, onClick: act('merge') }, icon('merge', 12), ciBusy(it) ? 'Merge when CI passes' : 'Merge now'),
       h('button', { class: 'icon-btn', title: `Open the ${noun} in the browser`, onClick: (e) => (e.stopPropagation(), open()) }, icon('open', 14)),
       h('span', { class: 'review-chev', 'aria-hidden': 'true' }, icon('right', 14))
     )
