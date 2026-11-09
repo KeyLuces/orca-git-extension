@@ -50,6 +50,11 @@ branch* and *Squash commits* (or **Merge when pipeline passes**), or the reason 
 
 ![A merge request's detail page with description, reviewers, approvals and activity](assets/screenshots/merge-request.png)
 
+When someone asks you to review or assigns you a merge request, Orca shows a notification, on your desktop and
+on your phone through Orca's app, and **3 reviews** waits in the status bar until you open them.
+
+![Notifications for review requests on a phone and the desktop](assets/promo/notifications.png)
+
 ### Open a merge request
 Right-click a branch → **Merge request** and pick the direction (written source → target). The title and
 description are filled in the way GitLab does it, assignees and reviewers come from the project, and

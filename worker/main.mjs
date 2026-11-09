@@ -865,9 +865,10 @@ function runProc(bin, args, { cwd, input, timeout = 60_000, shell = false, env }
 
 // ---------- full-tab graph ----------
 
-// Orca names a tab after its file: "Git.Control" reads as the tool's name (the .control extension opens Git Control)
-const TAB_FILE = 'Git.Control'
-const OLD_TAB_FILE = '.orca-git-graph.gitgraph'
+// Orca names a tab after its file: "Git.control" reads as the tool's name (the .control extension opens
+// Git Control). The extension stays lowercase: Orca's phone app matches it case-sensitively.
+const TAB_FILE = 'Git.control'
+const OLD_TAB_FILES = ['.orca-git-graph.gitgraph', 'Git.Control']
 
 /**
  * Keep Git Control tab files (this one and the "untitled.gitgraph" the + menu creates) out of
@@ -891,11 +892,13 @@ async function openGraphTab(repo, { focus = true } = {}) {
   const top = (await paths(repo)).toplevel
   const file = path.join(top, TAB_FILE)
   await ignoreGraphFiles(top) // ignored before the file exists, so it never shows as a change
+  // tab files of earlier versions; removed first, since on Windows and macOS "Git.Control" and
+  // "Git.control" are one file and writing would keep the old spelling
+  for (const old of OLD_TAB_FILES)
+    try {
+      if (readdirSync(top).includes(old)) rmSync(path.join(top, old), { force: true })
+    } catch {}
   writeFileSync(file, JSON.stringify({ repo: top }) + '\n')
-  // the tab file of earlier versions (its tab read ".orca-git-graph.gitgraph")
-  try {
-    rmSync(path.join(top, OLD_TAB_FILE), { force: true })
-  } catch {}
   const r = await runProc(ORCA_BIN, ['file', 'open', file, '--worktree', `path:${top}`, ...(focus ? ['--focus'] : []), '--json'], {
     timeout: 15_000
   })

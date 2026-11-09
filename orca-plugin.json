@@ -4,7 +4,7 @@
   "execution": "trusted-worker",
   "id": "git-control",
   "name": "Git Control",
-  "version": "0.8.5",
+  "version": "0.8.6",
   "description": "A Git client inside Orca, with AI: commit graph, commits, merges with a side-by-side conflict resolver, interactive rebase, stashes and worktrees, plus GitHub and GitLab merge requests (approve and merge) and every branch's pipelines, with your existing Git login. In a full tab and the right sidebar.",
   "license": "MIT",
   "author": {
@@ -33,9 +33,9 @@
       "caption": "Approve and merge like on GitLab"
     },
     {
-      "path": "assets/promo/new-merge-request.png",
-      "alt": "The new merge request dialog with title, description, assignees and reviewers",
-      "caption": "Open a merge request with your Git login"
+      "path": "assets/promo/notifications.png",
+      "alt": "A phone lock screen and a desktop toast showing Git Control notifications for review requests and assigned merge requests",
+      "caption": "Notified when a review is yours"
     },
     {
       "path": "assets/promo/pipeline.png",
