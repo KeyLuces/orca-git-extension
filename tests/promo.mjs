@@ -47,7 +47,7 @@ const cover = () => `<!doctype html><html><head><meta charset="utf-8"><style>
   <div class="head"><img src="data:image/png;base64,${icon()}"><h1>Git Control <span>for Orca</span></h1>
   <p class="sub">A full Git client inside Orca, for GitHub and GitLab, <b style="color:#b49be8">with AI</b>.</p></div>
   <div class="grid">${FEATS.map(([t, d, svg]) => `<div class="card"><i>${svg}</i><h3>${t}</h3><p>${d}</p></div>`).join('')}</div>
-  <div class="foot"><b>AI</b> commit messages, MR reviews and conflict resolving &nbsp;·&nbsp; Uses the Git login you already have &nbsp;·&nbsp; <b>Ctrl+K</b> for every command &nbsp;·&nbsp; Light and dark themes</div>
+  <div class="foot"><b>AI</b> commit messages, MR reviews and conflict resolving &nbsp;·&nbsp; Uses the Git login you already have &nbsp;·&nbsp; <b>Ctrl+.</b> for every command &nbsp;·&nbsp; Light and dark themes</div>
 </body></html>`
 
 

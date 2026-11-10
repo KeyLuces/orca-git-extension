@@ -4,7 +4,7 @@
   "execution": "trusted-worker",
   "id": "git-control",
   "name": "Git Control",
-  "version": "0.8.10",
+  "version": "0.8.11",
   "description": "A Git client inside Orca, with AI: commit graph, commits, merges with a side-by-side conflict resolver, interactive rebase, stashes and worktrees, plus GitHub and GitLab merge requests (approve and merge) and every branch's pipelines, with your existing Git login. In a full tab and the right sidebar.",
   "license": "MIT",
   "author": {

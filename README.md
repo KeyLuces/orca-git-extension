@@ -76,7 +76,7 @@ non-conflicting** merges them in one click, and **Show base** shows the file as 
 **Interactive rebase** (right-click a commit → More): drag commits to reorder; keep, reword (type the new message in
 place), squash, fixup or drop each one; a line says what the branch will look like before you start. **Reset**
 explains each kind (keep staged, keep unstaged, keep only your work, throw away) and how to get commits back.
-**Ctrl+K → Show git commands** lists the exact git commands that ran, and can show them with each action.
+**Ctrl+. → Show git commands** lists the exact git commands that ran, and can show them with each action.
 
 ### Fix a failing pipeline
 The **CI** badge next to the branch shows the latest pipeline. Click it to see the jobs by stage, open
@@ -94,7 +94,7 @@ updates by itself while runs go on, and a click opens the run's jobs and logs.
 ![The Pipelines tab with every branch's runs, their stages and who started them](assets/screenshots/pipelines.png)
 
 ### Work by keyboard
-**Ctrl+K** opens every command by name (fetch, pull, push, stash, new branch, any tab). In the graph,
+**Ctrl+.** opens every command by name (fetch, pull, push, stash, new branch, any tab). In the graph,
 ↑ ↓ (or j k) move, Enter opens, / searches and Esc closes. **Ctrl+Z** undoes the last action.
 
 ### And also

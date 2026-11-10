@@ -252,11 +252,11 @@ await step('split view: a commit opens docked beside the graph; arrows follow; E
   if (!(await page.$eval('#main', (m) => parseFloat(getComputedStyle(m).marginRight) === 0))) throw new Error('graph kept the room after closing')
 })
 
-await step('Ctrl+K runs a command; toolbar sits on the right', async () => {
+await step('Ctrl+. runs a command; toolbar sits on the right', async () => {
   const tb = await page.$eval('#toolbar', (t) => t.getBoundingClientRect().right)
   const vw = await page.evaluate(() => innerWidth)
   if (vw - tb > 40) throw new Error(`toolbar is not on the right (right edge ${tb} of ${vw})`)
-  await page.keyboard.down('Control'); await page.keyboard.press('KeyK'); await page.keyboard.up('Control')
+  await page.keyboard.down('Control'); await page.keyboard.press('Period'); await page.keyboard.up('Control')
   await until(() => page.$('.palette .pal-input').then(Boolean), 'palette opens')
   await page.keyboard.type('reflog')
   await shot('02d-palette')
@@ -1191,7 +1191,7 @@ await step('interactive rebase: squash one into the one above, reword one, summa
 })
 
 await step('command log lists the git commands that ran', async () => {
-  await page.keyboard.down('Control'); await page.keyboard.press('KeyK'); await page.keyboard.up('Control')
+  await page.keyboard.down('Control'); await page.keyboard.press('Period'); await page.keyboard.up('Control')
   await until(() => exists('.pal-input'), 'palette')
   await page.keyboard.type('Show git commands')
   await page.keyboard.press('Enter')

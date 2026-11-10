@@ -2422,7 +2422,7 @@ function renderHeader() {
     sep(),
     phoneLbl(iconBtn('refresh', 'Refresh', () => manualRefresh(), { disabled: !state.repo }), 'Refresh'),
     phoneLbl(iconBtn('undo', 'Undo the last action (commit, reset, merge, rebase…)', undoLast, { disabled: dis }), 'Undo'),
-    IN_TAB && phoneLbl(iconBtn('search', 'Commands (Ctrl+K)', () => commandPalette(), { disabled: dis }), 'Actions'),
+    IN_TAB && phoneLbl(iconBtn('search', 'Commands (Ctrl+.)', () => commandPalette(), { disabled: dis }), 'Actions'),
     phoneLbl(iconBtn('settings', 'Git settings (identity, HTTPS, remotes)', () => setTab('settings'), { disabled: !state.repo }), 'Settings'),
     !IN_TAB && iconBtn('expand', 'Open Git Control in a full tab', openTab, { disabled: dis })
   ])
@@ -8947,13 +8947,13 @@ $('#main')?.addEventListener(
   { passive: true }
 )
 
-/** ↑/↓ (or j/k) move through the graph; Enter opens; / searches; Esc closes. Ctrl+K: commands. */
+/** ↑/↓ (or j/k) move through the graph; Enter opens; / searches; Esc closes. Ctrl+.: commands (Ctrl+K belongs to Orca). */
 document.addEventListener('keydown', (e) => {
   if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'z' && !e.target.closest?.('input, textarea, [contenteditable]') && !document.querySelector('.overlay, .menu') && state.repo) {
     e.preventDefault()
     return undoLast()
   }
-  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'k') {
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.code === 'Period' || e.key === '.')) {
     if (!state.repo || document.querySelector('.overlay')) return
     e.preventDefault()
     return commandPalette()
@@ -9001,7 +9001,7 @@ document.addEventListener('keydown', (e) => {
 // the mouse takes over from the keyboard selection
 document.addEventListener('mousemove', () => document.querySelector('#main .commit-row.kbd')?.classList.remove('kbd'), { passive: true })
 
-/** Ctrl+K: type what to do (push, new branch, stash, a tab…) and press Enter. */
+/** Ctrl+.: type what to do (push, new branch, stash, a tab…) and press Enter. */
 function commandPalette() {
   closeOverlays()
   const st = state.status || {}
@@ -9072,7 +9072,7 @@ function commandPalette() {
 
 function shortcutsHelp() {
   const rows = [
-    ['Ctrl+K', 'Commands'],
+    ['Ctrl+.', 'Commands'],
     ['/', 'Search commits'],
     ['↑ ↓ or j k', 'Move through the graph'],
     ['Enter', 'Open the commit'],
