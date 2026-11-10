@@ -136,36 +136,25 @@ the status bar says how many need you, and opens this page. (Idea from
 ![Tag several repos at once: each repo's newest tag and the next version, filled in](assets/screenshots/tag-many.png)
 
 ### Projects on a server (SSH)
-*New in 0.9.0.* Projects on your servers are listed in the repository menu next to the local ones,
-marked with the server (`my-app · office-server`), without opening each one in Orca first. Everything
-works there: the graph, commits, conflicts, rebase, worktrees, merge requests.
+*New in 0.9.0.* Open the repository menu: the projects on your servers are there, next to the local
+ones. Every SSH host you set up in Orca is a server automatically, and its home folder is searched for
+Git repositories. Pick one and everything works as on your computer (the graph, commits, conflicts,
+rebase, worktrees, merge requests); the header shows which server it is on, and Repo Overview lists
+the servers' repos too, under each server.
+
+![The repository menu: projects on a server marked with its name, next to the local ones](assets/screenshots/ssh-repo-menu.png)
 
 ![A repository on an SSH server: its name and server in the header, branches, remotes and the full graph](assets/screenshots/ssh-server-graph.png)
 
-- **Every SSH host you set up in Orca** (Settings → SSH) is a server automatically.
-- **Servers…** in the repository menu lists them with what was found, and adds any other server by its
-  `~/.ssh/config` name or `user@host`. Each one is searched for Git repositories in your home folder,
-  4 levels deep (dependency and hidden folders skipped); change the folders, search again or hide a
-  server there.
+**Servers…** at the bottom of the menu lists them: add another by its name (your SSH hosts are
+suggested as you type), and from a server's ⋯ menu search it again, change the folders searched or hide it.
 
-![Add a server: an SSH host from ~/.ssh/config (suggested as you type) and the folders to search](assets/screenshots/ssh-add-server.png)
+![The Servers page: each server with how many projects were found, and the steps to fix one that cannot be reached](assets/screenshots/servers.png)
 
-Orca's plugins run on your computer, so Git Control connects with your own `ssh` (one shared
-connection per server). When Orca shows a server by its address (`172.26.166.220`), the `~/.ssh/config`
-alias that points to it is used, with its user and key, and the server is shown by that alias. It must log in without a password prompt;
-check in a terminal on your computer:
+![Add a server: one field, your SSH hosts suggested as you type](assets/screenshots/ssh-add-server.png)
 
-```sh
-ssh -o BatchMode=yes <host> 'git --version'
-```
-
-If it asks for a password, add a key (`ssh-copy-id <host>`) or an `IdentityFile` in `~/.ssh/config`;
-the Servers page shows why a server cannot be reached. **Settings → Plugins → Git Control → SSH hosts**
-maps a server name to another ssh destination (`office-server = frank@10.0.0.5`) when needed, and
-**Open path…** takes a folder on a server directly: `ssh://<host>/home/me/my-app`.
-
-`gh`, `glab` and the AI agents still run on your computer; Git's saved login on the server is used for
-GitHub and GitLab when it has one. Hosts paired as a remote Orca server run their own plugins instead.
+Git runs on the server through your own `ssh`, so a server must log in with a key, without a password.
+When one cannot be reached, its row says why and what to do, step by step.
 
 ### Work by keyboard
 **Ctrl+.** opens every command by name (fetch, pull, push, stash, new branch, any tab). In the graph,
@@ -216,6 +205,7 @@ node pipelines-perf.mjs --check                   # Pipelines tab load time agai
 node tag-many.mjs                                 # tag several repos: newest tag, next version, already tagged
 node ai-review-local.mjs                          # Review with AI before a merge request or a commit
 node remote-ops.mjs                               # a repository on an SSH host, through a stand-in ssh
+node servers-ui.mjs <plugin folder> [shots folder] # servers in the panel: menu, Servers page, header badge, overview
 node screenshots.mjs <plugin folder> <out folder> # the screenshots above, on a made-up project
 node promo.mjs <plugin folder>                    # marketplace posters from assets/screenshots → assets/promo
 ```

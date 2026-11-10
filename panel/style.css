@@ -1917,14 +1917,16 @@ body.compact .pc-ref, body.compact .pc-stages, body.compact .pc-by, .side-panel 
 
 /* Servers: SSH hosts whose projects the repository menu lists */
 .servers-intro { margin: 0; padding: 12px 16px; color: var(--t2); font-size: 12px; line-height: 1.5; border-bottom: 1px solid var(--line); }
-.server-row { padding: 10px 12px 10px 16px; border-bottom: 1px solid var(--line); }
+.server-row { padding: 8px 8px 8px 16px; border-bottom: 1px solid var(--line); }
 .server-row > .row { gap: 10px; }
 .server-row > .row > svg { flex: none; color: var(--t3); }
-.server-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.server-meta { color: var(--t3); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.server-name { min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.server-row .pill { flex: none; }
 .server-row.hidden-server .server-name { color: var(--t3); font-weight: 500; }
 .pill.server-bad { background: color-mix(in srgb, var(--del) 18%, transparent); color: var(--del); }
-.server-error { margin: 8px 0 0 26px; padding: 8px 10px; border-radius: 6px; background: color-mix(in srgb, var(--del) 8%, transparent); color: var(--t2); font-size: 12px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+.server-error { margin: 8px 8px 4px 26px; padding: 10px 12px; border-radius: 6px; background: color-mix(in srgb, var(--del) 8%, transparent); color: var(--t2); font-size: 12px; line-height: 1.5; }
+.server-error-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.server-error-actions { margin-top: 8px; }
 
 /* A text field with a suggestion list under it (dialog combo box) */
 .combo { position: relative; display: flex; }
@@ -1942,3 +1944,10 @@ body.compact .pc-ref, body.compact .pc-stages, body.compact .pc-by, .side-panel 
 .combo-detail { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--t3); font-size: 12px; text-align: right; font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace); }
 .combo-item .pill { flex: none; }
 .combo-empty { padding: 8px; color: var(--t3); font-size: 12px; }
+
+/* The server a repository is on, beside its name in the header: the name truncates, never this */
+.host-badge { flex: none; display: inline-flex; align-items: center; gap: 4px; padding: 1px 7px 1px 5px; border-radius: 999px; background: color-mix(in srgb, var(--ren) 14%, transparent); color: var(--ren); font-size: 11px; font-weight: 600; line-height: 16px; }
+.host-badge[hidden] { display: none; }
+.host-badge > span { white-space: nowrap; }
+.repo-btn .host-badge svg { flex: none; color: inherit; }
+#repoName { min-width: 0; }

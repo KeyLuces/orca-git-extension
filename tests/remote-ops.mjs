@@ -96,7 +96,7 @@ const orca = {
           ],
           truncated: false
         }
-      if (m === 'settings.get') return { settings: { sshHosts: `${HOST} = fake-dest, other = x` } }
+      if (m === 'settings.get') return { settings: {} }
       if (m === 'editor.open') return opened.push(p), { opened: true }
       if (m === 'workspace.readContext') return null
       return {}
@@ -115,7 +115,7 @@ try {
   const { workspaces } = await handlers['repo.resolve']({})
   ok(workspaces.length === 1 && workspaces[0].path === R && workspaces[0].host === HOST, 'remote workspace listed by locator', JSON.stringify(workspaces))
   ok(workspaces[0].repoName === path.basename(repo), 'remote workspace repo name read over ssh', workspaces[0].repoName)
-  ok(dests().every((d) => d === 'fake-dest'), 'Settings → SSH hosts maps the target to its ssh destination', dests().join(','))
+  ok(dests().every((d) => d === HOST), 'ssh reaches the host by the name Orca shows', dests().join(','))
 
   // status
   write('new file "q".txt', 'x\n')
@@ -185,6 +185,19 @@ try {
   await handlers['file.open']({ repo: R, file: 'dir one/b.txt' })
   ok(opened.at(-1)?.path === 'dir one/b.txt', 'file opened by workspace-relative path', JSON.stringify(opened.at(-1)))
 
+  // Git.control and .gitignore committed as symlinks: never written through (the file they point to stays)
+  const linkGuard = async (dir, r, where) => {
+    const victim = path.join(W, `victim-${where}`)
+    fs.writeFileSync(victim, 'keep\n')
+    for (const f of ['Git.control', '.gitignore']) fs.rmSync(path.join(dir, f), { force: true }), fs.symlinkSync(victim, path.join(dir, f))
+    const tabErr = await handlers['tab.open']({ repo: r }).then(() => null, (e) => e)
+    ok(tabErr && fs.readFileSync(victim, 'utf8') === 'keep\n', `Git.control symlink not written through (${where})`, tabErr?.message)
+    const ignErr = await op('ignore', { pattern: '*.log' }, r).then(() => null, (e) => e)
+    ok(ignErr && /symbolic link/.test(ignErr.message) && fs.readFileSync(victim, 'utf8') === 'keep\n', `.gitignore symlink not written through (${where})`, ignErr?.message)
+    for (const f of ['Git.control', '.gitignore']) fs.rmSync(path.join(dir, f), { force: true })
+  }
+  await linkGuard(repo, R, 'on the host')
+
   // repo.check gives a locator back
   const chk = await handlers['repo.check']({ path: R })
   ok(chk.ok && chk.toplevel === R, 'repo.check answers with a locator', JSON.stringify(chk))
@@ -192,7 +205,7 @@ try {
   // an unreachable host: a clear error, and quickly the second time
   const down = `ssh://down-host${repo}`
   const e1 = await op('status', {}, down).then(() => null, (e) => e)
-  ok(e1 && /Could not reach down-host over SSH/.test(e1.message) && /SSH hosts/.test(e1.message), 'unreachable host explains what to do', e1?.message)
+  ok(e1 && /Could not reach down-host over SSH/.test(e1.message) && /To fix it:\n1\. .*ssh -o BatchMode=yes down-host/.test(e1.message), 'unreachable host explains, step by step, what to do', e1?.message)
   const before = dests().filter((d) => d === 'down-host').length
   const e2 = await op('status', {}, down).then(() => null, (e) => e)
   ok(e2 && dests().filter((d) => d === 'down-host').length === before, 'unreachable host fails fast without dialing again')
@@ -236,11 +249,36 @@ try {
   ok(srv && srv.source === 'manual' && srv.repoCount === 2 && !srv.error && srv.roots[0] === W, 'server listed with its folders and count', JSON.stringify(srv))
   const viaServer = await op('status', {}, found.repos.find((r) => r.path.endsWith(repo)).path)
   ok(viaServer.branch === 'main', 'a found project opens like any repository')
+
+  // Repo Overview: the servers' projects too, under their server, each read where it is
+  const ov = await handlers['repos.overview']({})
+  const sr = ov.repos.find((r) => r.path === `ssh://office-alias${repo}`)
+  ok(sr && sr.host === 'office-alias' && sr.source === 'server' && sr.group?.server && sr.group.name === 'office-alias' && sr.branch === 'main' && !sr.error && ov.servers, "Repo Overview lists a server's projects, grouped under the server", JSON.stringify(sr))
+  const twin = ov.repos.filter((r) => r.path.toLowerCase() === `ssh://office-alias${repo}`.toLowerCase())
+  ok(twin.length === 1, 'listed once', JSON.stringify(twin.map((r) => r.path)))
+  // tags on a server repo and a local one in one go
+  const localTag = path.join(W, '.local-tag') // hidden: not one of the server's projects
+  g(W, 'init', '-q', localTag)
+  g(localTag, 'commit', '-q', '--allow-empty', '-m', 'x')
+  for (const d of [localTag, repo]) g(d, 'tag', 'v1.0.0', 'HEAD~0')
+  g(repo, 'commit', '-q', '--allow-empty', '-m', 'after tag')
+  g(localTag, 'commit', '-q', '--allow-empty', '-m', 'after tag')
+  const tagRepos = [`ssh://office-alias${repo}`, localTag]
+  const pats = await handlers['repos.tagPatterns']({ repos: tagRepos })
+  ok(pats[0]?.pattern === 'v*' && pats[0].repos === 2, 'tag patterns read on both machines', JSON.stringify(pats))
+  const plan = await handlers['repos.tagPlan']({ repos: tagRepos, pattern: 'v*' })
+  ok(plan.rows.length === 2 && plan.rows.every((r) => !r.error && r.latest === 'v1.0.0' && r.next === 'v1.0.1') && plan.rows[0].repo === tagRepos[0], 'tags planned for a server repo and a local one together', JSON.stringify(plan.rows))
+  const applied = await handlers['repos.tagApply']({ items: plan.rows.map((r) => ({ repo: r.repo, name: r.next, hash: r.hash })), push: false })
+  ok(applied.every((a) => a.ok) && applied[0].repo === tagRepos[0] && g(repo, 'tag', '--list', 'v1.0.1') === 'v1.0.1' && g(localTag, 'tag', '--list', 'v1.0.1') === 'v1.0.1', 'each tag made on its own machine', JSON.stringify(applied))
   await handlers['servers.update']({ id: 'office-alias', hidden: true })
   ok((await handlers['servers.repos']({})).repos.length === 0, 'a hidden server lists no projects')
   await handlers['servers.update']({ id: 'office-alias', hidden: false })
   const badRoots = await handlers['servers.update']({ id: 'office-alias', roots: 'relative/dir' }).then(() => null, (e) => e)
   ok(badRoots && /start it with \/ or ~/.test(badRoots.message), 'folders must be absolute or under ~', badRoots?.message)
+  const two = (await handlers['servers.update']({ id: 'office-alias', roots: `${W}; ~/elsewhere` })).find((x) => x.id === 'office-alias')
+  ok(two?.roots.length === 2 && two.roots[1] === '~/elsewhere', 'folders separated with ; as in Scan folders', JSON.stringify(two?.roots))
+  await handlers['servers.update']({ id: 'office-alias', roots: W })
+  await handlers['servers.repos']({ refresh: true })
   const dup = await handlers['servers.add']({ dest: '-oProxyCommand=x' }).then(() => null, (e) => e)
   ok(dup && /Not a usable ssh destination/.test(dup.message), 'option-like destination refused', dup?.message)
   const downAdd = await handlers['servers.add']({ dest: 'down-host' }).then(() => null, (e) => e)
@@ -259,6 +297,8 @@ try {
   const n = dests().length
   const lst = await op('status', {}, local)
   ok(lst.toplevel === local && dests().length === n, 'local repository untouched by ssh', lst.toplevel)
+  g(local, 'commit', '-q', '--allow-empty', '-m', 'init')
+  await linkGuard(local, local, 'on this computer')
 } catch (e) {
   fails++
   console.log('FAIL (crash)', e.stack)

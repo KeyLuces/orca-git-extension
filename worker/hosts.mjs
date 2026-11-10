@@ -253,12 +253,22 @@ function slot(dest) {
 
 function unreachable(dest, why) {
   const detail = (why || '').split('\n').filter(Boolean).pop() || 'no answer'
-  return new HostError(
-    `Could not reach ${dest} over SSH (${detail}).\n` +
-      `Git Control runs git there with this computer's ssh, without passwords: check that \`ssh ${dest}\` works in a terminal here ` +
-      `(a key, e.g. ssh-copy-id). If you log in to it with another name from ~/.ssh/config, map it in ` +
-      `Settings → Plugins → Git Control → SSH hosts: "${dest} = <that name>".`
-  )
+  // what to do, step by step: shown only here, when a server cannot be reached
+  const auth = /permission denied|publickey|password|host key verification/i.test(detail)
+  const net = /could not resolve|timed out|timeout|no route|refused|unreachable|no answer/i.test(detail)
+  // an address (10.0.4.17, build.example.com) goes in HostName as is; a bare name is already an alias
+  const host = dest.replace(/^.*@/, '').replace(/^ssh:\/\//, '')
+  const address = /^[\d.:[\]]+$|^[\w-]+(\.[\w-]+)+(:\d+)?$/.test(host) ? host.replace(/:\d+$/, '') : '<its address>'
+  const steps = [
+    `In a terminal on this computer, run: ssh -o BatchMode=yes ${dest} 'git --version'`,
+    ...(net && !auth ? ['If it cannot connect: check the address and that the server is on (and your VPN, if it needs one).'] : []),
+    ...(!net || auth
+      ? [`If it asks for a password or says "Permission denied": add your key to the server with ssh-copy-id ${dest}.`]
+      : []),
+    `If you log in to it with another name, user or key, put it in ~/.ssh/config, e.g.\n     Host my-server\n       HostName ${address}\n       User <you>\n       IdentityFile ~/.ssh/<key>\n   Git Control then uses that entry by itself.`,
+    'Then try again.'
+  ]
+  return new HostError(`Could not reach ${dest} over SSH (${detail}).\n\nTo fix it:\n${steps.map((t, k) => `${k + 1}. ${t}`).join('\n')}`)
 }
 
 // The first command to a host opens the shared connection; the rest wait for it instead of racing

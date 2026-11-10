@@ -215,7 +215,7 @@ async function listWorkspacesUncached(orca) {
 // ---------- SSH hosts ----------
 // Orca names a host "local", "ssh:<target id>" or "runtime:<environment id>". Git Control reaches an SSH
 // target with the system ssh, by the name Orca shows for it (normally the ~/.ssh/config alias it was
-// imported from), unless Settings → SSH hosts maps that name to another ssh destination.
+// imported from); when that is an address, the ~/.ssh/config alias that logs in to it.
 
 /** The SSH target id of an Orca host id; null for this machine; undefined for a host Git Control cannot reach. */
 function sshTargetOf(hostId) {
@@ -253,31 +253,12 @@ async function serverName(host) {
   const alias = await sshConfigAlias(label).catch(() => label)
   return alias !== label && !/^ssh:\/\//.test(alias) ? { name: alias, orcaName: label } : { name: label, orcaName: null }
 }
-/** Settings → SSH hosts: "Orca host name = ssh destination", one per line (or separated by , or ;). */
-export function parseHostMap(text) {
-  const map = {}
-  for (const part of String(text || '').split(/[\n,;]+/)) {
-    const m = part.match(/^\s*([^=]+?)\s*=\s*(\S+)\s*$/)
-    if (m) map[m[1].toLowerCase()] = m[2]
-  }
-  return map
-}
-async function sshHostMap() {
-  if (!ORCA?.host.has('settings.get')) return {}
-  try {
-    return parseHostMap((await ORCA.host.call('settings.get', {})).settings.sshHosts)
-  } catch {
-    return {}
-  }
-}
 /**
- * The ssh destination for a host: the mapping in Settings, else the name Orca shows for it (or what
- * was typed); an address there becomes the ~/.ssh/config alias that logs in to it, when there is one.
+ * The ssh destination for a host: the name Orca shows for it (or what was typed); an address there
+ * becomes the ~/.ssh/config alias that logs in to it, when there is one.
  */
 async function destinationFor(host) {
-  const [map, label] = await Promise.all([sshHostMap(), hostLabel(host)])
-  const mapped = map[host.toLowerCase()] || map[label.toLowerCase()]
-  return mapped || sshConfigAlias(label)
+  return sshConfigAlias(await hostLabel(host))
 }
 setDestinationResolver(destinationFor)
 
@@ -308,7 +289,7 @@ async function serverConfig() {
   return { manual: Array.isArray(c.manual) ? c.manual.map(String) : [], prefs: c.prefs && typeof c.prefs === 'object' ? c.prefs : {} }
 }
 const cleanRoots = (roots) => {
-  const list = (Array.isArray(roots) ? roots : String(roots || '').split(/[\n,]+/)).map((r) => String(r).trim()).filter(Boolean)
+  const list = (Array.isArray(roots) ? roots : String(roots || '').split(/[;\n]+/)).map((r) => String(r).trim()).filter(Boolean)
   for (const r of list) if (!/^(~(\/|$)|\/)/.test(r)) throw new GitError(`"${r}" is not a folder on the server: start it with / or ~`)
   return list.length ? [...new Set(list)].slice(0, 20) : DEFAULT_ROOTS
 }
@@ -2276,7 +2257,7 @@ const TAG_PATTERN = /^[\w.*/-]{1,80}$/
 async function tagPatterns(repos) {
   const count = new Map()
   await pool(repos, 4, async (r) => {
-    const out = await gitOnce(r, ['tag', '--list', '--sort=-creatordate'], { timeout: 15_000 }).catch(() => '')
+    const out = await inRepo(r, (p) => gitOnce(p, ['tag', '--list', '--sort=-creatordate'], { timeout: 15_000 })).catch(() => '')
     const seen = new Set()
     for (const t of out.split('\n').slice(0, 300)) {
       const m = t.trim().match(/^(.*?)\d+(?:\.\d+)*(.*)$/)
@@ -2304,10 +2285,11 @@ async function tagPlan({ repos = [], pattern, base = {}, branches = {} } = {}) {
   for (const b of Object.values(branches)) req(b, 'branch')
   if (base.kind === 'tag' && !TAG_PATTERN.test(String(base.pattern || ''))) throw new GitError('Pick the pattern of the tag to start from')
   if (base.kind === 'branch') req(base.name, 'branch')
-  const rows = await pool(repos.slice(0, 100), 4, async (repo) => {
+  // each repository where it is (a locator: on its server); the row names it as the panel does
+  const rows = await pool(repos.slice(0, 100), 4, (named) => inRepo(named, async (repo) => {
     const g = (args) => gitOnce(repo, args, { timeout: 15_000 }).then((o) => o.trim(), () => '')
-    const row = { repo, name: path.basename(repo) }
-    const base_ = branches[repo] ? { kind: 'branch', name: branches[repo] } : base
+    const row = { repo: named, name: hpath().basename(repo) }
+    const base_ = branches[named] ? { kind: 'branch', name: branches[named] } : base
     try {
       const tags = (await g(['tag', '--list', pattern, '--sort=-v:refname'])).split('\n').filter(Boolean)
       row.latest = tags[0] || null
@@ -2333,12 +2315,13 @@ async function tagPlan({ repos = [], pattern, base = {}, branches = {} } = {}) {
       row.error = String(e.message || e).split('\n')[0]
     }
     return row
-  })
+  }))
   return { rows }
 }
 /** Create (and push) the tags one repository after another, 4 at a time; each says how it went. */
 async function tagApply({ items = [], push = true, message = '' } = {}) {
-  return pool(items.slice(0, 100), 4, async (it) => {
+  return pool(items.slice(0, 100), 4, (item) => inRepo(String(item?.repo || ''), async (repo) => {
+    const it = { ...item, repo }
     try {
       const name = req(it.name, 'tag name')
       if (!/^[\w.\/-]{1,120}$/.test(name) || name.includes('..')) throw new GitError(`${name} is not a valid tag name`)
@@ -2355,34 +2338,46 @@ async function tagApply({ items = [], push = true, message = '' } = {}) {
           pushed = true
         }
       }
-      return { repo: it.repo, name, ok: true, pushed }
+      return { repo: item.repo, name, ok: true, pushed }
     } catch (e) {
-      return { repo: it.repo, name: it.name, ok: false, error: String(e.message || e).split('\n').slice(-2).join(' ') }
+      return { repo: item.repo, name: it.name, ok: false, error: String(e.message || e).split('\n').slice(-2).join(' ') }
     }
-  })
+  }))
 }
 
-async function reposOverview(workspaces, scan) {
+/**
+ * Every repository at once: Orca's workspaces (on this computer and on SSH hosts), the repos inside the
+ * scanned folders, and, with `servers`, the ones found on the servers. A row's path is a locator when
+ * the repo is on a server; its git runs there.
+ */
+async function reposOverview(workspaces, scan, { servers = true } = {}) {
   const rows = new Map()
-  const key = (p) => path.resolve(p).toLowerCase()
+  // on a server, paths are told apart by case (Linux); on this computer they are not (Windows, macOS)
+  const key = (p) => (isLocator(p) ? String(p).replace(/\/+$/, '') : path.resolve(p).toLowerCase())
+  const onServer = (w) => (w.host ? { host: w.host, hostLabel: w.hostLabel || w.host } : {})
   for (const w of workspaces) {
     if (!((w.kind === 'worktree' || w.kind === 'folder' || !w.kind) && w.path)) continue
     // a folder that is not a repository: the repositories inside it instead (ABC → A, B, C)
-    if (!w.repoName) {
+    if (!w.repoName && !isLocator(w.path)) {
       const inside = await reposInside(w.path).catch(() => null)
       if (inside && !inside.isRepo && inside.children.length) {
         for (const c of inside.children) if (!rows.has(key(c.path))) rows.set(key(c.path), { path: c.path, name: path.basename(c.path), workspace: w.name || '', main: true, source: 'folder', folder: path.basename(w.path) })
         continue
       }
     }
-    rows.set(key(w.path), { path: w.path, name: w.repoName || path.basename(w.path), workspace: w.name || '', main: w.main !== false, source: 'orca' })
+    rows.set(key(w.path), { path: w.path, name: w.repoName || path.posix.basename(String(w.path).replace(/\\/g, '/')), workspace: w.name || '', main: w.main !== false, source: 'orca', ...onServer(w) })
   }
   const roots = String(scan || '').split(/[;\n]/).map((x) => x.trim()).filter(Boolean)
   for (const p of scanForRepos(roots)) if (!rows.has(key(p))) rows.set(key(p), { path: p, name: path.basename(p), workspace: '', main: true, source: 'scan' })
+  // the projects found on the servers (Servers… in the repository menu): what is known now, no waiting
+  if (servers)
+    for (const x of (await serverRepos({ wait: 0 }).catch(() => ({ repos: [] }))).repos)
+      if (!rows.has(key(x.path))) rows.set(key(x.path), { path: x.path, name: x.name, workspace: '', main: true, source: 'server', ...onServer(x) })
   const list = [...rows.values()]
-  await pool(list, 4, async (r) => {
+  // each row's git runs where the repo is: this computer or its server (the server's shared ssh connection)
+  await pool(list, 4, (r) => inRepo(r.path, async (rp) => {
     try {
-      const st = await status(r.path, { untracked: 'normal' })
+      const st = await status(rp, { untracked: 'normal' })
       Object.assign(r, {
         toplevel: st.toplevel,
         branch: st.branch,
@@ -2396,23 +2391,25 @@ async function reposOverview(workspaces, scan) {
         state: st.state || null,
         stashes: st.stashCount || 0
       })
-      const where = await repoWhere(r.path)
+      const where = await repoWhere(rp)
       if (where) Object.assign(r, { remote: where.path, remoteHost: where.host })
       // the newest tag (by when it was made), shown on the row
-      const t = (await gitOnce(r.path, ['for-each-ref', 'refs/tags', '--sort=-creatordate', '--count=1', '--format=%(refname:short)%09%(creatordate:unix)'], { timeout: 8000 }).catch(() => '')).trim()
+      const t = (await gitOnce(rp, ['for-each-ref', 'refs/tags', '--sort=-creatordate', '--count=1', '--format=%(refname:short)%09%(creatordate:unix)'], { timeout: 8000 }).catch(() => '')).trim()
       if (t) [r.tag, r.tagAt] = [t.split('	')[0], +t.split('	')[1] || null]
     } catch (e) {
       r.error = String(e.message || e).split('\n')[0].slice(0, 200)
     }
-  })
+  }))
   // one row per folder git knows (two workspaces of the same folder are one repo)
   const seen = new Set()
   const out = list.filter((r) => !r.toplevel || (seen.has(key(r.toplevel)) ? false : seen.add(key(r.toplevel))))
   // the Orca Project Group of each: by its repository (a worktree finds it through its shared .git),
   // or by the registered folder it sits in (A inside the folder project ABC)
   const { byPath, groups } = await orcaGroups()
+  // a server's repos are grouped under the server, after Orca's groups
+  for (const r of out) if (r.host) r.group = { id: `server:${r.host}`, name: r.hostLabel, server: true, order: 1e8, repoOrder: 0 }
   if (byPath.size) {
-    await pool(out, 4, async (r) => {
+    await pool(out.filter((r) => !r.host), 4, async (r) => {
       const common = await gitOnce(r.path, ['rev-parse', '--path-format=absolute', '--git-common-dir'], { timeout: 8000 }).then((o) => o.trim(), () => '')
       const main = common ? path.dirname(common.replace(/[\\/]+$/, '')) : r.path
       const cands = [main, r.path].map((p) => path.resolve(p).toLowerCase())
@@ -2421,7 +2418,7 @@ async function reposOverview(workspaces, scan) {
       if (hit) r.group = { id: hit.id, name: groups.get(hit.id)?.name || '', order: groups.get(hit.id)?.order ?? 999, repoOrder: hit.order }
     })
   }
-  return { repos: out, roots, grouped: byPath.size > 0 }
+  return { repos: out, roots, grouped: byPath.size > 0, servers: out.some((r) => r.host) }
 }
 
 /** Where the open repository's main remote lives, or null. */
@@ -3835,6 +3832,7 @@ let ORCA = null
  * The panel names a repository on a remote host by a locator ("ssh://host/path"), in `repo`, `path`
  * or an argument. Unwrap them to plain paths there and say which host the request runs on.
  */
+const MANY_HOSTS = new Set(['repos.tagPatterns', 'repos.tagPlan', 'repos.tagApply'])
 function unwrapRequest(input) {
   let host
   const strip = (v) => {
@@ -3864,7 +3862,8 @@ export default function activate(orca) {
       ...orca.panels,
       handle: (name, fn) =>
         handle(name, async (raw) => {
-          const { host, input } = unwrapRequest(raw)
+          // a request about repositories on several machines (Repo Overview) runs each one where it is
+          const { host, input } = MANY_HOSTS.has(name) ? { host: null, input: raw } : unwrapRequest(raw)
           const r = await onHost(host, () => fn(input))
           if (r === undefined) return null
           const text = JSON.stringify(r)
@@ -4181,7 +4180,8 @@ Click to open Git Control`
       try {
         scan = (await orca.host.call('settings.get', {})).settings.scanFolders || ''
       } catch {}
-      const { repos } = await reposOverview(await listWorkspaces(orca).catch(() => []), scan)
+      // in the background: no ssh to the servers' found projects every two minutes
+      const { repos } = await reposOverview(await listWorkspaces(orca).catch(() => []), scan, { servers: false })
       const ok = repos.filter((r) => !r.error)
       const busy = ok.filter((r) => r.changes || r.ahead || r.behind || r.conflicts || r.state)
       const bad = ok.some((r) => r.conflicts || r.state)

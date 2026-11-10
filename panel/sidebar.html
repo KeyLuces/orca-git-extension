@@ -1925,14 +1925,16 @@ body.compact .pc-ref, body.compact .pc-stages, body.compact .pc-by, .side-panel 
 
 /* Servers: SSH hosts whose projects the repository menu lists */
 .servers-intro { margin: 0; padding: 12px 16px; color: var(--t2); font-size: 12px; line-height: 1.5; border-bottom: 1px solid var(--line); }
-.server-row { padding: 10px 12px 10px 16px; border-bottom: 1px solid var(--line); }
+.server-row { padding: 8px 8px 8px 16px; border-bottom: 1px solid var(--line); }
 .server-row > .row { gap: 10px; }
 .server-row > .row > svg { flex: none; color: var(--t3); }
-.server-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.server-meta { color: var(--t3); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.server-name { min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.server-row .pill { flex: none; }
 .server-row.hidden-server .server-name { color: var(--t3); font-weight: 500; }
 .pill.server-bad { background: color-mix(in srgb, var(--del) 18%, transparent); color: var(--del); }
-.server-error { margin: 8px 0 0 26px; padding: 8px 10px; border-radius: 6px; background: color-mix(in srgb, var(--del) 8%, transparent); color: var(--t2); font-size: 12px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+.server-error { margin: 8px 8px 4px 26px; padding: 10px 12px; border-radius: 6px; background: color-mix(in srgb, var(--del) 8%, transparent); color: var(--t2); font-size: 12px; line-height: 1.5; }
+.server-error-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.server-error-actions { margin-top: 8px; }
 
 /* A text field with a suggestion list under it (dialog combo box) */
 .combo { position: relative; display: flex; }
@@ -1951,6 +1953,13 @@ body.compact .pc-ref, body.compact .pc-stages, body.compact .pc-by, .side-panel 
 .combo-item .pill { flex: none; }
 .combo-empty { padding: 8px; color: var(--t3); font-size: 12px; }
 
+/* The server a repository is on, beside its name in the header: the name truncates, never this */
+.host-badge { flex: none; display: inline-flex; align-items: center; gap: 4px; padding: 1px 7px 1px 5px; border-radius: 999px; background: color-mix(in srgb, var(--ren) 14%, transparent); color: var(--ren); font-size: 11px; font-weight: 600; line-height: 16px; }
+.host-badge[hidden] { display: none; }
+.host-badge > span { white-space: nowrap; }
+.repo-btn .host-badge svg { flex: none; color: inherit; }
+#repoName { min-width: 0; }
+
 </style>
   </head>
   <body class="side-panel">
@@ -1958,6 +1967,7 @@ body.compact .pc-ref, body.compact .pc-stages, body.compact .pc-by, .side-panel 
       <div class="repo-line">
         <button class="repo-btn grow" id="repoBtn" title="Switch repository">
           <span id="repoIcon"></span><span class="ellipsis" id="repoName">No repository</span
+          ><span id="repoHost" class="host-badge" hidden></span
           ><span id="repoCaret" class="dim"></span>
         </button>
         <div class="toolbar" id="toolbar"></div>
@@ -2723,17 +2733,26 @@ const snap = {
   }
 }
 
-const sameRepoPath = (a, b) => a.replace(/\\/g, '/').toLowerCase() === b.replace(/\\/g, '/').toLowerCase()
+/** Paths on a server (ssh://…) are told apart by case, as Linux does; local ones are not (Windows, macOS). */
+const isRemotePath = (p) => /^ssh:\/\//.test(String(p || ''))
+const sameRepoPath = (a, b) => {
+  if (isRemotePath(a) || isRemotePath(b)) return String(a).replace(/\/+$/, '') === String(b).replace(/\/+$/, '')
+  return a.replace(/\\/g, '/').toLowerCase() === b.replace(/\\/g, '/').toLowerCase()
+}
 /** Where a repository lives when it is not on this computer: the SSH host's name, else null. */
 function hostOf(repo) {
   const m = typeof repo === 'string' && repo.match(/^ssh:\/\/([^/]+)\//)
   if (!m) return null
-  const w = state.workspaces.find((x) => x.host && repo.startsWith(x.path.replace(/\/+$/, '')))
+  const w = [...state.workspaces, ...state.serverRepos].find((x) => {
+    if (!x.host) return false
+    const base = x.path.replace(/\/+$/, '')
+    return repo === base || repo.startsWith(base + '/')
+  })
+  let host = m[1]
   try {
-    return w?.hostLabel || decodeURIComponent(m[1])
-  } catch {
-    return m[1]
-  }
+    host = decodeURIComponent(m[1])
+  } catch {}
+  return w?.hostLabel || state.servers.find((x) => x.id === host)?.label || host
 }
 /** Workspaces grouped by repository name (and host), repositories A–Z, the main folder first in each. */
 function repoGroups(ws) {
@@ -2749,14 +2768,23 @@ function repoGroups(ws) {
 }
 async function repoMenu(anchor) {
   if (!state.workspaces.length) state.workspaces = (await request('repo.resolve', {}).catch(() => null))?.workspaces || []
-  // projects found on servers: the first time, wait briefly for them; later, refresh behind the menu
-  if (!state.serversAt) await loadServerRepos()
-  else if (Date.now() - state.serversAt > 60_000) loadServerRepos()
+  // projects found on servers: the menu opens at once; the first time they are asked for, it is drawn
+  // again (still open, same place) when they arrive. Later they are refreshed behind it.
+  if (!state.serversAt) {
+    if (!repoMenu.loading)
+      repoMenu.loading = loadServerRepos().finally(() => {
+        repoMenu.loading = null
+        if (repoMenu.open?.isConnected && state.serverRepos.length) repoMenu.open = repoMenu.draw(anchor)
+      })
+  } else if (Date.now() - state.serversAt > 60_000) loadServerRepos()
+  repoMenu.open = repoMenu.draw(anchor)
+}
+repoMenu.draw = (anchor) => {
   const open = state.workspaces.filter((w) => w.kind === 'worktree' || w.kind === 'folder')
   const ws = [...open, ...state.serverRepos.filter((r) => !open.some((w) => sameRepoPath(w.path, r.path)))]
   const scanning = state.servers.some((x) => x.scanning && !x.hidden)
   const f = state.folder
-  menu(anchor, [
+  return menu(anchor, [
     ...(f
       ? [
           { header: `In ${basename(f.path)}` },
@@ -2798,7 +2826,7 @@ async function repoMenu(anchor) {
       onClick: async () => {
         const r = await dialog({
           title: 'Open repository',
-          fields: [{ key: 'path', label: 'Folder path (or ssh://host/path on a server)', value: state.repo || '', placeholder: 'C:\\code\\my-repo' }],
+          fields: [{ key: 'path', label: 'Folder path', value: state.repo || '', placeholder: 'C:\\code\\my-repo' }],
           ok: 'Open'
         })
         if (!r?.path) return
@@ -3231,7 +3259,7 @@ async function viewRepos() {
     body.append(
       data.roots?.length
         ? h('div', { class: 'rov-foot dim', title: data.roots.join('\n') }, icon('folder', 12), `Also listing the repos inside ${data.roots.map(shortPath).join('; ')}`, ' · ', h('button', { class: 'linkish', onClick: () => scanFolders() }, 'Change'))
-        : h('div', { class: 'rov-foot dim' }, 'Lists the repositories opened in Orca. ', h('button', { class: 'linkish', onClick: () => scanFolders() }, 'Scan a folder'), ' to add the repos inside it too.')
+        : h('div', { class: 'rov-foot dim' }, data.servers ? 'Lists the repositories opened in Orca and the ones on your servers. ' : 'Lists the repositories opened in Orca. ', h('button', { class: 'linkish', onClick: () => scanFolders() }, 'Scan a folder'), ' to add the repos inside it too.')
     )
     drawList()
   }
@@ -3254,18 +3282,19 @@ async function viewRepos() {
       list.append(row)
     }
     // grouped like Orca's sidebar (its Project Groups, in their order); the rest under "Other"
-    if (data.grouped && rows.some((r) => r.group)) {
+    // and a server's repos under that server
+    if ((data.grouped || data.servers) && rows.some((r) => r.group)) {
       const groups = new Map()
       for (const r of rows) {
         const k = r.group?.id || ''
-        if (!groups.has(k)) groups.set(k, { name: r.group ? r.group.name || 'Project group' : 'Not in a project group', order: r.group ? r.group.order : 1e9, rows: [] })
+        if (!groups.has(k)) groups.set(k, { name: r.group ? r.group.name || 'Project group' : data.grouped ? 'Not in a project group' : 'On this computer', server: !!r.group?.server, order: r.group ? r.group.order : data.grouped ? 1e9 : -1, rows: [] })
         groups.get(k).rows.push(r)
       }
       for (const g of [...groups.values()].sort((a, b) => a.order - b.order)) {
         // inside a group: Orca's own order, as its sidebar lists them
         g.rows.sort((a, b) => (a.group?.repoOrder ?? 1e9) - (b.group?.repoOrder ?? 1e9) || a.name.localeCompare(b.name))
         const need = g.rows.filter((r) => rovScore(r) >= 2).length
-        list.append(h('div', { class: 'rov-grp' }, icon('folder', 12), h('span', { class: 'rov-grp-name' }, g.name), h('span', { class: 'rov-group-n' }, String(g.rows.length)), need ? h('span', { class: 'rov-grp-need' }, `${need} need you`) : null))
+        list.append(h('div', { class: 'rov-grp' }, icon(g.server ? 'server' : 'folder', 12), h('span', { class: 'rov-grp-name' }, g.name), h('span', { class: 'rov-group-n' }, String(g.rows.length)), need ? h('span', { class: 'rov-grp-need' }, `${need} need you`) : null))
         g.rows.forEach(put)
       }
     } else rows.forEach(put)
@@ -3301,7 +3330,7 @@ async function viewRepos() {
         ),
         failure
           ? h('div', { class: 'rov-fail', title: failure.message }, icon('alert', 11), h('span', { class: 'ellipsis' }, `${{ fetch: 'Fetch', pull: 'Pull', push: 'Push', checkout: 'Switch', branchCreate: 'New branch' }[failure.op] || 'Last command'} failed: ${failure.message}`))
-          : h('div', { class: 'rov-path dim mono ellipsis' }, shortPath(r.path))
+          : h('div', { class: 'rov-path dim mono ellipsis' }, shortPath(r.host ? r.path.replace(/^ssh:\/\/[^/]+/, '') : r.path))
       ),
       r.error
         ? h('span', { class: 'rov-err', title: r.error }, icon('alert', 12), h('span', { class: 'ellipsis' }, r.error))
@@ -3602,52 +3631,61 @@ function openServers() {
 function renderServers() {
   const root = document.querySelector('.servers-sheet')
   if (!root) return
-  const intro = h(
-    'p',
-    { class: 'servers-intro' },
-    'Projects on these servers show up in the repository menu. SSH hosts you set up in Orca are listed automatically; ',
-    'add any other server by its name in ~/.ssh/config. Git Control connects with this computer’s ssh, so each one must log in without a password.'
-  )
+  const intro = h('p', { class: 'servers-intro' }, 'Projects on these servers show up in the repository menu.')
   if (!state.servers.length)
     return clear(root).append(intro, h('div', { class: 'empty' }, icon('server', 28), h('div', null, 'No servers yet'), h('div', { class: 'empty-actions' }, h('button', { class: 'btn primary', onClick: addServer }, icon('plus', 13), h('span', null, 'Add server')))))
   const row = (x) => {
     const status = x.scanning
       ? h('span', { class: 'pill' }, 'Searching…')
       : x.error
-        ? h('span', { class: 'pill server-bad', title: x.error }, 'Unreachable')
-        : x.repoCount != null
-          ? h('span', { class: 'pill on' }, `${x.repoCount} project${x.repoCount === 1 ? '' : 's'}`)
-          : h('span', { class: 'pill' }, x.hidden ? 'Hidden' : 'Not searched')
-    const act = (ic, title, fn) => iconBtn(ic, title, fn)
-    return h(
-      'div',
-      { class: `server-row${x.hidden ? ' hidden-server' : ''}` },
-      h(
-        'div',
-        { class: 'row' },
-        icon('server', 16),
-        h('div', { class: 'grow' }, h('div', { class: 'server-name' }, x.label), h('div', { class: 'server-meta' }, `${x.source === 'orca' ? `From Orca${x.orcaName ? ` as ${x.orcaName}` : ''}` : `Added here${x.orcaName ? ` as ${x.orcaName}` : ''}`} · searches ${x.roots.join(', ')}`)),
-        status,
-        act('refresh', 'Search this server again', async () => {
-          await request('servers.update', { id: x.id, roots: x.roots })
-          await loadServerRepos({ refresh: true })
-          renderServers()
-        }),
-        act('folder', 'Folders to search', () => editServerRoots(x)),
-        act(x.hidden ? 'eye' : 'eyeOff', x.hidden ? 'Show its projects in the menu' : 'Hide its projects from the menu', async () => {
-          state.servers = await request('servers.update', { id: x.id, hidden: !x.hidden })
-          await loadServerRepos()
-          renderServers()
-        }),
-        x.source === 'manual' &&
-          act('trash', 'Remove this server', async () => {
-            if (!(await confirmBox(`Remove ${x.label}?`, 'Its projects leave the repository menu. Nothing on the server changes.', 'Remove', true))) return
-            state.servers = await request('servers.remove', { id: x.id })
+        ? h('span', { class: 'pill server-bad' }, 'Can’t connect')
+        : x.hidden
+          ? h('span', { class: 'pill' }, 'Hidden')
+          : x.repoCount != null
+            ? h('span', { class: 'pill on' }, `${x.repoCount} project${x.repoCount === 1 ? '' : 's'}`)
+            : h('span', { class: 'pill' }, 'Not searched')
+    const rescan = async () => {
+      await request('servers.update', { id: x.id, roots: x.roots })
+      await loadServerRepos({ refresh: true })
+      renderServers()
+    }
+    const more = (anchor) =>
+      menu(anchor, [
+        { label: 'Search again', icon: 'refresh', onClick: rescan },
+        { label: 'Folders to search…', icon: 'folder', hint: x.roots.join('; '), onClick: () => editServerRoots(x) },
+        {
+          label: x.hidden ? 'Show in the menu' : 'Hide from the menu',
+          icon: x.hidden ? 'eye' : 'eyeOff',
+          onClick: async () => {
+            state.servers = await request('servers.update', { id: x.id, hidden: !x.hidden })
             await loadServerRepos()
             renderServers()
-          })
-      ),
-      x.error && !x.scanning && h('div', { class: 'server-error' }, x.error)
+          }
+        },
+        x.source === 'manual' ? '-' : null,
+        x.source === 'manual'
+          ? {
+              label: 'Remove',
+              icon: 'trash',
+              danger: true,
+              onClick: async () => {
+                if (!(await confirmBox(`Remove ${x.label}?`, 'Its projects leave the repository menu. Nothing on the server changes.', 'Remove', true))) return
+                state.servers = await request('servers.remove', { id: x.id })
+                await loadServerRepos()
+                renderServers()
+              }
+            }
+          : null
+      ])
+    const fix =
+      x.error &&
+      !x.scanning &&
+      h('div', { class: 'server-error' }, h('div', { class: 'server-error-text' }, x.error), h('div', { class: 'row server-error-actions' }, h('button', { class: 'btn sm', onClick: rescan }, icon('refresh', 13), h('span', null, 'Try again'))))
+    return h(
+      'div',
+      { class: `server-row${x.hidden ? ' hidden-server' : ''}`, title: x.orcaName ? `${x.label} (in Orca: ${x.orcaName})` : x.label },
+      h('div', { class: 'row' }, icon('server', 16), h('div', { class: 'grow server-name' }, x.label), status, iconBtn('more', `More for ${x.label}`, (e) => more(e.currentTarget), { class: 'icon-btn server-more' })),
+      fix
     )
   }
   clear(root).append(intro, ...state.servers.map(row))
@@ -3658,16 +3696,13 @@ async function addServer() {
     title: 'Add a server',
     message: 'Its Git projects will show up in the repository menu.',
     stack: true,
-    fields: [
-      { key: 'dest', label: 'SSH host', placeholder: 'my-server or user@host', suggestions: aliases.map((a) => ({ value: a.name, detail: a.detail, disabled: a.added, badge: a.added ? 'Added' : '' })), hint: 'A Host name from your ~/.ssh/config, or user@host[:port]. It must log in without a password (with an SSH key).' },
-      { key: 'roots', label: 'Folders to search', value: '~', hint: 'Separated by commas; ~ is your home folder there. Searched 4 levels deep.' }
-    ],
+    fields: [{ key: 'dest', label: 'Server', placeholder: 'my-server', suggestions: aliases.map((a) => ({ value: a.name, detail: a.detail, disabled: a.added, badge: a.added ? 'Added' : '' })) }],
     ok: 'Add'
   })
   if (!r?.dest?.trim()) return
   toast(`Connecting to ${r.dest.trim()}…`)
   try {
-    const res = await request('servers.add', { dest: r.dest.trim(), roots: r.roots }, 90_000)
+    const res = await request('servers.add', { dest: r.dest.trim() }, 90_000)
     toast(res.error ? `Added ${res.id}, but searching it failed: ${res.error}` : `${res.repoCount} project${res.repoCount === 1 ? '' : 's'} found on ${res.id}`, res.error ? 'error' : 'ok')
   } catch (e) {
     await dialog({ title: 'Could not add the server', message: e.message, cancel: null, stack: true })
@@ -3680,7 +3715,7 @@ async function editServerRoots(x) {
   const r = await dialog({
     title: `Folders to search on ${x.label}`,
     stack: true,
-    fields: [{ key: 'roots', label: 'Folders', value: x.roots.join(', '), hint: 'Separated by commas; ~ is your home folder there. Searched 4 levels deep, skipping hidden and dependency folders.' }],
+    fields: [{ key: 'roots', label: 'Folders', value: x.roots.join('; '), hint: 'Separate folders with ; (~ is your home folder there). Searched 4 levels deep.' }],
     ok: 'Search'
   })
   if (!r) return
@@ -3692,6 +3727,17 @@ async function editServerRoots(x) {
   renderServers()
   await loadServerRepos({ refresh: true })
   renderServers()
+}
+
+/** The server a repository is on, as a badge beside its name in the header: it never truncates (the name does). */
+function renderHostBadge() {
+  const el = $('#repoHost')
+  if (!el) return
+  const where = hostOf(state.repo)
+  el.hidden = !where
+  if (!where) return clear(el)
+  clear(el).append(icon('server', 12), h('span', null, where))
+  el.title = `On ${where}: git runs on that server`
 }
 
 function pinRepo(p) {
@@ -3711,7 +3757,8 @@ function pinRepo(p) {
    ========================================================================= */
 function renderHeader() {
   const st = state.status
-  clear($('#repoIcon')).append(icon(state.pinned ? 'folder' : 'worktree', 14))
+  // on a server: its icon, so it is clear that actions run on another machine
+  clear($('#repoIcon')).append(icon(hostOf(state.repo) ? 'server' : state.pinned ? 'folder' : 'worktree', 14))
   $('#repoName').textContent = state.repo ? (state.folder ? `${basename(state.folder.path)} › ` : '') + basename(st?.toplevel || state.repo) : 'No repository'
   renderHostBadge()
   $('#repoBtn').title = state.repo || 'Choose a repository'
