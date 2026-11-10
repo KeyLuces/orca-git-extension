@@ -11,6 +11,12 @@ import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import puppeteer from 'puppeteer-core'
 
+// the stand-in ssh is a shell script, so this suite needs a POSIX shell
+if (process.platform === 'win32') {
+  console.log('servers-ui: skipped on Windows (the stand-in ssh is a shell script)')
+  process.exit(0)
+}
+
 const PLUGIN = path.resolve(process.argv[2] || '..')
 const SHOTS = process.argv[3] ? path.resolve(process.argv[3]) : null
 if (SHOTS) mkdirSync(SHOTS, { recursive: true })
