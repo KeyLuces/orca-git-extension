@@ -1383,9 +1383,44 @@ await step('Repos overview: every repo at once, filters, Fetch all, Pull all onl
   await page.evaluate(() => [...document.querySelectorAll('.overlay .dialog .btn')].find((b) => b.textContent.trim() === 'Pull').click())
   await until(() => run(path.join(multi, 'api'), 'rev-parse', 'HEAD') === run(other, 'rev-parse', 'HEAD'), 'api pulled', 30000)
   await until(() => page.$$eval('.rov-row', (rs) => rs.some((r) => r.textContent.includes('api') && !r.querySelector('.rov-sync .down'))), 'api row up to date', 20000)
-  // Open takes you to that repo
-  await page.evaluate(() => [...document.querySelectorAll('.rov-row')].find((r) => r.querySelector('.rov-title').textContent.startsWith('docs')).querySelector('.rov-open').click())
+  const rowOf = (name) => `[...document.querySelectorAll('.rov-row')].find((r) => r.querySelector('.rov-title').textContent.startsWith('${name}'))`
+  const dialogBtn = (text) => page.evaluate((t) => [...document.querySelectorAll('.overlay .dialog .btn')].reverse().find((b) => b.textContent.trim() === t).click(), text)
+  const moreItem = async (text) => {
+    await clickSel('.rov-more-menu')
+    await page.evaluate((t) => [...document.querySelectorAll('.menu button')].find((b) => b.textContent.includes(t)).click(), text)
+  }
+  // Push all: api has a commit to push, and only api is pushed
+  writeFileSync(path.join(multi, 'api', 'mine.txt'), 'mine\n')
+  run(path.join(multi, 'api'), 'add', '.')
+  run(path.join(multi, 'api'), 'commit', '-qm', 'Mine')
+  await page.evaluate(() => document.querySelector('.rov-sheet .sheet-head .icon-btn[title="Refresh"], .rov-sheet .sheet-head [aria-label="Refresh"]')?.click())
+  await until(() => page.evaluate(`${rowOf('api')}?.querySelector('.rov-sync .up')?.textContent === '↑1'`), 'api shows ↑1', 20000)
+  await clickSel('.rov-push-all')
+  await until(() => page.$eval('.overlay .dialog', (d) => d.textContent.includes('api') && !d.textContent.includes('docs')).catch(() => false), 'push all lists only api')
+  await dialogBtn('Push')
+  await until(() => run(bare, 'rev-parse', 'main') === run(path.join(multi, 'api'), 'rev-parse', 'HEAD'), 'api pushed', 30000)
+  // New branch in several repos: all three get feature/multi and switch to it
+  await moreItem('New branch in several repos')
+  await until(() => exists('.overlay .dialog input[type=text]'), 'new branch dialog')
+  await page.type('.overlay .dialog input[type=text]', 'feature/multi')
+  await dialogBtn('Create')
+  await until(() => ['api', 'web', 'docs'].every((n) => run(path.join(multi, n), 'branch', '--show-current') === 'feature/multi'), 'feature/multi in every repo', 30000)
+  // Switch all to a branch: back to main everywhere
+  await until(() => page.evaluate(`${rowOf('docs')}?.textContent.includes('feature/multi')`), 'rows show feature/multi', 20000)
+  await moreItem('Switch all to a branch')
+  await until(() => exists('.overlay .dialog select'), 'switch all dialog', 20000)
+  await page.$eval('.overlay .dialog select', (s) => { s.value = 'main'; s.dispatchEvent(new Event('change', { bubbles: true })) })
+  await dialogBtn('Next')
+  await until(() => page.$eval('.overlay .dialog', (d) => /Switch 3 repositories to main/.test(d.textContent)).catch(() => false), 'switch all confirms the 3 repos')
+  await dialogBtn('Switch')
+  await until(() => ['api', 'web', 'docs'].every((n) => run(path.join(multi, n), 'branch', '--show-current') === 'main'), 'every repo back on main', 30000)
+  if (run(path.join(multi, 'web'), 'status', '--porcelain') === '') throw new Error("web lost its uncommitted change while switching")
+  // a row's menu opens that repo on its Pipelines tab
+  await until(() => page.evaluate(`!${rowOf('docs')}?.querySelector('.rov-doing')`), 'docs idle', 20000)
+  await page.evaluate(`${rowOf('docs')}.querySelector('.rov-row-more').click()`)
+  await page.evaluate(() => [...document.querySelectorAll('.menu button')].find((b) => b.textContent.includes('Pipelines')).click())
   await until(() => page.$eval('#repoName', (n) => n.textContent === 'docs').catch(() => false), 'docs opened', 20000)
+  await until(() => page.$eval('#tabs .tab.active, #tabs .on', (t) => t.textContent.includes('Pipelines')).catch(() => false), 'on its Pipelines tab', 10000)
   delete settings.scanFolders
   // back to the test repo for the steps after
   await page.evaluate(() => 0)

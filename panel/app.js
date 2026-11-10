@@ -705,6 +705,7 @@ function rovReviews(r) {
 }
 
 async function reposOverview() {
+  if (document.querySelector('.rov-sheet')) return // already open
   const body = h('div', { class: 'rov' })
   const busy = new Map() // path → what runs there now
   let data = null
@@ -712,12 +713,16 @@ async function reposOverview() {
   let text = ''
   const fetchAllBtn = h('button', { class: 'btn sm rov-fetch-all', title: 'Fetch every repository (4 at a time)', onClick: () => fetchAll() }, icon('fetch', 12), 'Fetch all')
   const pullAllBtn = h('button', { class: 'btn sm rov-pull-all', title: 'Pull every repository where it is safe', onClick: () => pullAll() }, icon('pull', 12), 'Pull all')
-  openSheet('Repos overview', body, [
-    fetchAllBtn,
-    pullAllBtn,
-    h('button', { class: 'btn sm rov-scan', title: 'Also list the repositories inside these folders', onClick: () => scanFolders() }, icon('folder', 12), 'Scan folders…'),
-    iconBtn('refresh', 'Refresh', () => load())
-  ])
+  const pushAllBtn = h('button', { class: 'btn sm rov-push-all', title: 'Push every repository with commits waiting', onClick: () => pushAll() }, icon('push', 12), 'Push all')
+  const moreBtn = h('button', { class: 'btn sm rov-more-menu', title: 'Branches across repos, scan folders', onClick: (e) => moreMenu(e.currentTarget) }, 'More', icon('down', 10))
+  openSheet('Repos overview', body, [fetchAllBtn, pullAllBtn, pushAllBtn, moreBtn, iconBtn('refresh', 'Refresh', () => load())])
+  const moreMenu = (anchor) =>
+    menu(anchor, [
+      { label: 'Switch all to a branch…', icon: 'branch', onClick: () => switchAll() },
+      { label: 'New branch in several repos…', icon: 'plus', onClick: () => newBranchMany() },
+      '-',
+      { label: 'Scan folders…', icon: 'folder', onClick: () => scanFolders() }
+    ])
   const sheet = state.sheets[state.sheets.length - 1]
   sheet.el.classList.add('wide-sheet', 'rov-sheet')
   placeSheet(sheet.el)
@@ -857,13 +862,129 @@ async function reposOverview() {
           : [
               !r.error && iconBtn('fetch', `Fetch ${r.name}`, () => act(r, 'fetch'), { class: 'icon-btn rov-fetch' }),
               !r.error && r.behind > 0 ? h('button', { class: 'btn sm rov-pull', title: `Pull ${r.behind} commit${r.behind > 1 ? 's' : ''} into ${r.branch}`, onClick: () => act(r, 'pull') }, icon('pull', 12), 'Pull') : null,
-              h('button', { class: 'btn sm primary rov-open', title: `Open ${r.name} in Git Control`, onClick: () => openRepo(r) }, 'Open')
+              h('button', { class: 'btn sm primary rov-open', title: `Open ${r.name} in Git Control`, onClick: () => openRepo(r) }, 'Open'),
+              iconBtn('more', `More for ${r.name}`, (e) => rowMenu(e.currentTarget, r), { class: 'icon-btn rov-row-more' })
             ]
       )
     )
   }
+  function rowMenu(anchor, r) {
+    menu(anchor, [
+      { label: 'Merge requests', icon: 'pr', onClick: () => openRepo(r, 'reviews') },
+      { label: 'Pipelines', icon: 'pipeline', onClick: () => openRepo(r, 'pipelines') },
+      { label: 'Commit tab', icon: 'commit', onClick: () => openRepo(r, 'changes') },
+      '-',
+      !r.error && r.ahead > 0 ? { label: `Push ${r.ahead} commit${r.ahead > 1 ? 's' : ''}`, icon: 'push', onClick: () => act(r, 'push') } : null,
+      { label: 'Copy path', icon: 'copy', onClick: () => navigator.clipboard?.writeText(r.path).then(() => toast('Path copied'), () => toast(r.path)) }
+    ].filter(Boolean))
+  }
+  // the branches of every repo: name → { local: [repo…], remote: [repo…] }
+  async function branchMap(rs) {
+    const map = new Map()
+    const add = (name, kind, r) => {
+      if (!map.has(name)) map.set(name, { local: new Set(), remote: new Set() })
+      map.get(name)[kind].add(r.path)
+    }
+    let i = 0
+    await Promise.all(
+      [0, 1, 2, 3].map(async () => {
+        while (i < rs.length) {
+          const r = rs[i++]
+          const refs = await request('git', { op: 'refs', repo: r.path, args: {} }).catch(() => null)
+          for (const b of refs?.local || []) add(b.name, 'local', r)
+          for (const b of refs?.remote || []) if (/^origin\//.test(b.name)) add(b.name.replace(/^origin\//, ''), 'remote', r)
+        }
+      })
+    )
+    return map
+  }
+  async function switchAll() {
+    const rs = data.repos.filter((r) => !r.error)
+    toast('Reading the branches of every repo…')
+    const map = await branchMap(rs)
+    // branches found in two repos or more first: those are the ones worth switching together
+    const names = [...map.entries()]
+      .map(([n, v]) => [n, new Set([...v.local, ...v.remote]).size])
+      .filter(([, c]) => c > 0)
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    if (!names.length) return toast('No branches found')
+    const res = await dialog({
+      title: 'Switch all to a branch',
+      message: 'Every repo that has this branch (here or on origin) switches to it. The others stay where they are.',
+      fields: [{ key: 'name', label: 'Branch', type: 'select', value: names[0][0], options: names.slice(0, 200).map(([n, c]) => [n, `${n}  (${c} repo${c > 1 ? 's' : ''})`]) }],
+      ok: 'Next',
+      stack: true
+    })
+    if (!res?.name) return
+    const name = res.name
+    const v = map.get(name)
+    const on = rs.filter((r) => r.branch === name)
+    const go = rs.filter((r) => r.branch !== name && (v.local.has(r.path) || v.remote.has(r.path)))
+    const none = rs.filter((r) => !v.local.has(r.path) && !v.remote.has(r.path))
+    if (!go.length) return toast(on.length ? `Every repo that has ${name} is already on it` : `No repo has ${name}`)
+    const msg = [
+      `Switch to ${name}:\n${go.map((r) => `  • ${r.name} (from ${r.branch || 'detached'}${v.local.has(r.path) ? '' : ', new from origin'})${r.changes ? ` · ${r.changes} uncommitted change${r.changes > 1 ? 's' : ''} kept when they do not clash` : ''}`).join('\n')}`,
+      on.length ? `\nAlready on it: ${on.map((r) => r.name).join(', ')}` : '',
+      none.length ? `\nNo such branch, left as they are: ${none.map((r) => r.name).join(', ')}` : ''
+    ].join('\n')
+    if (!(await confirmBox(`Switch ${plural(go.length)} to ${name}?`, msg, 'Switch'))) return
+    const errs = await runEach(go, (r) => act(r, 'checkout', v.local.has(r.path) ? { ref: name } : { ref: `origin/${name}`, track: true }, true))
+    errs.length ? toast(`Switched ${go.length - errs.length} of ${go.length}\n${errs.join('\n')}`, 'error') : toast(`${plural(go.length)} now on ${name}`)
+  }
+  async function newBranchMany() {
+    const rs = data.repos.filter((r) => !r.error)
+    const shown = new Set([...list.children].map((x) => x.dataset?.path).filter(Boolean))
+    const res = await dialog({
+      title: 'New branch in several repos',
+      message: 'Creates the branch from the commit each repo is on now.',
+      fields: [
+        { key: 'name', label: 'Branch name', value: '', placeholder: 'feature/new-thing' },
+        { key: 'checkout', label: 'Switch to it', type: 'check', value: true },
+        ...rs.map((r, i) => ({ key: `r${i}`, label: `${r.name}  (on ${r.branch || 'detached'})`, type: 'check', value: shown.has(r.path) }))
+      ],
+      ok: 'Create',
+      stack: true
+    })
+    const name = res?.name?.trim()
+    if (!name) return
+    const pick = rs.filter((r, i) => res[`r${i}`])
+    if (!pick.length) return toast('No repo picked')
+    const errs = await runEach(pick, (r) => act(r, 'branchCreate', { name, checkout: !!res.checkout }, true))
+    errs.length ? toast(`Created ${name} in ${pick.length - errs.length} of ${pick.length}\n${errs.join('\n')}`, 'error') : toast(`Created ${name} in ${plural(pick.length)}`)
+  }
+  async function pushAll() {
+    const ahead = data.repos.filter((r) => !r.error && r.ahead > 0)
+    if (!ahead.length) return toast('Nothing to push: no repository has commits waiting')
+    const why = (r) => (r.behind ? `gone its own way: ${r.behind} commit${r.behind > 1 ? 's' : ''} to pull first` : r.state || r.conflicts ? 'a merge or rebase is in progress' : !r.branch ? 'not on a branch' : '')
+    const safe = ahead.filter((r) => !why(r))
+    const skip = ahead.filter((r) => why(r))
+    const msg = [
+      safe.length ? `Push:\n${safe.map((r) => `  • ${r.name} (${r.branch}) ↑${r.ahead}`).join('\n')}` : 'No repository can be pushed safely.',
+      skip.length ? `\nSkipped (open them to sort it out):\n${skip.map((r) => `  • ${r.name}: ${why(r)}`).join('\n')}` : ''
+    ].join('\n')
+    if (!safe.length) return confirmBox('Push all', msg, 'OK')
+    if (!(await confirmBox(`Push ${plural(safe.length)}?`, msg, 'Push'))) return
+    pushAllBtn.disabled = true
+    const errs = await runMany(safe, 'push')
+    pushAllBtn.disabled = false
+    errs.length ? toast(`Pushed ${safe.length - errs.length} of ${safe.length}\n${errs.join('\n')}`, 'error') : toast(`Pushed ${plural(safe.length)}`)
+  }
+  async function runEach(rs, fn) {
+    let i = 0
+    const errs = []
+    await Promise.all(
+      [0, 1, 2, 3].map(async () => {
+        while (i < rs.length) {
+          const r = rs[i++]
+          const e = await fn(r)
+          if (e) errs.push(`${r.name}: ${e}`)
+        }
+      })
+    )
+    return errs
+  }
   async function act(r, op, args = {}, quiet = false) {
-    busy.set(r.path, { fetch: 'Fetching…', pull: 'Pulling…', checkout: 'Switching…' }[op])
+    busy.set(r.path, { fetch: 'Fetching…', pull: 'Pulling…', push: 'Pushing…', checkout: 'Switching…', branchCreate: 'Creating…' }[op])
     paintRow(r)
     let err = null
     try {
@@ -876,7 +997,7 @@ async function reposOverview() {
     if (!sheet.el.isConnected) return err
     paintRow(r)
     drawSummary()
-    if (!quiet) err ? toast(`${r.name}: ${err}`, 'error') : toast(`${r.name}: ${{ fetch: 'fetched', pull: 'pulled', checkout: `now on ${r.branch}` }[op]}`)
+    if (!quiet) err ? toast(`${r.name}: ${err}`, 'error') : toast(`${r.name}: ${{ fetch: 'fetched', pull: 'pulled', push: 'pushed', branchCreate: `created ${args.name}`, checkout: `now on ${r.branch}` }[op]}`)
     return err
   }
   async function runMany(rs, op) {
@@ -942,9 +1063,12 @@ async function reposOverview() {
     if (r.changes && !(await confirmBox(`Switch ${r.name} to ${name}?`, `${r.name} has ${r.changes} uncommitted change${r.changes > 1 ? 's' : ''}. Git keeps them when they do not clash with ${name}; otherwise it stops and changes nothing.`, 'Switch'))) return
     act(r, 'checkout', { ref: name })
   }
-  function openRepo(r) {
+  /** Open that repo in Git Control, on a tab (its merge requests, pipelines…) when asked. */
+  function openRepo(r, tab) {
     while (state.sheets.length) closeSheet()
+    if (tab === 'reviews') store.set('reviewsAllRepos', false) // only this repo's merge requests
     pinRepo(r.toplevel || r.path)
+    if (tab) setTab(tab)
   }
   async function scanFolders() {
     const res = await dialog({
@@ -7257,9 +7381,9 @@ async function reviewDiffSheet(it) {
 // the status bar "reviews" item opens this tab on Reviews
 if (hasOrca) {
   try {
-    window.orca.plugin?.on?.('ui.show', ({ tab } = {}) => tab && isShown() && setTab(tab))
+    window.orca.plugin?.on?.('ui.show', ({ tab, overview } = {}) => isShown() && (overview ? IN_TAB && reposOverview() : tab && setTab(tab)))
   } catch {}
-  setTimeout(() => request('ui.pending', {}).then((p) => p?.tab && setTab(p.tab), () => {}), 800)
+  setTimeout(() => request('ui.pending', {}).then((p) => (p?.overview ? IN_TAB && reposOverview() : p?.tab && setTab(p.tab)), () => {}), 800)
 }
 
 

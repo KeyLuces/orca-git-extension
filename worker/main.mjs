@@ -3461,6 +3461,44 @@ Click to open Git Control`
     if (focused || lastRepo) await openTabRetry(focused || lastRepo)
     return 'Opened Reviews'
   })
+  // Several repositories open (or scanned): "⎇ 3 of 5 repos" in the status bar while some have
+  // changes, commits to push or pull; a click opens Repos overview. Hidden with a single repo.
+  let reposBusy = false
+  async function pollRepos() {
+    if (reposBusy || !orca.host.has('statusBar.update')) return
+    reposBusy = true
+    try {
+      let scan = ''
+      try {
+        scan = (await orca.host.call('settings.get', {})).settings.scanFolders || ''
+      } catch {}
+      const { repos } = await reposOverview(await listWorkspaces(orca).catch(() => []), scan)
+      const ok = repos.filter((r) => !r.error)
+      const busy = ok.filter((r) => r.changes || r.ahead || r.behind || r.conflicts || r.state)
+      const bad = ok.some((r) => r.conflicts || r.state)
+      const line = (r) => `${r.name} (${r.branch || 'detached'})${r.ahead ? ` ↑${r.ahead}` : ''}${r.behind ? ` ↓${r.behind}` : ''}${r.conflicts ? ` · ${r.conflicts} conflicts` : r.changes ? ` · ${r.changes} changed` : ''}`
+      await orca.host.call('statusBar.update', {
+        id: 'repos',
+        visible: ok.length > 1,
+        text: busy.length ? `${busy.length} of ${ok.length} repos` : `${ok.length} repos`,
+        tone: bad ? 'warning' : busy.length ? 'accent' : 'neutral',
+        tooltip: (busy.length ? `Need you:\n${busy.slice(0, 8).map(line).join('\n')}` : 'Every repo is clean and up to date') + '\nClick to open Repos overview'
+      }).catch(() => {})
+    } catch (e) {
+      orca.log(`repos poll: ${e.message}`)
+    } finally {
+      reposBusy = false
+    }
+  }
+  setTimeout(pollRepos, 5_000)
+  setInterval(pollRepos, 2 * 60_000)
+  orca.commands.register('openRepos', async () => {
+    pendingUi = { overview: true }
+    orca.panels.post?.('ui.show', { overview: true })
+    const { focused } = await resolveFocused().catch(() => ({}))
+    if (focused || lastRepo) await openTabRetry(focused || lastRepo)
+    return 'Opened Repos overview'
+  })
   // open a repository file as an Orca editor tab (in its worktree)
   orca.panels.handle('file.open', async ({ repo, file } = {}) => {
     const p = await workPath(req(repo, 'repo'), req(file, 'file'))

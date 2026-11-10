@@ -97,9 +97,11 @@ updates by itself while runs go on, and a click opens the run's jobs and logs.
 Working in several repos at once? **All repos overview** (top of the repository picker, or **Ctrl+.**) lists each
 one with its branch, how far it is ahead or behind, its changes, CI and the reviews waiting for you. The ones that
 need you come first, and the summary on top (*3 with changes*, *1 behind*, *on 4 branches*) filters the list.
-**Fetch all** fetches every repo; **Pull all** pulls only where it is safe (no local changes, nothing unpushed) and
-says why it skipped the rest. Each row can fetch, pull, switch branch or open that repo. It lists the repos
-opened in Orca; **Scan folders…** adds the repos inside any folder too. (Idea from
+**Fetch all** fetches every repo; **Pull all** and **Push all** act only where it is safe and say why they skipped the
+rest. **More** switches every repo that has a branch to it, or creates the same branch in the repos you tick. Each
+row can fetch, pull, switch branch, or open that repo on its Graph, merge requests or pipelines. It lists the repos
+opened in Orca; **Scan folders…** adds the repos inside any folder too. With two repos or more, **3 of 5 repos** in
+the status bar says how many need you, and opens this page. (Idea from
 [Multi-Repo Git Overview](https://github.com/gino8080/orca-git-overview) by gino8080.)
 
 ![Repos overview: every repository with its branch, ahead/behind, changes, CI and reviews](assets/screenshots/repos-overview.png)
@@ -146,7 +148,7 @@ node mobile.mjs <plugin folder> <shots folder>    # phone size, loaded the way O
 node sidebar.mjs <plugin folder> <shots folder>   # the right-sidebar panel at several widths
 node worker-api.mjs github|gitlab                 # merge requests, reviews and CI through the Git login
 node merge-queue.mjs                              # Approve & merge on several: one at a time per project
-node statusbar.mjs                                # the Git status bar item never disappears
+node statusbar.mjs                                # the status bar items: Git never disappears, Repos counts
 node screenshots.mjs <plugin folder> <out folder> # the screenshots above, on a made-up project
 node promo.mjs <plugin folder>                    # marketplace posters from assets/screenshots → assets/promo
 ```
