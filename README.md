@@ -131,6 +131,7 @@ node mobile.mjs <plugin folder> <shots folder>    # phone size, loaded the way O
 node sidebar.mjs <plugin folder> <shots folder>   # the right-sidebar panel at several widths
 node worker-api.mjs github|gitlab                 # merge requests, reviews and CI through the Git login
 node merge-queue.mjs                              # Approve & merge on several: one at a time per project
+node statusbar.mjs                                # the Git status bar item never disappears
 node screenshots.mjs <plugin folder> <out folder> # the screenshots above, on a made-up project
 node promo.mjs <plugin folder>                    # marketplace posters from assets/screenshots → assets/promo
 ```

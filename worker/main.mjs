@@ -3185,12 +3185,20 @@ export default function activate(orca) {
       barBusy = false
     }
   }
+  // The Git item never disappears: when the focused worktree cannot be told (no terminal yet, two
+  // workspaces with the same name) it reads just "Git"; when git is busy or slow (another tool holds
+  // the index) the last good text stays. Orca can drop items (window reload), so it is re-sent each minute.
+  let lastGood = null // { repo, item }
+  let lastSent = 0
   async function updateStatusBarOnce() {
-    let item = { id: 'branch', text: 'Git', tone: 'neutral', tooltip: 'Open Git Control', visible: true }
+    const plain = { id: 'branch', text: 'Git', tone: 'neutral', tooltip: 'Open Git Control', visible: true }
+    let item = plain
+    let focused = null
     try {
-      const { focused } = await resolveFocused()
-      if (!focused) item.visible = false
-      else {
+      focused = (await resolveFocused()).focused
+    } catch {}
+    if (focused) {
+      try {
         const st = await status(focused, { untracked: 'normal' }) // a count is enough: no walk into new folders
         const parts = [st.branch || `detached ${(st.oid || '').slice(0, 7)}`]
         if (st.ahead) parts.push(`↑${st.ahead}`)
@@ -3198,23 +3206,26 @@ export default function activate(orca) {
         if (st.files.length) parts.push(`• ${st.files.length}`)
         const conflicts = st.files.some((f) => f.conflict)
         item = {
-          ...item,
+          ...plain,
           text: parts.join(' '),
           tone: conflicts || st.state ? 'warning' : 'neutral',
           tooltip: `${path.basename(st.toplevel)}${st.state ? ` · ${st.state} in progress` : ''}
 Click to open Git Control`
         }
+        lastGood = { repo: focused, item }
+      } catch {
+        if (lastGood?.repo === focused) item = lastGood.item
       }
-    } catch {
-      item.visible = false
     }
     const key = JSON.stringify(item)
-    if (key === lastBar) return false
+    if (key === lastBar && Date.now() - lastSent < 60_000) return false
+    const changed = key !== lastBar
     lastBar = key
+    lastSent = Date.now()
     try {
       await orca.host.call('statusBar.update', item)
     } catch {}
-    return true
+    return changed
   }
   // Poll every 4 s while things change; slow down to 15 s while nothing does.
   let barDelay = 4000
