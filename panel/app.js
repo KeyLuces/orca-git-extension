@@ -756,6 +756,7 @@ async function repoMenu(anchor) {
    Repos overview: every local repository at once
    ========================================================================= */
 const ROV_FILTERS = [
+  ['failed', 'last command failed', (r) => rovState.errors.has(r.path)],
   ['attention', 'need attention', (r) => rovScore(r) >= 3],
   ['changes', 'with changes', (r) => r.changes > 0],
   ['behind', 'behind', (r) => r.behind > 0],
@@ -783,6 +784,189 @@ function rovReviews(r) {
   return d.items.filter((it) => isOpenMr(it) && same(it))
 }
 
+/**
+ * Tag one or several repositories, read like a sentence: "Create uat_v* tags on branch sandbox".
+ * Everything is filled in: the naming pattern the repos already use, the branch most of them are on,
+ * and per repo its newest tag and the next version. Each row can take another branch; a repo without
+ * the chosen branch uses the one it has checked out, and says so. The tag goes on the branch as origin
+ * has it (what is pushed), and a commit that already has such a tag is left alone.
+ */
+async function tagManyModal(repos, onDone) {
+  closeOverlays('.menu')
+  const paths = repos.map((r) => r.path)
+  const byPath = new Map(repos.map((r) => [r.path, r]))
+  const prefs = store.get('tagManyPrefs', { pattern: '', branch: '', push: true })
+  let pattern = ''
+  let top = '' // the branch for every repo that has it
+  const own = new Map() // repo → a branch picked on its row
+  const branchesOf = new Map() // repo → Set of branch names (local and on origin)
+  let plan = null
+  let planSeq = 0
+  let busy = false
+
+  const patternSel = h('select', { class: 'tm-sel mono' })
+  const branchSel = h('select', { class: 'tm-sel mono' })
+  const table = h('div', { class: 'tm-table' }, h('div', { class: 'inline-skeleton', style: { margin: '12px' } }, h('span'), h('span')))
+  const status = h('div', { class: 'tm-status dim' })
+  const push = h('input', { type: 'checkbox', checked: prefs.push !== false })
+  const msgIn = h('input', { type: 'text', placeholder: 'A message makes annotated tags' })
+  const okBtn = h('button', { type: 'button', class: 'btn primary', disabled: true, onClick: () => apply() }, icon('tag', 13), 'Create tags')
+
+  const close = () => {
+    overlay.remove()
+    document.removeEventListener('keydown', onKey)
+  }
+  const onKey = (e) => e.key === 'Escape' && !busy && isTopOverlay(overlay) && close()
+  const box = h(
+    'div',
+    { class: 'dialog tag-many-dialog', role: 'dialog' },
+    h('div', { class: 'ai-title' }, h('span', { class: 'tm-badge' }, icon('tag', 14)), h('div', null, h('h3', null, repos.length === 1 ? `Tag ${repos[0].name}` : `Tag ${repos.length} repositories`), h('p', null, 'Everything is filled in: check the new tag, then create.'))),
+    // the whole choice as one sentence
+    h('div', { class: 'tm-sentence' }, 'Create', patternSel, 'tags on branch', branchSel, h('span', { class: 'dim' }, 'as pushed to origin')),
+    table,
+    h('div', { class: 'tm-opts' }, h('label', { class: 'check' }, push, 'Push the tags'), h('details', { class: 'tm-more' }, h('summary', null, 'Message'), msgIn), h('span', { class: 'grow' }), status),
+    h('div', { class: 'buttons' }, h('button', { type: 'button', class: 'btn', onClick: () => !busy && close() }, 'Close'), h('span', { class: 'grow' }), okBtn)
+  )
+  const overlay = h('div', { class: 'overlay', onMousedown: (e) => e.target === overlay && !busy && close() }, box)
+  mountOverlay(overlay, close)
+  document.addEventListener('keydown', onKey)
+  patternSel.disabled = branchSel.disabled = true // until the repos' patterns and branches are read
+  // what to ask the server for each repo: its own pick, else the shared branch when it has it, else
+  // the branch it has checked out
+  const branchFor = (p) => own.get(p) || (branchesOf.get(p)?.has(top) ? top : byPath.get(p)?.branch || top)
+
+  // 1. the patterns these repos use and their branches, both at once
+  const [patterns] = await Promise.all([
+    request('repos.tagPatterns', { repos: paths }, 60000).catch(() => []),
+    Promise.all(
+      paths.map(async (p) => {
+        const refs = await request('git', { op: 'refs', repo: p, args: {} }).catch(() => null)
+        const set = new Set((refs?.local || []).map((b) => b.name))
+        for (const b of refs?.remote || []) if (/^[^/]+\//.test(b.name)) set.add(b.name.replace(/^[^/]+\//, ''))
+        set.delete('HEAD')
+        branchesOf.set(p, set)
+      })
+    )
+  ])
+  patternSel.disabled = branchSel.disabled = false
+  const pats = patterns.length ? patterns.map((x) => x.pattern) : []
+  pattern = prefs.pattern && pats.includes(prefs.pattern) ? prefs.pattern : pats[0] || 'v*'
+  const fillPatterns = () => {
+    clear(patternSel)
+    for (const p of [...new Set([...pats, pattern, 'v*'])]) patternSel.append(h('option', { value: p, selected: p === pattern }, p))
+    patternSel.append(h('option', { value: '__new' }, 'Another pattern…'))
+  }
+  fillPatterns()
+  patternSel.addEventListener('change', async () => {
+    if (patternSel.value === '__new') {
+      const r = await dialog({ title: 'Tag pattern', message: 'The part before the version, then *, e.g. v*, dev_v*, release-*', fields: [{ key: 'p', label: 'Pattern', value: pattern }], ok: 'Use', stack: true })
+      if (r?.p && /^[\w.*/-]+$/.test(r.p.trim())) pattern = r.p.trim()
+      fillPatterns()
+    } else pattern = patternSel.value
+    loadPlan()
+  })
+  // the shared branch: the one most repos are on (the one used last, when they all have it)
+  const count = new Map()
+  for (const set of branchesOf.values()) for (const b of set) count.set(b, (count.get(b) || 0) + 1)
+  const onNow = new Map()
+  for (const r of repos) if (r.branch) onNow.set(r.branch, (onNow.get(r.branch) || 0) + 1)
+  top = prefs.branch && count.get(prefs.branch) === paths.length ? prefs.branch : [...onNow.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || [...count.keys()][0] || 'main'
+  const names = [...count.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([b]) => b).slice(0, 300)
+  for (const b of names) branchSel.append(h('option', { value: b, selected: b === top }, paths.length > 1 ? `${b}  (${count.get(b)} of ${paths.length})` : b))
+  branchSel.addEventListener('change', () => ((top = branchSel.value), own.clear(), loadPlan()))
+
+  async function loadPlan() {
+    const my = ++planSeq
+    const branches = Object.fromEntries(paths.map((p) => [p, branchFor(p)]))
+    try {
+      const r = await request('repos.tagPlan', { repos: paths, pattern, base: { kind: 'branch', name: top }, branches }, 90000)
+      if (my !== planSeq) return
+      plan = r.rows
+      drawTable()
+    } catch (e) {
+      if (my !== planSeq) return
+      clear(table).append(h('div', { class: 'ai-error tm-empty' }, icon('alert', 12), e.message))
+    }
+  }
+  const inputs = new Map()
+  function drawTable() {
+    inputs.clear()
+    clear(table).append(h('div', { class: 'tm-row tm-head' }, h('span'), h('span', null, 'Repository'), h('span', null, 'Branch'), h('span', null, `Newest ${pattern}`), h('span', null, 'New tag')))
+    for (const row of plan) {
+      const done = row.already?.length
+      const b = branchFor(row.repo)
+      const take = h('input', { type: 'checkbox', checked: !row.error && !done, disabled: !!row.error || !!done })
+      const name = h('input', { type: 'text', class: 'tm-name mono', value: row.next || '', spellcheck: 'false' })
+      name.addEventListener('input', () => ((take.checked = !!name.value.trim()), countUp()))
+      take.addEventListener('change', countUp)
+      const sel = h('select', { class: 'tm-row-branch mono', title: 'The branch to tag in this repository' })
+      for (const x of [...(branchesOf.get(row.repo) || [])].sort((a, c) => (a === b ? -1 : c === b ? 1 : a.localeCompare(c)))) sel.append(h('option', { value: x, selected: x === b }, x))
+      sel.addEventListener('change', () => (own.set(row.repo, sel.value), loadPlan()))
+      const fallback = !own.has(row.repo) && b !== top
+      inputs.set(row.repo, { take, name, row })
+      table.append(
+        h(
+          'div',
+          { class: `tm-row ${done ? 'done' : ''} ${row.error ? 'err' : ''}`, 'data-repo': row.repo },
+          take,
+          h('span', { class: 'tm-repo', title: row.repo }, byPath.get(row.repo)?.name || row.name),
+          h(
+            'span',
+            { class: 'tm-branch' },
+            sel,
+            row.error
+              ? h('span', { class: 'bad' }, icon('alert', 11), row.error)
+              : h('span', { class: 'dim ellipsis', title: `${row.at} · ${row.hash}\n${row.subject || ''}` }, fallback ? `no ${top} here · ` : '', `${(row.hash || '').slice(0, 7)} ${row.subject || ''}`)
+          ),
+          h('span', { class: 'tm-latest mono' }, row.latest || h('span', { class: 'dim' }, 'none yet')),
+          h('span', { class: 'tm-new' }, done ? h('span', { class: 'pill tm-already', title: `That commit already has ${row.already[0]}: nothing to do` }, icon('check', 10), `Already ${row.already[0]}`) : row.error ? h('span', { class: 'dim' }, '–') : [h('span', { class: 'tm-arrow dim' }, '→'), name])
+        )
+      )
+    }
+    countUp()
+  }
+  function countUp() {
+    const take = [...inputs.values()].filter((x) => x.take.checked && x.name.value.trim())
+    okBtn.disabled = busy || !take.length
+    clear(okBtn).append(icon('tag', 13), take.length ? `Create ${take.length} tag${take.length > 1 ? 's' : ''}${push.checked ? ' and push' : ''}` : 'Nothing to tag')
+    const done = plan ? plan.filter((r) => r.already?.length).length : 0
+    status.textContent = plan ? [done ? `${done} already tagged` : '', plan.some((r) => r.error) ? `${plan.filter((r) => r.error).length} cannot` : ''].filter(Boolean).join(' · ') : ''
+  }
+  push.addEventListener('change', countUp)
+
+  async function apply() {
+    const take = [...inputs.values()].filter((x) => x.take.checked && x.name.value.trim())
+    if (!take.length) return
+    const list = take.map((x) => `  • ${byPath.get(x.row.repo)?.name || x.row.name}: ${x.name.value.trim()} on ${x.row.at} (${x.row.hash.slice(0, 7)})`).join('\n')
+    if (!(await confirmBox(`Create ${take.length} tag${take.length > 1 ? 's' : ''}?`, `${list}${push.checked ? '\n\nEach is pushed to its remote.' : ''}`, push.checked ? 'Create and push' : 'Create'))) return
+    store.set('tagManyPrefs', { pattern, branch: top, push: push.checked })
+    busy = true
+    countUp()
+    for (const x of take) x.take.closest('.tm-row').classList.add('working')
+    let res = []
+    try {
+      res = await request('repos.tagApply', { items: take.map((x) => ({ repo: x.row.repo, name: x.name.value.trim(), hash: x.row.hash })), push: push.checked, message: msgIn.value.trim() }, 300000)
+    } catch (e) {
+      toast(e.message, 'error')
+    }
+    busy = false
+    for (const r of res) {
+      const el = [...table.querySelectorAll('.tm-row')].find((x) => x.dataset.repo === r.repo)
+      if (!el) continue
+      el.classList.remove('working')
+      el.classList.add(r.ok ? 'made' : 'failed')
+      el.querySelector('.tm-new').replaceChildren(r.ok ? h('span', { class: 'pill tm-made' }, icon('check', 10), `${r.name}${r.pushed ? ' · pushed' : ''}`) : h('span', { class: 'bad', title: r.error }, icon('alert', 11), r.error))
+    }
+    const good = res.filter((r) => r.ok).length
+    toast(good === res.length ? `Tagged ${good} repositor${good === 1 ? 'y' : 'ies'}` : `Tagged ${good} of ${res.length}`, good === res.length ? 'ok' : 'error')
+    okBtn.disabled = true
+    clear(okBtn).append(icon('check', 13), 'Done')
+    onDone?.()
+  }
+
+  loadPlan()
+}
+
 /** Repos overview lives in its own tab; this opens it. */
 function reposOverview() {
   if (state.tab === 'repos') return
@@ -790,7 +974,7 @@ function reposOverview() {
   setTab('repos')
 }
 // kept between visits: the tab draws at once from the last answer and refreshes behind it
-const rovState = { data: null, at: 0, loading: null, busy: new Map(), filter: '', text: '' }
+const rovState = { data: null, at: 0, loading: null, busy: new Map(), filter: '', text: '', sel: new Set(), errors: new Map() }
 async function viewRepos() {
   const root = h('div', { class: 'view rov-page' })
   const body = h('div', { class: 'rov' })
@@ -798,23 +982,18 @@ async function viewRepos() {
   let data = rovState.data
   let filter = rovState.filter
   let text = rovState.text
-  const fetchAllBtn = h('button', { class: 'btn sm rov-fetch-all', title: 'Fetch every repository (4 at a time)', onClick: () => fetchAll() }, icon('fetch', 12), 'Fetch all')
-  const pullAllBtn = h('button', { class: 'btn sm rov-pull-all', title: 'Pull every repository where it is safe', onClick: () => pullAll() }, icon('pull', 12), 'Pull all')
-  const pushAllBtn = h('button', { class: 'btn sm rov-push-all', title: 'Push every repository with commits waiting', onClick: () => pushAll() }, icon('push', 12), 'Push all')
-  const moreBtn = h('button', { class: 'btn sm rov-more-menu', title: 'Branches across repos, scan folders', onClick: (e) => moreMenu(e.currentTarget) }, 'More', icon('down', 10))
   const refreshBtn = h('button', { class: 'btn sm rov-refresh', title: 'Read every repository again', onClick: () => load() }, rovState.loading ? h('span', { class: 'spinner sm' }) : icon('refresh', 12), 'Refresh')
   root.append(
-    h('div', { class: 'rov-top' }, h('div', { class: 'rov-heading' }, h('h2', null, 'Repos overview'), h('span', { class: 'dim' }, 'Every repository at once')), h('span', { class: 'grow' }), fetchAllBtn, pullAllBtn, pushAllBtn, moreBtn, refreshBtn),
+    h('div', { class: 'rov-top' }, h('div', { class: 'rov-heading' }, h('h2', null, 'Repo Overview'), h('span', { class: 'dim' }, 'Every repository at once')), h('span', { class: 'grow' }), refreshBtn),
     body
   )
-  const moreMenu = (anchor) =>
-    menu(anchor, [
-      { label: 'Switch all to a branch…', icon: 'branch', onClick: () => switchAll() },
-      { label: 'New branch in several repos…', icon: 'plus', onClick: () => newBranchMany() },
-      '-',
-      { label: 'Scan folders…', icon: 'folder', onClick: () => scanFolders() }
-    ])
+  // what a command acts on: the ticked repos, or every one shown when none is ticked
+  const targets = () => {
+    const all = (rovState.data?.repos || []).filter((r) => !r.error)
+    return rovState.sel.size ? all.filter((r) => rovState.sel.has(r.path)) : shownRepos()
+  }
   const summary = h('div', { class: 'rov-summary' })
+  const fbar = h('div', { class: 'rov-filterbar-wrap' }) // sticky: selection and commands stay in view
   const list = h('div', { class: 'rov-list' })
 
   async function load() {
@@ -870,7 +1049,8 @@ async function viewRepos() {
     }
     const open = (d.items || []).filter(isOpenMr)
     const go = (filter) => () => ((state.reviewFilter = filter), store.set('reviewsAllRepos', true), setTab('reviews'))
-    const row = (label, n, tone, title) => h('button', { class: `rov-mr-i ${n && tone ? tone : ''} ${n ? '' : 'zero'}`, title, onClick: go('todo') }, h('b', null, String(n)), h('span', null, label))
+    // each kind its own colour (a dot, the count and the frame), dimmed when there are none
+    const row = (label, n, tone, title) => h('button', { class: `rov-mr-i t-${tone} ${n ? '' : 'zero'}`, title, onClick: go('todo') }, h('span', { class: 'rov-mr-dot' }), h('b', null, String(n)), h('span', null, label))
     return h(
       'div',
       { class: 'rov-health rov-mr' },
@@ -878,13 +1058,50 @@ async function viewRepos() {
       h(
         'div',
         { class: 'rov-mr-grid' },
-        row('to review', open.filter(needsMe).length, 'warn', 'Waiting for your approval'),
-        row('opened by you', open.filter(isMine).length, '', 'Your open merge requests'),
-        row('approved, not merged', open.filter((it) => it.myApproved && !isMine(it)).length, '', 'You approved them; waiting to be merged'),
-        row('pipeline running', open.filter(ciBusy).length, '', 'Their pipeline is still running'),
-        row('with conflicts', open.filter((it) => it.conflicts).length, 'bad', 'Need their conflicts resolved')
+        row('to review', open.filter(needsMe).length, 'review', 'Waiting for your approval'),
+        row('opened by you', open.filter(isMine).length, 'mine', 'Your open merge requests'),
+        row('approved, not merged', open.filter((it) => it.myApproved && !isMine(it)).length, 'approved', 'You approved them; waiting to be merged'),
+        row('pipeline running', open.filter(ciBusy).length, 'running', 'Their pipeline is still running'),
+        row('with conflicts', open.filter((it) => it.conflicts).length, 'conflict', 'Need their conflicts resolved')
       )
     )
+  }
+  // selected repos: what can be done to all of them at once
+  const selBarEl = h('div', { class: 'rov-selbar' })
+  rovState.bar = selBarEl // this page is the newest
+  // rovState.data, not this page's copy: a row drawn again later may still call these
+  const shownRepos = () => [...document.querySelectorAll('.rov-row')].map((x) => rovState.data?.repos.find((r) => r.path === x.dataset.path)).filter((r) => r && !r.error)
+  // the page on screen, drawn again from what is known (no reading of the repos)
+  const redrawPage = () => state.tab === 'repos' && renderView({ force: true })
+  function drawSelBar() {
+    if (!rovState.data) return
+    // the newest page's bar (a row drawn by an earlier copy of the page calls this too)
+    const selBar = rovState.bar || selBarEl
+    for (const p of [...rovState.sel]) if (!rovState.data.repos.some((r) => r.path === p)) rovState.sel.delete(p)
+    const n = rovState.sel.size
+    const all = shownRepos()
+    const failed = [...rovState.errors.keys()].filter((p) => rovState.data.repos.some((r) => r.path === p)).length
+    const cmd = (ic, label, title, fn, cls = '') => h('button', { class: `btn sm ${cls}`, title, onClick: fn }, icon(ic, 12), label)
+    const pick = h('input', { type: 'checkbox', class: 'rov-pick rov-pick-all', title: n ? 'Clear the selection' : 'Select every repository shown', 'aria-label': 'Select all' })
+    pick.checked = n > 0 && n >= all.length
+    pick.indeterminate = n > 0 && n < all.length
+    pick.addEventListener('change', () => (n ? rovState.sel.clear() : all.forEach((r) => rovState.sel.add(r.path)), redrawPage()))
+    append(clear(selBar), [
+      pick,
+      n
+        ? [
+            h('span', { class: 'rov-sel-n' }, `${n} selected`),
+            cmd('fetch', 'Fetch', `Fetch the ${n} selected`, () => fetchAll(), 'rov-fetch-sel'),
+            cmd('pull', 'Pull', 'Pull the selected, where it is safe', () => pullAll(), 'rov-pull-all'),
+            cmd('push', 'Push', 'Push the selected, where it is safe', () => pushAll(), 'rov-push-all'),
+            cmd('tag', 'Tag…', 'Tag the selected, each with its next version', () => tagManyModal(targets(), () => load()), 'rov-tag-btn'),
+            cmd('branch', 'Switch branch…', 'Switch the selected to one branch', () => switchAll(), 'rov-switch-all'),
+            cmd('plus', 'New branch…', 'Create the same branch in the selected', () => newBranchMany(), 'rov-new-branch'),
+            h('button', { class: 'btn sm ghost', title: 'Clear the selection', onClick: () => (rovState.sel.clear(), redrawPage()) }, 'Clear')
+          ]
+        : [h('span', { class: 'dim rov-sel-hint' }, 'Tick repositories to fetch, pull, push, tag or switch them together'), cmd('fetch', 'Fetch all', 'Fetch every repository shown (4 at a time)', () => fetchAll(), 'rov-fetch-all')],
+      failed ? h('button', { class: `btn sm rov-failed ${filter === 'failed' ? 'on' : ''}`, title: 'Show only the repositories whose last command failed', onClick: () => ((filter = rovState.filter = filter === 'failed' ? '' : 'failed'), draw()) }, icon('alert', 12), `${failed} failed`) : null
+    ].flat().filter(Boolean))
   }
   // the dashboard: tiles that filter the list, and one bar of how healthy the repos are
   function drawSummary() {
@@ -931,15 +1148,16 @@ async function viewRepos() {
     const search = h('input', { class: 'rov-search', type: 'search', placeholder: 'Filter by name or branch…', value: text })
     search.addEventListener('input', () => ((text = search.value), (rovState.text = text), drawList()))
     const label = ROV_FILTERS.find(([x]) => x === filter)?.[1]
-    append(clear(summary), [
-      h('div', { class: 'rov-dash' }, tiles, h('div', { class: 'rov-side' }, health, mrCard())),
-      h('div', { class: 'rov-filterbar' }, label ? h('button', { class: 'rov-chip on', title: 'Show every repository', onClick: () => setFilter(filter) }, `Only ${label}`, icon('x', 10)) : null, h('span', { class: 'grow' }), search)
+    append(clear(summary), [h('div', { class: 'rov-dash' }, tiles, h('div', { class: 'rov-side' }, health, mrCard()))])
+    append(clear(fbar), [
+      h('div', { class: 'rov-filterbar' }, selBarEl, label ? h('button', { class: 'rov-chip on', title: 'Show every repository', onClick: () => setFilter(filter) }, `Only ${label}`, icon('x', 10)) : null, h('span', { class: 'grow' }), search)
     ])
+    drawSelBar()
   }
   function draw() {
     clear(body)
     drawSummary()
-    body.append(summary, list)
+    body.append(summary, fbar, list)
     body.append(
       data.roots?.length
         ? h('div', { class: 'rov-foot dim', title: data.roots.join('\n') }, icon('folder', 12), `Also listing the repos inside ${data.roots.map(shortPath).join('; ')}`, ' · ', h('button', { class: 'linkish', onClick: () => scanFolders() }, 'Change'))
@@ -956,11 +1174,31 @@ async function viewRepos() {
       .sort((a, b) => rovScore(b) - rovScore(a) || a.name.localeCompare(b.name))
     clear(list)
     if (!rows.length) list.append(h('div', { class: 'empty' }, icon('check', 24), h('div', null, data.repos.length ? 'No repository matches' : 'No repositories yet: open some in Orca, or scan a folder')))
-    for (const r of rows) {
+    // one branch column for every row: as wide as the longest name shown (140–320 px), so names show
+    // in full when there is room and the columns line up
+    const longest = Math.max(4, ...rows.map((r) => (r.branch || `detached ${r.oid || ''}`).length))
+    list.style.setProperty('--rov-bw', `${Math.min(320, Math.max(140, Math.round(longest * 7.6 + 52)))}px`)
+    const put = (r) => {
       const row = h('div', { class: 'rov-row', 'data-path': r.path })
       fillRow(row, r)
       list.append(row)
     }
+    // grouped like Orca's sidebar (its Project Groups, in their order); the rest under "Other"
+    if (data.grouped && rows.some((r) => r.group)) {
+      const groups = new Map()
+      for (const r of rows) {
+        const k = r.group?.id || ''
+        if (!groups.has(k)) groups.set(k, { name: r.group ? r.group.name || 'Project group' : 'Not in a project group', order: r.group ? r.group.order : 1e9, rows: [] })
+        groups.get(k).rows.push(r)
+      }
+      for (const g of [...groups.values()].sort((a, b) => a.order - b.order)) {
+        // inside a group: Orca's own order, as its sidebar lists them
+        g.rows.sort((a, b) => (a.group?.repoOrder ?? 1e9) - (b.group?.repoOrder ?? 1e9) || a.name.localeCompare(b.name))
+        const need = g.rows.filter((r) => rovScore(r) >= 2).length
+        list.append(h('div', { class: 'rov-grp' }, icon('folder', 12), h('span', { class: 'rov-grp-name' }, g.name), h('span', { class: 'rov-group-n' }, String(g.rows.length)), need ? h('span', { class: 'rov-grp-need' }, `${need} need you`) : null))
+        g.rows.forEach(put)
+      }
+    } else rows.forEach(put)
   }
   function paintRow(r) {
     // the row on screen now (the tab may have been drawn again since this one was built)
@@ -973,7 +1211,13 @@ async function viewRepos() {
     const tone = r.error || r.conflicts || r.state || r.ci === 'failed' ? 'bad' : r.behind || r.changes || r.ahead ? 'warn' : 'ok'
     const reviews = rovReviews(r)
     row.classList.toggle('busy', !!doing)
+    const failure = rovState.errors.get(r.path)
+    row.classList.toggle('failed', !!failure)
+    const pick = h('input', { type: 'checkbox', class: 'rov-pick', 'aria-label': `Select ${r.name}`, checked: rovState.sel.has(r.path), disabled: !!r.error })
+    pick.addEventListener('change', () => (pick.checked ? rovState.sel.add(r.path) : rovState.sel.delete(r.path), row.classList.toggle('sel', pick.checked), drawSelBar()))
+    row.classList.toggle('sel', rovState.sel.has(r.path))
     clear(row).append(
+      pick,
       h('span', { class: `rov-dot ${tone}`, title: tone === 'ok' ? 'Clean and up to date' : tone === 'bad' ? 'Needs fixing' : 'Something to do' }),
       h(
         'div',
@@ -985,7 +1229,9 @@ async function viewRepos() {
           here && h('span', { class: 'pill' }, 'open here'),
           r.source === 'scan' && h('span', { class: 'pill', title: 'Found by scanning a folder; not opened in Orca' }, 'scanned')
         ),
-        h('div', { class: 'rov-path dim mono ellipsis' }, shortPath(r.path))
+        failure
+          ? h('div', { class: 'rov-fail', title: failure.message }, icon('alert', 11), h('span', { class: 'ellipsis' }, `${{ fetch: 'Fetch', pull: 'Pull', push: 'Push', checkout: 'Switch', branchCreate: 'New branch' }[failure.op] || 'Last command'} failed: ${failure.message}`))
+          : h('div', { class: 'rov-path dim mono ellipsis' }, shortPath(r.path))
       ),
       r.error
         ? h('span', { class: 'rov-err', title: r.error }, icon('alert', 12), h('span', { class: 'ellipsis' }, r.error))
@@ -1006,6 +1252,7 @@ async function viewRepos() {
               r.conflicts ? h('span', { class: 'bad' }, `${r.conflicts} conflict${r.conflicts > 1 ? 's' : ''}`) : r.changes ? `${r.changes} changed` : h('span', { class: 'dim' }, 'clean'),
               r.state ? h('span', { class: 'pill rv-conflict' }, `${r.state}`) : null
             ),
+            h('span', { class: 'rov-tagcol' }, r.tag ? h('button', { class: 'rov-tag', title: `Latest tag ${r.tag}${r.tagAt ? ` (${ago(r.tagAt)})` : ''}. Click to tag again`, onClick: () => tagManyModal([r], () => load()) }, icon('tag', 10), h('span', { class: 'ellipsis' }, r.tag)) : h('span', { class: 'dim' }, 'no tags')),
             h('span', { class: 'rov-ci' }, r.ci ? h('button', { class: `ci ci-${r.ci}`, title: r.ciUrl ? 'Open the pipeline' : `CI ${r.ci}`, onClick: () => r.ciUrl && openLink(r.ciUrl) }, ciIcon(r.ci), r.ci) : null),
             h(
               'span',
@@ -1023,6 +1270,7 @@ async function viewRepos() {
           ? h('span', { class: 'rov-doing dim' }, h('span', { class: 'spinner sm' }), doing)
           : [
               !r.error && iconBtn('fetch', `Fetch ${r.name}`, () => act(r, 'fetch'), { class: 'icon-btn rov-fetch' }),
+              !r.error && iconBtn('tag', `Tag ${r.name}: its next version`, () => tagManyModal([r], () => load()), { class: 'icon-btn rov-tag-one' }),
               !r.error && r.behind > 0 ? h('button', { class: 'btn sm rov-pull', title: `Pull ${r.behind} commit${r.behind > 1 ? 's' : ''} into ${r.branch}`, onClick: () => act(r, 'pull') }, icon('pull', 12), 'Pull') : null,
               h('button', { class: 'btn sm primary rov-open', title: `Open ${r.name} in Git Control`, onClick: () => openRepo(r) }, 'Open'),
               iconBtn('more', `More for ${r.name}`, (e) => rowMenu(e.currentTarget, r), { class: 'icon-btn rov-row-more' })
@@ -1061,7 +1309,7 @@ async function viewRepos() {
     return map
   }
   async function switchAll() {
-    const rs = data.repos.filter((r) => !r.error)
+    const rs = targets()
     toast('Reading the branches of every repo…')
     const map = await branchMap(rs)
     // branches found in two repos or more first: those are the ones worth switching together
@@ -1094,7 +1342,7 @@ async function viewRepos() {
     errs.length ? toast(`Switched ${go.length - errs.length} of ${go.length}\n${errs.join('\n')}`, 'error') : toast(`${plural(go.length)} now on ${name}`)
   }
   async function newBranchMany() {
-    const rs = data.repos.filter((r) => !r.error)
+    const rs = targets()
     const shown = new Set([...list.children].map((x) => x.dataset?.path).filter(Boolean))
     const res = await dialog({
       title: 'New branch in several repos',
@@ -1115,7 +1363,7 @@ async function viewRepos() {
     errs.length ? toast(`Created ${name} in ${pick.length - errs.length} of ${pick.length}\n${errs.join('\n')}`, 'error') : toast(`Created ${name} in ${plural(pick.length)}`)
   }
   async function pushAll() {
-    const ahead = data.repos.filter((r) => !r.error && r.ahead > 0)
+    const ahead = targets().filter((r) => r.ahead > 0)
     if (!ahead.length) return toast('Nothing to push: no repository has commits waiting')
     const why = (r) => (r.behind ? `gone its own way: ${r.behind} commit${r.behind > 1 ? 's' : ''} to pull first` : r.state || r.conflicts ? 'a merge or rebase is in progress' : !r.branch ? 'not on a branch' : '')
     const safe = ahead.filter((r) => !why(r))
@@ -1126,9 +1374,7 @@ async function viewRepos() {
     ].join('\n')
     if (!safe.length) return confirmBox('Push all', msg, 'OK')
     if (!(await confirmBox(`Push ${plural(safe.length)}?`, msg, 'Push'))) return
-    pushAllBtn.disabled = true
     const errs = await runMany(safe, 'push')
-    pushAllBtn.disabled = false
     errs.length ? toast(`Pushed ${safe.length - errs.length} of ${safe.length}\n${errs.join('\n')}`, 'error') : toast(`Pushed ${plural(safe.length)}`)
   }
   async function runEach(rs, fn) {
@@ -1150,15 +1396,19 @@ async function viewRepos() {
     paintRow(r)
     let err = null
     try {
-      await request('git', { op, repo: r.path, args: op === 'pull' ? { ffOnly: true, ...args } : args }, 180000)
+      // one slow or unreachable remote must not hold the others: fetch gives up after 45 s
+      await request('git', { op, repo: r.path, args: op === 'pull' ? { ffOnly: true, ...args } : op === 'fetch' ? { timeout: 45, ...args } : args }, 180000)
     } catch (e) {
       err = e.message
     }
     busy.delete(r.path)
+    if (err) rovState.errors.set(r.path, { op, message: String(err).split('\n')[0] })
+    else rovState.errors.delete(r.path)
     await refreshOne(r)
     if (!root.isConnected) return err
     paintRow(r)
     drawSummary()
+    drawSelBar()
     if (!quiet) err ? toast(`${r.name}: ${err}`, 'error') : toast(`${r.name}: ${{ fetch: 'fetched', pull: 'pulled', push: 'pushed', branchCreate: `created ${args.name}`, checkout: `now on ${r.branch}` }[op]}`)
     return err
   }
@@ -1178,14 +1428,12 @@ async function viewRepos() {
   }
   const plural = (n) => `${n} repositor${n === 1 ? 'y' : 'ies'}`
   async function fetchAll() {
-    const rs = data.repos.filter((r) => !r.error && !busy.has(r.path))
-    fetchAllBtn.disabled = true
+    const rs = targets().filter((r) => !busy.has(r.path))
     const errs = await runMany(rs, 'fetch')
-    fetchAllBtn.disabled = false
     errs.length ? toast(`Fetched ${rs.length - errs.length} of ${rs.length}\n${errs.join('\n')}`, 'error') : toast(`Fetched ${plural(rs.length)}`)
   }
   async function pullAll() {
-    const behind = data.repos.filter((r) => !r.error && r.behind > 0)
+    const behind = targets().filter((r) => r.behind > 0)
     if (!behind.length) return toast('Nothing to pull: no repository is behind (Fetch all first to check)')
     const why = (r) =>
       r.conflicts || r.state ? 'a merge or rebase is in progress' : r.changes ? `${r.changes} uncommitted change${r.changes > 1 ? 's' : ''}` : r.ahead ? `gone its own way: ${r.ahead} local commit${r.ahead > 1 ? 's' : ''} not pushed` : !r.branch ? 'not on a branch' : ''
@@ -1197,9 +1445,7 @@ async function viewRepos() {
     ].join('\n')
     if (!safe.length) return confirmBox('Pull all', msg, 'OK')
     if (!(await confirmBox(`Pull ${plural(safe.length)}?`, msg, 'Pull'))) return
-    pullAllBtn.disabled = true
     const errs = await runMany(safe, 'pull')
-    pullAllBtn.disabled = false
     errs.length ? toast(`Pulled ${safe.length - errs.length} of ${safe.length}\n${errs.join('\n')}`, 'error') : toast(`Pulled ${plural(safe.length)}`)
   }
   async function switchMenu(anchor, r) {
@@ -1455,7 +1701,7 @@ function renderBanner() {
 const TABS = [
   ['history', IN_TAB ? 'Graph' : 'History', 'layers'],
   ['changes', IN_TAB ? 'Commit' : 'Changes', 'commit'],
-  ['reviews', 'Review & MR', 'pr'],
+  ['reviews', 'MR / PR', 'pr'],
   ['pipelines', 'Pipelines', 'pipeline'],
   ['branches', 'Branches', 'branch'],
   ['worktrees', 'Worktrees', 'worktree'],
@@ -2309,6 +2555,7 @@ async function viewChanges() {
         { class: 'row' },
         h('label', { class: 'check' }, amend, 'Amend last commit'),
         h('span', { class: 'grow' }),
+        h('button', { type: 'button', class: 'btn sm ai-review-btn', title: 'AI reviews what you are about to commit (the staged changes, or every change when nothing is staged)', onClick: () => localReviewModal({ staged: true, onNext: () => ta.focus() }) }, icon('sparkle', 12), 'Review'),
         h(
           'button',
           {
@@ -3128,7 +3375,7 @@ function commitMenu(anchor, c, clicked) {
         { label: 'Rename…', icon: 'edit', onClick: () => renameBranch(b) },
         { label: 'Show only this branch', icon: 'history', onClick: () => showBranchLog(b) },
         b !== cur && cur && { label: mergeLabel(b, cur), full: `Merge ${b} → ${cur}`, icon: 'merge', onClick: () => mergeRef(b) },
-        b !== cur && mrBoth(b, cur),
+        ...(b !== cur ? withAiReview(mrBoth(b, cur)) : []),
         b !== cur && { label: 'Delete…', icon: 'trash', danger: true, onClick: () => deleteBranch(b) }
       ]
     })),
@@ -3170,7 +3417,7 @@ function commitMenu(anchor, c, clicked) {
     { label: 'New worktree here…', icon: 'worktree', onClick: () => addWorktree({ base: c.hash }) },
     '-',
     !pickRef && !isHead && cur && mergeItem,
-    mrItem(local, remote, cur),
+    ...withAiReview(mrItem(local, remote, cur)),
     !isHead && { label: pickRef ? `Rebase ${nm(cur)} onto ${nm(pickRef)}…` : `Rebase ${cur} onto this…`, icon: 'merge', onClick: () => rebaseOnto(pickRef || local[0] || c.hash) },
     !isHead && { label: 'Cherry-pick', icon: 'commit', onClick: () => run('cherryPick', { hash: c.hash, mainline: isMerge }, { success: 'Cherry-picked' }) },
     { label: 'Revert…', icon: 'undo', onClick: async () => (await confirmBox(`Revert ${short}?`, 'A new commit that undoes it will be created.', 'Revert')) && run('revert', { hash: c.hash, mainline: isMerge }, { success: 'Reverted' }) },
@@ -3578,7 +3825,7 @@ function localBranchRow(b) {
     return menu(anchor, [
           !b.current && { label: 'Checkout', icon: 'right', onClick: () => checkout(b.name) },
           !b.current && cur && { label: mergeLabel(b.name, cur), full: `Merge ${b.name} → ${cur}`, icon: 'merge', onClick: () => mergeRef(b.name) },
-          !b.current && mrBoth(b.name, cur),
+          ...(!b.current ? withAiReview(mrBoth(b.name, cur)) : []),
           !b.current && cur && { label: `Rebase ${cur} onto this`, icon: 'merge', onClick: () => rebaseOnto(b.name) },
           { label: 'New branch from here…', icon: 'plus', onClick: () => newBranch(b.name) },
           { label: 'New worktree…', icon: 'worktree', onClick: () => addWorktree({ branch: b.name }) },
@@ -3615,7 +3862,7 @@ function remoteBranchRow(b, local) {
           // Always go through the remote: when a local branch exists, checkout() asks how to bring it up to date.
           { label: hasLocal ? `Checkout ${b.name}…` : `Checkout as ${short}`, icon: 'right', onClick: () => checkout(b.name, { track: true }) },
           cur && { label: mergeLabel(b.name, cur), full: `Merge ${b.name} → ${cur}`, icon: 'merge', onClick: () => mergeRef(b.name) },
-          mrBoth(b.name.replace(/^[^/]+\//, ''), cur),
+          ...withAiReview(mrBoth(b.name.replace(/^[^/]+\//, ''), cur)),
           cur && { label: `Rebase ${cur} onto this`, icon: 'merge', onClick: () => rebaseOnto(b.name) },
           { label: 'New branch from here…', icon: 'plus', onClick: () => newBranch(b.name) },
           { label: 'New worktree…', icon: 'worktree', onClick: () => addWorktree({ newBranch: short, base: b.name }) },
@@ -4491,7 +4738,7 @@ document.addEventListener('drop', (e) => {
     items.push({ label: mergeLabel(src.name, cur), full: `Merge ${src.name} → ${cur}`, icon: 'merge', onClick: () => mergeRef(src.name) })
   } else if (src.name === cur) {
     items.push({ label: `Rebase ${nm(cur)} onto ${nm(dst.name)}…`, icon: 'merge', onClick: () => rebaseOnto(dst.name) })
-    if (dst.kind !== 'tag') items.push(mrBoth(dst.name.replace(/^[^/]+\//, ''), cur))
+    if (dst.kind !== 'tag') items.push(...withAiReview(mrBoth(dst.name.replace(/^[^/]+\//, ''), cur)))
   } else {
     items.push({ label: `Switch to ${nm(dst.name)}, then merge ${nm(src.name)} in`, icon: 'merge', onClick: async () => (await checkout(dst.name), state.status?.branch === dst.name && mergeRef(src.name)) })
   }
@@ -5162,6 +5409,132 @@ async function aiCommitModal({ staged, total, onUse, onCommit }) {
 }
 
 
+/**
+ * "Review with AI" beside every "Merge request" in a menu: the same directions, each reviewing that
+ * branch against the one it would merge into, before anyone else sees it.
+ */
+function withAiReview(mr) {
+  if (!mr) return [null]
+  const ai = {
+    label: 'Review with AI',
+    icon: 'sparkle',
+    cls: 'ai-item',
+    items: mr.items.map((x) => ({ label: x.label.replace(/…$/, ''), full: x.full.replace(/^Merge request:/, 'Review with AI:'), icon: 'sparkle', cls: 'ai-item', onClick: () => localReviewModal({ source: x.dir[0], target: x.dir[1] }) }))
+  }
+  return [mr, ai]
+}
+
+/** Markdown of a review whose `path:line` references open that file (in Orca's editor). */
+function reviewBody(md) {
+  const el = mdRender(md)
+  for (const code of el.querySelectorAll('code')) {
+    const m = code.textContent.trim().match(/^([\w@./\\-]+\.[\w]+):(\d+)(?:-\d+)?$/)
+    if (!m) continue
+    const a = h('button', { class: 'linkish mono review-ref', title: `Open ${m[1]} (line ${m[2]})`, onClick: () => request('file.open', { repo: state.repo, file: m[1], line: +m[2] }).catch((e) => toast(e.message, 'error')) }, code.textContent)
+    code.replaceWith(a)
+  }
+  return el
+}
+
+/**
+ * AI review on this machine: a branch before its merge request ({ source, target }), or the staged
+ * changes before a commit ({ staged: true }). Ends with the next step: create the merge request, or
+ * back to committing.
+ */
+async function localReviewModal({ source, target, staged = false, onNext } = {}) {
+  closeOverlays('.menu')
+  const prefs = store.get('aiReviewPrefs', { instructions: '' })
+  let agents = [
+    { id: 'claude', name: 'Claude Code', available: true },
+    { id: 'codex', name: 'Codex', available: true }
+  ]
+  let agent = 'claude'
+  let gen = 0
+  let busy = false
+  const what = staged ? 'staged changes' : `${source || state.status?.branch || 'this branch'} → ${target}`
+  const agentSel = h('select', { onChange: () => request('ai.settings', { agent: agentSel.value }).catch(() => {}) })
+  const fillAgents = () => {
+    clear(agentSel)
+    for (const a of agents) agentSel.append(h('option', { value: a.id, selected: a.id === agent, disabled: !a.available }, a.available ? a.name : `${a.name} (not installed)`))
+  }
+  fillAgents()
+  request('ai.settings', {}, 20000)
+    .then((r) => ((agents = r.agents), (agent = r.agent), fillAgents()))
+    .catch(() => {})
+  const instructions = h('textarea', { rows: 2, placeholder: 'Optional, e.g. "Write in Thai", "Focus on security", "We use React Query"' })
+  instructions.value = prefs.instructions || ''
+  const out = h('div', { class: 'local-review-out' }, h('div', { class: 'dim local-review-empty' }, icon('sparkle', 14), `The review of ${what} appears here. Nothing is posted anywhere.`))
+  const status = h('div', { class: 'ai-status' })
+  const verdictEl = h('span', { class: 'pill' })
+  const genBtn = h('button', { type: 'button', class: 'btn sm ai-gen ai-review-btn', onClick: () => generate() })
+  // the next step: from a menu, create the merge request; from the merge request (or Commit) window, back to it
+  const nextBtn = h('button', { type: 'button', class: 'btn', disabled: true, onClick: () => (close(), onNext ? onNext() : mergeRequestDialog(target, source)) }, icon(staged ? 'commit' : 'pr', 13), staged ? 'Back to commit' : onNext ? 'Back to the merge request' : 'Create merge request')
+  let has = false
+  let stopTick = () => {}
+  const sync = (on, text, verdict) => {
+    busy = on
+    stopTick()
+    if (on) stopTick = aiTicker(status, agents.find((a) => a.id === agentSel.value)?.name || 'AI', what)
+    else append(clear(status), [text || ''])
+    append(clear(genBtn), [on ? [icon('x', 13), 'Stop'] : [icon(has ? 'refresh' : 'sparkle', 13), has ? 'Review again' : 'Start review']])
+    genBtn.className = `btn sm ai-gen ${on ? 'stop' : 'ai-review-btn'}`
+    nextBtn.disabled = on || !has
+    nextBtn.classList.toggle('primary', !on && has && verdict !== 'fix')
+    if (verdict) {
+      verdictEl.className = `pill local-verdict v-${verdict}`
+      verdictEl.textContent = { ready: 'Ready for review', fix: 'Fix first', notes: 'OK, with notes' }[verdict]
+    }
+  }
+  async function generate() {
+    if (busy) {
+      gen++
+      return sync(false, 'Stopped.')
+    }
+    const my = ++gen
+    store.set('aiReviewPrefs', { instructions: instructions.value })
+    const name = agents.find((a) => a.id === agentSel.value)?.name || 'AI'
+    sync(true, `${name} is reading ${what}…`)
+    out.classList.add('generating')
+    const started = Date.now()
+    try {
+      const r = await request('ai.reviewLocal', { repo: state.repo, source, target, staged, agent: agentSel.value, instructions: instructions.value }, 178000)
+      if (my !== gen) return
+      has = true
+      clear(out).append(reviewBody(r.review))
+      const note = r.left?.length ? ` ${r.left.length} big file${r.left.length > 1 ? 's were' : ' was'} left out: ${r.left.slice(0, 5).join(', ')}${r.left.length > 5 ? '…' : ''}.` : ''
+      sync(false, `Reviewed ${r.files} file${r.files === 1 ? '' : 's'} with ${name} in ${((Date.now() - started) / 1000).toFixed(1)}s.${note} Click a file:line to open it.`, r.verdict)
+    } catch (e) {
+      if (my !== gen) return
+      sync(false, '')
+      clear(status).append(h('span', { class: 'ai-error' }, icon('alert', 12), e.message))
+    } finally {
+      out.classList.remove('generating')
+    }
+  }
+  const close = () => {
+    gen++
+    stopTick()
+    overlay.remove()
+    document.removeEventListener('keydown', onKey)
+  }
+  const onKey = (e) => e.key === 'Escape' && !busy && isTopOverlay(overlay) && close()
+  const box = h(
+    'div',
+    { class: 'dialog ai-dialog local-review-dialog', role: 'dialog' },
+    h('div', { class: 'ai-title' }, h('span', { class: 'ai-badge' }, icon('sparkle', 14)), h('div', null, h('h3', null, staged ? 'Review your changes with AI' : 'Review with AI before the merge request'), h('p', null, staged ? 'Before you commit: the staged changes, or every change when nothing is staged' : `${source || state.status?.branch} → ${target}: the changes the merge request will show`))),
+    h('div', { class: 'ai-row' }, h('div', { class: 'field grow' }, h('label', null, 'Agent'), agentSel)),
+    h('div', { class: 'field' }, h('label', null, 'Instructions'), instructions),
+    h('div', { class: 'field' }, h('div', { class: 'ai-msg-head' }, h('label', { class: 'row' }, 'Review', verdictEl), genBtn), out),
+    status,
+    h('div', { class: 'buttons' }, h('button', { type: 'button', class: 'btn', onClick: () => !busy && close() }, 'Close'), h('span', { class: 'grow dim local-review-note', title: 'Runs on this machine with your AI CLI. Nothing is posted to GitHub or GitLab.' }, 'Nothing is posted'), nextBtn)
+  )
+  const overlay = h('div', { class: 'overlay', onMousedown: (e) => e.target === overlay && !busy && close() }, box)
+  mountOverlay(overlay, close)
+  document.addEventListener('keydown', onKey)
+  sync(false, '')
+  generate() // start at once: opening it is asking for it
+}
+
 /* =========================================================================
    Merge requests: one button pushes the branch and opens the MR/PR
    ========================================================================= */
@@ -5177,8 +5550,8 @@ function mrBoth(other, cur) {
     icon: 'pr',
     cls: 'mr-item',
     items: [
-      { label: `${nm(cur)} → ${nm(other)}…`, full: `Merge request: ${cur} → ${other}`, icon: 'pr', onClick: () => mergeRequestDialog(other) },
-      { label: `${nm(other)} → ${nm(cur)}…`, full: `Merge request: ${other} → ${cur}`, icon: 'pr', onClick: () => mergeRequestDialog(cur, other) }
+      { label: `${nm(cur)} → ${nm(other)}…`, full: `Merge request: ${cur} → ${other}`, icon: 'pr', cls: 'mr-item', dir: [cur, other], onClick: () => mergeRequestDialog(other) },
+      { label: `${nm(other)} → ${nm(cur)}…`, full: `Merge request: ${other} → ${cur}`, icon: 'pr', cls: 'mr-item', dir: [other, cur], onClick: () => mergeRequestDialog(cur, other) }
     ]
   }
 }
@@ -5188,7 +5561,7 @@ function mrItem(local, remote, cur) {
   const targets = [...new Set([...local, ...remote.filter((r) => !r.endsWith('/HEAD')).map((r) => r.replace(/^[^/]+\//, ''))])].filter((b) => b !== cur)
   if (!targets.length) return null
   if (targets.length === 1) return mrBoth(targets[0], cur)
-  return { label: 'Merge request', icon: 'pr', cls: 'mr-item', items: targets.flatMap((b) => [{ label: `${nm(cur)} → ${nm(b)}…`, full: `Merge request: ${cur} → ${b}`, icon: 'pr', onClick: () => mergeRequestDialog(b) }, { label: `${nm(b)} → ${nm(cur)}…`, full: `Merge request: ${b} → ${cur}`, icon: 'pr', onClick: () => mergeRequestDialog(cur, b) }]) }
+  return { label: 'Merge request', icon: 'pr', cls: 'mr-item', items: targets.flatMap((b) => [{ label: `${nm(cur)} → ${nm(b)}…`, full: `Merge request: ${cur} → ${b}`, icon: 'pr', cls: 'mr-item', dir: [cur, b], onClick: () => mergeRequestDialog(b) }, { label: `${nm(b)} → ${nm(cur)}…`, full: `Merge request: ${b} → ${cur}`, icon: 'pr', cls: 'mr-item', dir: [b, cur], onClick: () => mergeRequestDialog(cur, b) }]) }
 }
 /**
  * Pick people (assignees, reviewers): chips plus a search box with a list of the project's members.
@@ -5510,7 +5883,7 @@ async function mergeRequestDialog(target, source, swapped) {
     gitlabOpts,
     h('label', { class: 'check' }, draft, 'Draft (Create now only)'),
     note,
-    h('div', { class: 'buttons' }, h('button', { type: 'button', class: 'btn', onClick: close }, 'Cancel'), h('span', { class: 'grow' }), linkBtn, createBtn)
+    h('div', { class: 'buttons' }, h('button', { type: 'button', class: 'btn', onClick: close }, 'Cancel'), h('span', { class: 'grow' }), h('button', { type: 'button', class: 'btn ai-review-btn', title: 'Let AI review these changes before anyone else sees them', onClick: () => localReviewModal({ source: info.source, target: info.target, onNext: () => {} }) }, icon('sparkle', 13), 'Review with AI first'), linkBtn, createBtn)
   )
   drawButtons()
   const box = h('div', { class: 'dialog mr-dialog', role: 'dialog' }, h('h3', null, `New ${noun}`), form)
@@ -5561,10 +5934,14 @@ const forMe = (it) => isOpenMr(it) && (it.roles.includes('review') || it.roles.i
  * running, queued). All: every merge request of this repository, open and merged.
  */
 const RV_TABS = [
-  ['todo', 'Review', (it) => isOpenMr(it) && (forMe(it) || isMine(it))],
+  ['todo', 'Open', (it) => (isOpenMr(it) && (forMe(it) || isMine(it) || it.roles.includes('repo'))) || mergedStillRunning(it)],
   ['all', 'All', () => true]
 ]
 const ciBusy = (it) => it.ci === 'running' || it.ci === 'pending'
+/** Merged in the last hours but its pipeline still runs: it stays in Review until that is done. */
+function mergedStillRunning(it) {
+  return it.state === 'merged' && !!it.recent && ciBusy(it) && (isMine(it) || it.roles.includes('review') || it.roles.includes('assigned'))
+}
 /**
  * The Review & MR count without opening the tab: the last list at once (from this device), then a
  * fresh one in the background, at most every two minutes per repository.
@@ -5618,6 +5995,8 @@ async function viewReviews() {
   }
   const data = state.reviews
   const filter = RV_TABS.some(([k]) => k === state.reviewFilter) ? state.reviewFilter : 'todo'
+  // Open: everyone's by default; For me = asked of me or assigned, Mine = opened by me
+  const who = filter === 'todo' ? store.get('rvWho', 'all') : 'all'
   // All is always this repository's; Review can show this repository or every one
   const allRepos = !data.repoPath || (filter !== 'all' && store.get('reviewsAllRepos', false))
   const q = (state.rvQ ||= { text: '', repo: '', label: '' })
@@ -5648,9 +6027,11 @@ async function viewReviews() {
     RV_TABS.map(([k, l, fn]) => {
       // each tab counts in its own scope (All: this repository only)
       const pool = k === 'all' && data.repoPath ? allItems.filter((it) => inThisRepo(it, data)) : k === filter ? scoped : allItems.filter((it) => !data.repoPath || store.get('reviewsAllRepos', false) || inThisRepo(it, data))
-      const n = pool.filter(fn).length
+      let n = pool.filter(fn).length
+      // All: every one this repository has, when GitLab told how many were merged (fetched when opened)
+      if (k === 'all' && data.mergedTotal != null) n = pool.filter(isOpenMr).length + Math.max(data.mergedTotal, pool.filter((it) => !isOpenMr(it)).length)
       const hot = k === 'todo' && pool.some(needsMe)
-      return h('button', { class: filter === k ? 'on' : '', title: k === 'todo' ? 'Asked to review, assigned or opened by me, until merged' : 'Every merge request of this repository, open and merged', onClick: () => ((state.reviewFilter = k), state.rvSel.clear(), renderView({ force: true })) }, l, h('span', { class: `rv-n ${hot ? 'hot' : ''}` }, String(n)))
+      return h('button', { class: filter === k ? 'on' : '', title: k === 'todo' ? 'Every open merge request of the repositories you work in, and the ones asked of you anywhere, until merged' : 'Every merge request of this repository, open and merged', onClick: () => ((state.reviewFilter = k), state.rvSel.clear(), renderView({ force: true })) }, l, h('span', { class: `rv-n ${hot ? 'hot' : ''}` }, String(n)))
     })
   )
   root.append(
@@ -5659,6 +6040,13 @@ async function viewReviews() {
       { class: 'history-bar' },
       where,
       seg,
+      // whose: For me · Mine · Everyone (the Open tab)
+      filter === 'todo' &&
+        h(
+          'div',
+          { class: 'segmented rv-who' },
+          [['all', 'Everyone', 'Every open one'], ['me', 'For me', 'Asked to review or assigned to me'], ['mine', 'Mine', 'Opened by me']].map(([k, l, t]) => h('button', { class: who === k ? 'on' : '', title: t, onClick: () => (store.set('rvWho', k), state.rvSel.clear(), renderView({ force: true })) }, l, k === 'me' && scoped.some(needsMe) ? h('span', { class: 'rv-n hot' }, String(scoped.filter(needsMe).length)) : null))
+        ),
       h('span', { class: 'grow' }),
       h('span', { class: 'dim rv-updated', style: { fontSize: '11.5px' } }, `Updated ${ago(data.at / 1000)}`),
       h('button', { class: 'btn sm', onClick: async (e) => ((e.currentTarget.disabled = true), await loadReviews(true).catch((err) => toast(err.message, 'error')), renderView({ force: true })) }, icon('refresh', 12), 'Refresh')
@@ -5719,7 +6107,9 @@ async function viewReviews() {
   }
   for (const e of data.errors || []) root.append(h('div', { class: 'banner' }, h('div', { class: 'row' }, icon('alert'), h('span', null, e))))
 
-  const fn = RV_TABS.find(([k]) => k === filter)[2]
+  const whoFn = { me: (it) => forMe(it) || mergedStillRunning(it), mine: (it) => isMine(it), all: () => true }[who] || (() => true)
+  const fn0 = RV_TABS.find(([k]) => k === filter)[2]
+  const fn = (it) => fn0(it) && whoFn(it)
   // waiting for my approval first, then others asked of me (approved, waiting merge), then my own
   const rank = (it) => (!isOpenMr(it) ? 0 : needsMe(it) ? 3 : forMe(it) ? 2 : 1)
   const items = scoped.filter(fn).sort((a, b) => rank(b) - rank(a))
@@ -5739,7 +6129,7 @@ async function viewReviews() {
       'div',
       { class: 'section-head rv-head' },
       openItems.length > 0 && selAll,
-      { todo: 'Asked of you or opened by you, until merged', all: `Every merge request of ${data.repoPath ? data.repoPath.split('/').pop() : 'this repository'}` }[filter],
+      { todo: { me: 'Asked of you, until merged', mine: 'Opened by you, until merged', all: 'Open, whoever opened them, until merged' }[who], all: `Every merge request of ${data.repoPath ? data.repoPath.split('/').pop() : 'this repository'}` }[filter],
       h('span', { class: 'count' }, items.length)
     )
   )
@@ -5749,7 +6139,7 @@ async function viewReviews() {
         'div',
         { class: 'empty' },
         icon('check', 28),
-        h('div', null, filter === 'todo' ? 'Nothing to review and nothing of yours open' : 'No open merge requests in this repository'),
+        h('div', null, filter === 'todo' ? (who === 'me' ? 'Nothing waits for you' : who === 'mine' ? 'Nothing of yours is open' : 'No open merge requests') : 'No open merge requests in this repository'),
         filter === 'todo' && !allRepos && h('button', { class: 'btn sm', style: { marginTop: '10px' }, onClick: () => (store.set('reviewsAllRepos', true), renderView({ force: true })) }, 'Show all repos')
       )
     )
@@ -5797,9 +6187,14 @@ async function viewReviews() {
     if (action === 'merge') {
       const toApprove = list.filter((it) => !isMine(it) && !it.myApproved).length
       const projects = new Set(list.map((it) => it.repo)).size
-      if (!(await confirmBox(`${toApprove ? 'Approve and merge' : 'Merge'} ${list.length} ${noun}?`, list.map((it) => `${it.repo} ${mrRef(it)} ${it.title}`).join('\n') + `\n\nThis runs in the background, so you can keep working.${toApprove ? ` ${toApprove} of them are approved first.` : ''} In one project they merge one at a time, each waiting until the one before is merged (rebasing when needed), so they never collide${projects > 1 ? '; different projects go at the same time' : ''}. You are told when each one is merged.`, toApprove ? 'Approve & merge' : 'Merge'))) return
+      const o = await mergeOptionsDialog(list, {
+        title: `${toApprove ? 'Approve and merge' : 'Merge'} ${list.length} ${noun}?`,
+        message: list.map((it) => `${it.repo} ${mrRef(it)} ${it.title}`).join('\n') + `\n\nIn the background${toApprove ? `, ${toApprove} approved first` : ''}. In one project one at a time, rebasing when needed${projects > 1 ? '; different projects at the same time' : ''}.`,
+        ok: toApprove ? 'Approve & merge' : 'Merge'
+      })
+      if (!o) return
       state.rvSel.clear()
-      return queueMerge(list, true)
+      return queueMerge(list, true, o)
     }
     if (action === 'approve' && !(await confirmBox(`Approve ${list.length} ${noun}?`, list.map((it) => `${it.repo} ${mrRef(it)} ${it.title}`).join('\n'), 'Approve'))) return
     bulk.querySelectorAll('button').forEach((b) => (b.disabled = true))
@@ -5839,10 +6234,39 @@ const mrNounShort = (it) => (it.provider === 'github' ? 'pull request' : 'merge 
 state.mergeQueue = new Map() // url -> { state, note, position, error }
 const Q_DONE = new Set(['merged', 'failed', 'auto'])
 let queueTimer = null
-async function queueMerge(list, approve) {
+/**
+ * Ask how to merge, the way the merge request page does: delete the source branch, squash. One
+ * merge request: its own settings ticked. Several: keep each one's own, or the same for all.
+ * Resolves the options (undefined = each one's own), or null when cancelled.
+ */
+async function mergeOptionsDialog(list, { title, message, ok }) {
+  const gl = list.some((it) => it.provider !== 'github')
+  let def = null
+  if (list.length === 1) {
+    setBusy(1)
+    def = await request('reviews.detail', { ...list[0], ci: undefined }, 60000).then((d) => d.merge, () => null)
+    setBusy(-1)
+  }
+  const fields =
+    list.length === 1
+      ? [
+          { key: 'removeSource', label: 'Delete source branch', type: 'check', value: def ? !!def.removeSource : true },
+          ...(gl ? [{ key: 'squash', label: 'Squash commits', type: 'check', value: def ? !!def.squash : false }] : [])
+        ]
+      : [
+          { key: 'removeSource', label: 'Delete source branches', type: 'select', value: 'own', options: [['own', "Each one's own setting"], ['yes', 'Delete them'], ['no', 'Keep them']] },
+          ...(gl ? [{ key: 'squash', label: 'Squash commits', type: 'select', value: 'own', options: [['own', "Each one's own setting"], ['yes', 'Squash'], ['no', "Don't squash"]] }] : [])
+        ]
+  const r = await dialog({ title, message, fields, ok })
+  if (!r) return null
+  const pick = (v) => (v === true || v === 'yes' ? true : v === false || v === 'no' ? false : undefined)
+  return { removeSource: pick(r.removeSource), squash: gl ? pick(r.squash) : undefined }
+}
+
+async function queueMerge(list, approve, options) {
   let r
   try {
-    r = await request('reviews.queue', { approve, items: list.map((it) => ({ ...it, ci: undefined, wantApprove: approve && !isMine(it) && !it.myApproved })) }, 30000)
+    r = await request('reviews.queue', { approve, items: list.map((it) => ({ ...it, ci: undefined, options, wantApprove: approve && !isMine(it) && !it.myApproved })) }, 30000)
   } catch (e) {
     return toast(e.message, 'error')
   }
@@ -6046,8 +6470,10 @@ function reviewRow(it, { onSelect, filter } = {}) {
     e.stopPropagation()
     const b = e.currentTarget
     if (action === 'merge') {
-      if (!(await confirmBox(`Merge ${mrRef(it)}?`, `${it.repo} ${mrRef(it)}\n${it.title}\n\nMerged with the project's default options, in the background: if another merge in this project is going on, it waits for its turn.`, 'Merge'))) return
-      return queueMerge([it], false)
+      // the same choices as the merge request page: delete the source branch, squash
+      const o = await mergeOptionsDialog([it], { title: `Merge ${mrRef(it)}?`, message: `${it.repo} ${mrRef(it)}\n${it.title}\n\nIt merges in the background${ciBusy(it) ? ', as soon as the pipeline passes' : ''}; another merge in this project goes first.`, ok: ciBusy(it) ? 'Merge when CI passes' : 'Merge' })
+      if (!o) return
+      return queueMerge([it], false, o)
     }
     b.disabled = true
     clear(b).append(h('span', { class: 'spinner' }))
@@ -6068,15 +6494,17 @@ function reviewRow(it, { onSelect, filter } = {}) {
         { class: 'review-title' },
         h('span', { class: 'ellipsis', title: it.title }, it.title),
         it.state === 'closed' && h('span', { class: 'pill rv-closed' }, 'Closed'),
+        mergedStillRunning(it) && h('span', { class: 'pill rv-merged-run', title: 'Merged; its pipeline is still running' }, icon('merge', 10), 'Merged · pipeline running'),
         !done && it.draft && h('span', { class: 'pill' }, 'Draft'),
         it.roles.includes('review') && h('span', { class: 'pill role' }, 'Review requested'),
         it.roles.includes('assigned') && h('span', { class: 'pill role' }, 'Assigned'),
         isMine(it) && isOpenMr(it) && h('span', { class: 'pill role rv-mine', title: 'You opened it' }, 'Opened by me'),
-        it.ci && h('span', { class: `ci ci-${it.ci}`, title: `CI: ${it.ci}` }, ciIcon(it.ci), it.ci),
+        isOpenMr(it) && it.noReviewer && !isMine(it) && !it.roles.includes('review') && h('span', { class: 'pill rv-noreviewer', title: 'Nobody was asked to review it' }, 'No reviewer'),
+        it.ci && !ciBusy(it) && h('span', { class: `ci ci-${it.ci}`, title: `CI: ${it.ci}` }, ciIcon(it.ci), it.ci), // a running one: the pill below says it
         approvals,
         it.myApproved && h('span', { class: 'pill rv-waiting', title: 'You approved it; it is not merged yet' }, icon('check', 10), 'Approved · waiting merge'),
         it.conflicts && h('span', { class: 'pill rv-conflict', title: 'Merge conflicts: resolve them before merging' }, icon('alert', 10), 'Conflicts'),
-        ciBusy(it) && h('span', { class: 'pill rv-running', title: 'The pipeline is still running' }, h('span', { class: 'spinner sm' }), 'Pipeline running'),
+        isOpenMr(it) && ciBusy(it) && h('span', { class: 'pill rv-running', title: 'The pipeline is still running' }, h('span', { class: 'spinner sm' }), 'Pipeline running'),
         (() => {
           const n = rvNewComments(it)
           return n > 0 && h('span', { class: 'pill rv-new', title: 'New since you last opened it' }, `${n} new comment${n > 1 ? 's' : ''}`)
@@ -6519,13 +6947,15 @@ async function reviewDetailSheet(it, tab = 'overview') {
             'div',
             { class: 'grow mrw-merge-body' },
             h('div', null, m.autoSet ? h('b', null, 'Set to merge when the pipeline passes') : m.ready ? h('b', null, `Ready to merge${target}`) : h('b', null, 'Merge blocked'), !m.ready && !m.autoSet && m.reason && h('span', { class: 'dim' }, ` · ${m.reason}`)),
-            can && h('div', { class: 'mrw-opts' }, h('label', { class: 'check' }, remove, 'Delete source branch'), h('label', { class: 'check' }, squash, 'Squash commits'))
+            (can || ci === 'running' || ci === 'pending') && h('div', { class: 'mrw-opts' }, h('label', { class: 'check' }, remove, 'Delete source branch'), h('label', { class: 'check' }, squash, 'Squash commits'))
           ),
           m.ready
             ? h('button', { class: 'btn primary mrw-merge-btn', onClick: async (e) => (await confirmBox(`Merge ${mrRef(it)}${target} now?`, `${it.title}${squash.checked ? '\nCommits are squashed into one.' : ''}${remove.checked ? `\nThe branch ${d.source} is deleted afterwards.` : ''}`, 'Merge')) && act(e.currentTarget, 'merge', opts(), 'Merging…') }, icon('merge', 12), 'Merge now')
             : m.canAuto && !m.autoSet
               ? h('button', { class: 'btn primary mrw-merge-btn', title: 'GitLab merges it as soon as the pipeline passes', onClick: (e) => act(e.currentTarget, 'merge', { ...opts(), auto: true }, 'Setting…') }, h('span', { class: 'spinner sm' }), 'Merge when pipeline passes')
-              : !m.autoSet && h('button', { class: 'btn mrw-merge-btn', disabled: true, title: m.reason || '' }, icon('merge', 12), 'Merge')
+              : !m.autoSet && (ci === 'running' || ci === 'pending')
+                ? h('button', { class: 'btn primary mrw-merge-btn', title: 'Merges in the background as soon as the pipeline passes (and whatever else it waits for)', onClick: async (e) => ((e.currentTarget.disabled = true), await queueMerge([it], false, opts()), toast(`${mrRef(it)} merges when the pipeline passes`)) }, h('span', { class: 'spinner sm' }), 'Merge when pipeline passes')
+                : !m.autoSet && h('button', { class: 'btn mrw-merge-btn', disabled: true, title: m.reason || '' }, icon('merge', 12), 'Merge')
         )
       )
     }

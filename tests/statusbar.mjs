@@ -49,7 +49,7 @@ const b = sent.find((s) => s.id === 'branch')
 const ok1 = !!b && b.visible === true && b.text === 'Git'
 console.log(`${ok1 ? 'PASS' : 'FAIL'} statusbar: Git stays visible when the worktree is unknown${ok1 ? '' : ' :: ' + JSON.stringify(b)}`)
 const r = sent.filter((s) => s.id === 'repos').pop()
-const ok2 = !!r && r.visible === true && r.text === '1 of 2 repos' && /two/.test(r.tooltip)
+const ok2 = !!r && r.visible === true && r.text === 'Overview 1/2' && /two/.test(r.tooltip)
 console.log(`${ok2 ? 'PASS' : 'FAIL'} statusbar: Repos shows "1 of 2 repos" and names the one with changes${ok2 ? '' : ' :: ' + JSON.stringify(r)}`)
 fails += !ok1 + !ok2
 try {

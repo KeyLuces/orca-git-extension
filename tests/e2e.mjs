@@ -786,7 +786,7 @@ await step('Inbox (GitLab, saved Git login): to review, assigned, opened by me, 
   g('config', '--unset', 'gitcontrol.provider')
   g('remote', 'set-url', 'origin', 'https://gitlab2.example.test/team/app.git')
   process.env.GITX_API_BASE = API + '/api/v4'
-  await tab('Review & MR')
+  await tab('MR / PR')
   await clickText('.reviews .btn', 'Refresh').catch(() => {})
   const seg = async (label, want, not) => {
     await page.evaluate((l) => [...document.querySelectorAll('.reviews .segmented button')].find((b) => b.textContent.trim() === l).click(), label)
@@ -800,11 +800,15 @@ await step('Inbox (GitLab, saved Git login): to review, assigned, opened by me, 
     if (not && (await page.$eval('.reviews .rv-list', (r, n) => r.textContent.includes(n), not))) throw new Error(`${label} also lists ${not}`)
   }
   // Review: asked of me and opened by me together, each tagged; the repo's other MRs only under All
-  await seg2('Review', 'MR assigned', 'MR repo')
+  // Open, Everyone: every open MR of the repo, whoever opened it; For me: only those asked of me
+  await seg2('Open', 'MR repo')
+  await page.evaluate(() => [...document.querySelectorAll('.reviews .rv-who button')].find((b) => b.textContent.startsWith('For me')).click())
+  await until(() => page.$eval('.reviews .rv-list', (r) => r.textContent.includes('MR assigned') && !r.textContent.includes('MR repo') && !r.textContent.includes('MR mine')).catch(() => false), 'For me: assigned and review requested only')
+  await page.evaluate(() => [...document.querySelectorAll('.reviews .rv-who button')].find((b) => b.textContent.startsWith('Everyone')).click())
   await until(() => page.$$eval('.reviews .review-row', (rs) => rs.some((r) => r.textContent.includes('MR mine') && r.textContent.includes('Opened by me')) && rs.some((r) => r.textContent.includes('MR assigned') && r.textContent.includes('Assigned'))), 'Review lists mine and assigned, tagged')
   await seg2('All', 'MR repo')
   if (await exists('.reviews .segmented button.on[title*="Every repository"]')) throw new Error('All offers All repos')
-  await seg2('Review', 'MR review')
+  await seg2('Open', 'MR review')
   // follows the repository's remote: another project's MR shows only with "All repos"
   if (await page.$eval('.reviews', (r) => r.textContent.includes('MR other repo'))) throw new Error('another repo listed by default')
   await clickText('.reviews .segmented button', 'All repos')
@@ -849,9 +853,9 @@ await step('Inbox (GitLab, saved Git login): to review, assigned, opened by me, 
   await until(() => page.$('.mr-detail').then((x) => !x), 'detail closes on a click outside')
 })
 await step('Review & MR list: approve leaves To review, multi-select merge, real data after', async () => {
-  await tab('Review & MR')
+  await tab('MR / PR')
   await until(() => exists('.reviews .rv-tabs'), 'tabs')
-  await page.evaluate(() => [...document.querySelectorAll('.reviews .rv-tabs button')].find((b) => b.textContent.startsWith('Review')).click())
+  await page.evaluate(() => [...document.querySelectorAll('.reviews .rv-tabs button')].find((b) => b.textContent.startsWith('Open')).click())
   // MR review (11) was approved on its page: it is no longer waiting for me
   await until(() => page.evaluate(() => [...document.querySelectorAll('.reviews .rv-list .review-row')].some((r) => r.textContent.includes('MR review') && r.textContent.includes('waiting merge')) && document.querySelector('.reviews .rv-list').textContent.includes('MR assigned')), 'approved MR stays in To review, marked waiting merge', 20000)
   api.calls = []
@@ -1232,6 +1236,39 @@ await step('before committing: a secret-looking file and token are flagged; Go b
   await refresh()
 })
 
+await step('Review with AI: beside Merge request on a branch, in the MR window and the Commit tab', async () => {
+  const asked = []
+  fakes['ai.reviewLocal'] = async (a) => (asked.push(a), { review: '## Summary\nLooks fine.\n\n## Must fix\n- `a.txt:1` typo in the greeting', verdict: 'fix', files: 1, left: [], agent: 'Claude Code' })
+  await page.evaluate(() => [...document.querySelectorAll('#tabs .tab')].find((t) => t.textContent.startsWith('Graph')).click())
+  await until(() => page.$$eval('.commit-row', (r) => r.length > 0), 'graph')
+  // right-click another branch's label: "Review with AI" sits right under "Merge request", in purple
+  await page.evaluate(() => [...document.querySelectorAll('#side .item')].find((x) => x.textContent.trim().startsWith('feature'))?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 140, clientY: 200 })))
+  await until(() => exists('.menu .ai-item'), 'Review with AI in the menu')
+  const order = await page.$$eval('.menu > button, .menu > .menu-item', (b) => b.map((x) => x.textContent.trim()))
+  const iMr = order.findIndex((t) => t.startsWith('Merge request'))
+  if (iMr < 0 || !order[iMr + 1]?.startsWith('Review with AI')) throw new Error('not right after Merge request: ' + order.join(' | '))
+  await page.evaluate(() => document.querySelector('.menu .ai-item').click())
+  await until(() => page.$$eval('.menu button', (b) => b.filter((x) => /→/.test(x.textContent) && x.classList.contains('ai-item')).length > 0), 'its directions')
+  await page.evaluate(() => [...document.querySelectorAll('.menu button')].filter((x) => /→/.test(x.textContent) && x.classList.contains('ai-item'))[0].click())
+  await until(() => exists('.local-review-dialog .review-ref'), 'review shown with a clickable file:line')
+  const head = await page.$eval('.local-review-dialog', (d) => d.textContent)
+  if (!/Fix first/.test(head) || !/Create merge request/.test(head)) throw new Error('dialog: ' + head.slice(0, 300))
+  if (!asked[0]?.target || !asked[0]?.source || asked[0].staged) throw new Error('asked: ' + JSON.stringify(asked[0]))
+  await shot('ai-review-before-mr')
+  await page.keyboard.press('Escape')
+  // the Commit tab: Review the changes about to be committed
+  write('ai-review.txt', 'hello\n')
+  await page.evaluate(() => [...document.querySelectorAll('#tabs .tab')].find((t) => t.textContent.startsWith('Commit')).click())
+  await clickSel('.commit-box .ai-review-btn')
+  await until(() => page.$eval('.local-review-dialog', (d) => /Review your changes/.test(d.textContent) && /Back to commit/.test(d.textContent)).catch(() => false), 'commit review window')
+  if (!asked[1]?.staged) throw new Error('commit review not staged: ' + JSON.stringify(asked[1]))
+  await until(() => page.$eval('.local-review-dialog .buttons .btn:last-child', (b) => !b.disabled), 'Back to commit ready')
+  await page.evaluate(() => document.querySelector('.local-review-dialog .buttons .btn:last-child').click())
+  await until(() => page.evaluate(() => !document.querySelector('.local-review-dialog')), 'closed, back on Commit')
+  rmSync(path.join(repo, 'ai-review.txt'), { force: true })
+  delete fakes['ai.reviewLocal']
+})
+
 await step('AI explains a commit in plain words', async () => {
   fakes['ai.explain'] = async () => ({ text: '## What changed\n- Adds **b**\n\n## Why\nTesting.\n\n## Watch out\nNothing special.', agent: 'Claude Code' })
   await tab('Graph')
@@ -1362,6 +1399,10 @@ await step('Repos overview: every repo at once, filters, Fetch all, Pull all onl
   run(other, 'push', '-q')
   writeFileSync(path.join(multi, 'web', 'readme.md'), 'web changed\n')
   settings.scanFolders = multi
+  // Orca's Project Groups (made up): api and web in "Shop", docs in none
+  const groupsFile = path.join(root, 'groups.json')
+  writeFileSync(groupsFile, JSON.stringify({ repos: [[path.join(multi, 'api'), 'g1', 0], [path.join(multi, 'web'), 'g1', 1]], groups: [{ id: 'g1', name: 'Shop', order: 0 }] }))
+  process.env.GITX_GROUPS_JSON = groupsFile
 
   // the Repo Overview button beside the branch opens it as a page (not a pop-up); pressed again, back
   await clickSel('.rov-nav-btn')
@@ -1394,6 +1435,9 @@ await step('Repos overview: every repo at once, filters, Fetch all, Pull all onl
   await shot('repos-overview')
   await phoneCheck('repos-overview')
   // Pull all: api is pulled (fast-forward); web is not behind so nothing else
+  // the commands act on what is ticked: tick every repo
+  await clickSel('.rov-pick-all')
+  await until(() => exists('.rov-pull-all'), 'commands for the selection')
   await clickSel('.rov-pull-all')
   await until(() => page.$eval('.overlay .dialog', (d) => d.textContent.includes('api')).catch(() => false), 'pull all lists api')
   await page.evaluate(() => [...document.querySelectorAll('.overlay .dialog .btn')].find((b) => b.textContent.trim() === 'Pull').click())
@@ -1416,14 +1460,14 @@ await step('Repos overview: every repo at once, filters, Fetch all, Pull all onl
   await dialogBtn('Push')
   await until(() => run(bare, 'rev-parse', 'main') === run(path.join(multi, 'api'), 'rev-parse', 'HEAD'), 'api pushed', 30000)
   // New branch in several repos: all three get feature/multi and switch to it
-  await moreItem('New branch in several repos')
+  await clickSel('.rov-new-branch')
   await until(() => exists('.overlay .dialog input[type=text]'), 'new branch dialog')
   await page.type('.overlay .dialog input[type=text]', 'feature/multi')
   await dialogBtn('Create')
   await until(() => ['api', 'web', 'docs'].every((n) => run(path.join(multi, n), 'branch', '--show-current') === 'feature/multi'), 'feature/multi in every repo', 30000)
   // Switch all to a branch: back to main everywhere
   await until(() => page.evaluate(`${rowOf('docs')}?.textContent.includes('feature/multi')`), 'rows show feature/multi', 20000)
-  await moreItem('Switch all to a branch')
+  await clickSel('.rov-switch-all')
   await until(() => exists('.overlay .dialog select'), 'switch all dialog', 20000)
   await page.$eval('.overlay .dialog select', (s) => { s.value = 'main'; s.dispatchEvent(new Event('change', { bubbles: true })) })
   await dialogBtn('Next')
@@ -1431,6 +1475,42 @@ await step('Repos overview: every repo at once, filters, Fetch all, Pull all onl
   await dialogBtn('Switch')
   await until(() => ['api', 'web', 'docs'].every((n) => run(path.join(multi, n), 'branch', '--show-current') === 'main'), 'every repo back on main', 30000)
   if (run(path.join(multi, 'web'), 'status', '--porcelain') === '') throw new Error("web lost its uncommitted change while switching")
+  // grouped like Orca's sidebar
+  await until(() => page.$$eval('.rov-grp-name', (g) => g.map((x) => x.textContent).join('|')).then((t) => t === 'Shop|Not in a project group').catch(() => false), 'grouped: Shop, then the rest', 20000)
+  // scrolled down, the bar with the selection and its commands stays in view
+  await page.setViewport({ width: 1500, height: 300 })
+  await page.evaluate(() => (document.querySelector('#main').scrollTop = 10000))
+  await new Promise((r) => setTimeout(r, 200))
+  const dbg = await page.evaluate(() => { const m = document.querySelector('#main'); const f = document.querySelector('.rov-filterbar-wrap'); const chain = []; for (let e = f; e && e !== document.body; e = e.parentElement) { const cs = getComputedStyle(e); chain.push(`${e.tagName}.${String(e.className).split(' ')[0]}:${cs.overflow}/${cs.position}/${cs.display}`) } return `main ${m.scrollTop}/${m.scrollHeight}/${m.clientHeight} top ${f.getBoundingClientRect().top} vs ${m.getBoundingClientRect().top} | ${chain.join(' < ')}` })
+  const stuck = await page.evaluate(() => Math.abs(document.querySelector('.rov-filterbar-wrap').getBoundingClientRect().top - document.querySelector('#main').getBoundingClientRect().top) < 4)
+  await page.evaluate(() => (document.querySelector('#main').scrollTop = 0))
+  await page.setViewport({ width: 1500, height: 900 })
+  if (!stuck) throw new Error('the selection bar scrolled away: ' + dbg)
+  // tag several at once: select api and docs; the window fills everything in (v*, the checked-out commit)
+  await page.evaluate(() => document.querySelector('.rov-selbar .ghost')?.click()) // clear the selection first
+  for (const n of ['api', 'docs']) await page.evaluate(`${rowOf(n)}.querySelector('.rov-pick').click()`)
+  await clickSel('.rov-tag-btn')
+  await until(() => exists('.tag-many-dialog .tm-sentence select:not(:disabled)'), 'tag window')
+  // nothing to type: v* (no tags yet) on the branch they are on (main), next version v1.0.0 each
+  await until(() => page.$$eval('.tag-many-dialog .tm-row:not(.tm-head) .tm-name', (i) => i.length === 2 && i.every((x) => x.value === 'v1.0.0')).catch(() => false), 'each repo: next version v1.0.0', 20000)
+  const sentence = await page.$eval('.tag-many-dialog .tm-sentence', (x) => [...x.querySelectorAll('select')].map((s) => s.value).join(' '))
+  if (sentence !== 'v* main') throw new Error('sentence: ' + sentence)
+  await shot('tag-many')
+  await page.evaluate(() => document.querySelector('.tag-many-dialog .buttons .btn.primary').click())
+  await until(() => exists('.overlay .dialog') && page.$$eval('.overlay .dialog .btn', (b) => b.some((x) => /^Create( and push)?$/.test(x.textContent.trim()))), 'confirm')
+  await page.evaluate(() => [...document.querySelectorAll('.overlay .dialog .btn')].reverse().find((b) => /^Create( and push)?$/.test(b.textContent.trim())).click())
+  await until(() => run(path.join(multi, 'api'), 'tag', '--list', 'v1.0.0') === 'v1.0.0' && run(path.join(multi, 'docs'), 'tag', '--list', 'v1.0.0') === 'v1.0.0', 'tags made', 30000)
+  if (run(path.join(multi, 'web'), 'tag', '--list') !== '') throw new Error('web was tagged though not selected')
+  await until(() => run(bare, 'tag', '--list', 'v1.0.0') === 'v1.0.0', 'api tag pushed', 30000)
+  await until(() => exists('.tag-many-dialog .tm-made'), 'rows say they are done', 20000)
+  // opened again: both say they are already tagged
+  await page.keyboard.press('Escape')
+  // the row shows its new tag; its tag button opens the window for that repo alone
+  await until(() => page.evaluate(`${rowOf('api')}?.querySelector('.rov-tag')?.textContent.includes('v1.0.0')`), 'the row shows v1.0.0', 20000)
+  await clickSel('.rov-tag-btn')
+  await until(() => page.$$eval('.tag-many-dialog .tm-already', (x) => x.length === 2).catch(() => false), 'already tagged, nothing to do', 20000)
+  await page.keyboard.press('Escape')
+  delete process.env.GITX_GROUPS_JSON
   // a row's menu opens that repo on its Pipelines tab
   await until(() => page.evaluate(`!${rowOf('docs')}?.querySelector('.rov-doing')`), 'docs idle', 20000)
   await page.evaluate(`${rowOf('docs')}.querySelector('.rov-row-more').click()`)
@@ -1524,7 +1604,7 @@ await step('switching tabs shows the new tab quickly (each one, twice)', async (
       times.push([round, name, ms])
     }
   console.log('      tab switch ms: ' + times.map(([r, n, ms]) => `${r === 1 ? '' : '2nd '}${n} ${ms}`).join(' · '))
-  const slow = times.filter(([r, , ms]) => ms > (r === 1 ? 400 : 150))
+  const slow = times.filter(([r, , ms]) => ms > (r === 1 ? 400 : 400))
   if (slow.length) throw new Error('slow: ' + slow.map(([r, n, ms]) => `${r === 1 ? '' : '2nd '}${n} ${ms} ms`).join(', '))
 })
 

@@ -36,9 +36,10 @@ straight to a shared main branch is pointed out first. **Ctrl+Z** undoes the las
 ![The Commit tab: changed files on the left, the diff on the right](assets/screenshots/commit.png)
 
 ### Review merge requests
-**Review & MR** has two tabs. **Review** holds everything still open that is yours to act on: asked to review, assigned or
-opened by you, each tagged, and it stays there until it is really merged (approved and waiting, pipeline running, queued);
-it shows this repository or all of them. **All** is this repository's every merge request: open ones first, then merged
+**MR / PR** has two tabs. **Open** holds every open merge request of the repositories you work in (open in Orca),
+whoever opened it, plus the ones asked of you anywhere; **For me**, **Mine** and **Everyone** narrow it, and each row is
+tagged (Review requested, Assigned, Opened by me, No reviewer). It stays there until it is really merged (approved and
+waiting, pipeline running, queued, even merged while its pipeline still runs); it shows this repository or all of them. **All** is this repository's every merge request: open ones first, then merged
 ones by day, with **Show more merged** for older ones. Merged ones are only fetched when All is open, and GitHub searches
 are shared and paused when GitHub's rate limit is reached;
 the count is what still waits for your approval, and it shows as soon as a project opens. Search, filter by project
@@ -57,9 +58,17 @@ branch* and *Squash commits* (or **Merge when pipeline passes**), or the reason 
 ![A merge request's detail page with description, reviewers, approvals and activity](assets/screenshots/merge-request.png)
 
 When someone asks you to review or assigns you a merge request, Orca shows a notification, on your desktop and
-on your phone through Orca's app, and **3 reviews** waits in the status bar until you open them.
+on your phone through Orca's app, and **MR/PR 3** in the status bar counts what waits for you (and **Overview** opens Repo Overview).
 
 ![Notifications for review requests on a phone and the desktop](assets/promo/notifications.png)
+
+### Review with AI before anyone else does
+Right-click a branch: **Review with AI** sits right under **Merge request**, in purple, with the same directions
+(`feature → main`). It reviews what the merge request will show (the branch from where it split off) on your
+machine, with the Claude Code or Codex CLI you have, and nothing is posted anywhere. The answer says **Ready for
+review**, **Fix first** or **OK, with notes**, lists *Must fix / Should fix / Suggestions*, and each `file:line` opens
+that file. Then **Create merge request** goes on from there. The merge request window has **Review with AI first**,
+and the Commit tab a **Review** button for what you are about to commit.
 
 ### Open a merge request
 Right-click a branch → **Merge request** and pick the direction (written source → target). The title and
@@ -108,14 +117,21 @@ Working in several repos at once? **Repo Overview** (the button beside the branc
 for what needs you (attention, changes, to pull, to push) that filter the list, a health bar, and the open merge
 requests across every repo. Below, each repo is listed with its branch, how far it is ahead or behind, its changes, CI and its open merge requests. The ones that
 need you come first; a tile on top (*With changes*, *To pull*…) shows only those.
-**Fetch all** fetches every repo; **Pull all** and **Push all** act only where it is safe and say why they skipped the
-rest. **More** switches every repo that has a branch to it, or creates the same branch in the repos you tick. Each
+Repos are grouped like Orca's sidebar (its Project Groups, in the same order). Each row shows its latest tag and can
+fetch, pull, tag, switch branch or open that repo. Tick several and act on them together: **Fetch**, **Pull** and
+**Push** (only where it is safe, saying why the rest were skipped), **Tag…**, **Switch branch…** (every repo that has
+it) and **New branch…**. A fetch gives up on a slow remote after 45 s, and a failed command stays on its row with the
+reason. **Tag…** fills everything in: the naming pattern the repos already use (`v*`, `dev_v*`, `uat_v*`…), each repo's
+newest tag of it and the next version, on a branch as pushed to origin (the one most of them are on; each row can
+pick another); a repo already tagged there says so, and existing tags are never overwritten. Each
 row can fetch, pull, switch branch, or open that repo on its Graph, merge requests or pipelines. It lists the repos
 opened in Orca; **Scan folders…** adds the repos inside any folder too. With two repos or more, **3 of 5 repos** in
 the status bar says how many need you, and opens this page. (Idea from
 [Multi-Repo Git Overview](https://github.com/gino8080/orca-git-overview) by gino8080.)
 
 ![Repos overview: every repository with its branch, ahead/behind, changes, CI and reviews](assets/screenshots/repos-overview.png)
+
+![Tag several repos at once: each repo's newest tag and the next version, filled in](assets/screenshots/tag-many.png)
 
 ### Work by keyboard
 **Ctrl+.** opens every command by name (fetch, pull, push, stash, new branch, any tab). In the graph,
@@ -162,6 +178,8 @@ node merge-queue.mjs                              # Approve & merge on several: 
 node statusbar.mjs                                # the status bar items: Git never disappears, Repos counts
 node github-ratelimit.mjs                         # GitHub searches shared, paused at the rate limit
 node pipelines-perf.mjs --check                   # Pipelines tab load time against a slow fake GitLab
+node tag-many.mjs                                 # tag several repos: newest tag, next version, already tagged
+node ai-review-local.mjs                          # Review with AI before a merge request or a commit
 node screenshots.mjs <plugin folder> <out folder> # the screenshots above, on a made-up project
 node promo.mjs <plugin folder>                    # marketplace posters from assets/screenshots → assets/promo
 ```

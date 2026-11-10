@@ -1081,7 +1081,7 @@ function apiBase(where) {
 const authStyle = new Map() // GitLab host → 'pat' | 'bearer': how its token is sent
 
 /** Call the GitHub/GitLab REST API with the saved Git login. Resolves the JSON (or text with `raw`). */
-async function forgeApi(where, method, apiPath, { body, accept, raw, cwd } = {}) {
+async function forgeApi(where, method, apiPath, { body, accept, raw, cwd, total } = {}) {
   const cred = await gitCredential(where, cwd)
   if (!cred) throw new GitError(`There is no saved Git login for ${where.host}`)
   const send = (auth) =>
@@ -1132,6 +1132,8 @@ async function forgeApi(where, method, apiPath, { body, accept, raw, cwd } = {})
     const detail = json ? [json.message, ...(Array.isArray(json.errors) ? json.errors.map((x) => x.message || x) : json.errors ? [JSON.stringify(json.errors)] : [])].filter(Boolean).join('; ') || JSON.stringify(json) : text.slice(0, 300)
     throw Object.assign(new GitError(`${where.host}: ${detail || `HTTP ${res.status}`}`), { status: res.status, json })
   }
+  // total: GitLab's count of everything a list has (X-Total), with the first page
+  if (total) return { json, total: +res.headers.get('x-total') || (Array.isArray(json) ? json.length : 0) }
   return raw ? text : json
 }
 
@@ -1735,7 +1737,8 @@ async function ghSearch(host, key, fn) {
 
 /** opt.page: which page of merged ones; opt.mergedOnly: only that page (Show more). The list's .more says if more merged ones wait. */
 const ghLogin = new Map() // host → the signed-in login
-async function githubInbox(h, where, via, { page = 1, mergedOnly = false, merged: merged_ = mergedOnly } = {}) {
+async function githubInbox(h, where, via, { page = 1, mergedOnly = false, merged: merged_ = mergedOnly, others = [] } = {}) {
+  const otherRepos = others.filter((o) => o.kind === 'github' && o.host === h.host && /^[\w.-]+\/[\w.-]+$/.test(o.path)).map((o) => o.path).slice(0, 12)
   const here = where?.kind === 'github' && where.host === h.host && /^[\w.-]+\/[\w.-]+$/.test(where.path) ? where.path : null
   const base = { provider: 'github', host: h.host, protocol: h.protocol, via }
   if (via === 'cli') {
@@ -1756,7 +1759,8 @@ async function githubInbox(h, where, via, { page = 1, mergedOnly = false, merged
     const none = Promise.resolve({ code: 0, stdout: '[]' })
     const open = (...q) => (mergedOnly ? none : search(...q))
     const done = (...q) => (merged_ ? merged(...q).catch((e) => ({ code: 1, stderr: e.message, stdout: '[]' })) : none)
-    const [rev, asg, mine, repo, dRev, dAsg, dMine, dRepo] = await Promise.all([
+    const otherArgs = otherRepos.flatMap((x) => ['--repo', x])
+    const [rev, asg, mine, repo, dRev, dAsg, dMine, dRepo, oth] = await Promise.all([
       open('--review-requested=@me'),
       open('--assignee=@me'),
       open('--author=@me'),
@@ -1764,13 +1768,14 @@ async function githubInbox(h, where, via, { page = 1, mergedOnly = false, merged
       mergedOnly ? none : done('--involves=@me'), // All lists this repository's merged ones only
       none,
       none,
-      here ? done('--repo', here) : none
+      here ? done('--repo', here) : none,
+      otherArgs.length ? open(...otherArgs) : none
     ])
     if (!mergedOnly && rev.code !== 0 && asg.code !== 0) throw new GitError((rev.stderr || asg.stderr).trim() || 'gh could not list pull requests')
     if (mergedOnly && dRepo.code !== 0) throw new GitError(dRepo.stderr || 'gh could not list merged pull requests')
     const roles = ['review', 'assigned', 'mine', 'repo']
     const more = [dRev, dAsg, dMine, dRepo].some((r) => jsonOf(r)?.length >= MERGED_PAGE)
-    return withMore(more, collect([rev, asg, mine, repo, dRev, dAsg, dMine, dRepo].map((r, i) => [jsonOf(r), roles[i % 4]]), (p) => ({
+    return withMore(more, collect([...[rev, asg, mine, repo, dRev, dAsg, dMine, dRepo].map((r, i) => [jsonOf(r), roles[i % 4]]), [jsonOf(oth), 'repo']], (p) => ({
       ...base,
       state: p.state === 'MERGED' || p.state === 'merged' ? 'merged' : /closed/i.test(p.state || '') ? 'closed' : 'open',
       url: p.url,
@@ -1800,8 +1805,10 @@ async function githubInbox(h, where, via, { page = 1, mergedOnly = false, merged
     ...scopes.map((s) => (s && !mergedOnly ? q(s) : [])),
     ...doneScopes.map((s) => (s && merged_ ? q(s, 'merged', MERGED_PAGE).catch((e) => (mergedOnly ? Promise.reject(e) : [])) : []))
   ])
+  // the other repositories open in Orca: all their open pull requests, in one search
+  const othersList = otherRepos.length && !mergedOnly ? await q(otherRepos.map((x) => `repo:${x}`).join(' '), 'open', 100).catch(() => []) : []
   const more = lists.slice(4).some((l) => l.length >= MERGED_PAGE)
-  return withMore(more, collect(lists.map((l, i) => [l, roles[i % 4]]), (p) => ({
+  return withMore(more, collect([...lists.map((l, i) => [l, roles[i % 4]]), [othersList, 'repo']], (p) => ({
     ...base,
     state: p.pull_request?.merged_at ? 'merged' : p.state === 'closed' ? 'closed' : 'open',
     mergedAt: p.pull_request?.merged_at ? Date.parse(p.pull_request.merged_at) / 1000 : null,
@@ -1825,7 +1832,7 @@ function gitlabGet(h, via, apiPath) {
   return forgeApi(h, 'GET', '/' + apiPath)
 }
 
-async function gitlabInbox(h, where, via, { page = 1, mergedOnly = false, merged: merged_ = mergedOnly } = {}) {
+async function gitlabInbox(h, where, via, { page = 1, mergedOnly = false, merged: merged_ = mergedOnly, others = [] } = {}) {
   const me = await gitlabGet(h, via, 'user')
   if (!me?.username) throw new GitError(`${via === 'cli' ? 'glab is' : 'the saved Git login is'} not signed in to ${h.host}`)
   const q = 'merge_requests?state=opened&scope=all&per_page=50'
@@ -1851,7 +1858,20 @@ async function gitlabInbox(h, where, via, { page = 1, mergedOnly = false, merged
   ])
   if (mergedOnly ? dRepo === null : rev === null && asg === null && mine === null) throw new GitError(`could not list merge requests on ${h.host} (it did not answer); showing the last list`)
   const more = [dRev, dAsg, dMine, dRepo].some((l) => l?.length >= MERGED_PAGE)
-  return withMore(more, collect([[rev, 'review'], [asg, 'assigned'], [mine, 'mine'], [repo, 'repo'], [dRev, 'review'], [dAsg, 'assigned'], [dMine, 'mine'], [dRepo, 'repo']], (m) => ({
+  // the ones of mine merged in the last 12 hours: a pipeline may still run after the merge, and they
+  // stay in Review until it is done; plus how many this repository has merged in all (the All count)
+  let recent = [[], [], []]
+  let mergedTotal = null
+  // the other repositories open in Orca: every open merge request, whoever opened it
+  const otherProjects = others.filter((o) => o.kind === 'gitlab' && o.host === h.host && (!where || o.path !== where.path)).slice(0, 30)
+  const othersLists = mergedOnly ? [] : await pool(otherProjects, 4, (o) => soft(`projects/${projectPath(o.path)}/merge_requests?state=opened&per_page=30`).then((x) => x || []))
+  if (!mergedOnly) {
+    const since = encodeURIComponent(new Date(Date.now() - 12 * 3600_000).toISOString())
+    const r12 = (p) => soft(`${p.replace('state=opened', 'state=merged').replace('per_page=50', 'per_page=20')}&updated_after=${since}`).then((x) => x || [])
+    recent = await Promise.all([r12(`${q}&reviewer_username=${u}`), r12(`${q}&assignee_username=${u}`), r12(`${q}&author_username=${u}`)])
+    if (here && via === 'git') mergedTotal = await forgeApi(h, 'GET', '/' + here.replace('state=opened', 'state=merged').replace('per_page=50', 'per_page=1'), { total: true }).then((x) => x.total, () => null)
+  }
+  const list = collect([[rev, 'review'], [asg, 'assigned'], [mine, 'mine'], [repo, 'repo'], [dRev, 'review'], [dAsg, 'assigned'], [dMine, 'mine'], [dRepo, 'repo'], [recent[0], 'review'], [recent[1], 'assigned'], [recent[2], 'mine'], ...othersLists.map((l) => [l, 'repo'])], (m) => ({
     state: m.state === 'merged' ? 'merged' : m.state === 'closed' ? 'closed' : 'open',
     mergedAt: m.merged_at ? Date.parse(m.merged_at) / 1000 : null,
     provider: 'gitlab',
@@ -1871,8 +1891,11 @@ async function gitlabInbox(h, where, via, { page = 1, mergedOnly = false, merged
     draft: !!(m.draft || m.work_in_progress),
     labels: (m.labels || []).map((l) => (typeof l === 'string' ? l : l.name)).filter(Boolean),
     comments: m.user_notes_count ?? null,
-    conflicts: !!m.has_conflicts
-  })))
+    conflicts: !!m.has_conflicts,
+    noReviewer: Array.isArray(m.reviewers) && !m.reviewers.length
+  }))
+  for (const it of list) if (it.state === 'merged' && it.mergedAt && Date.now() / 1000 - it.mergedAt < 12 * 3600) it.recent = true
+  return Object.assign(withMore(more, list), { mergedTotal })
 }
 
 /** Folders under each scan root (two levels deep) that hold a .git: repositories Orca does not list. */
@@ -1933,6 +1956,150 @@ async function pool(items, n, fn) {
   return out
 }
 
+/**
+ * Orca's Project Groups (the sidebar's ORA, Journal, …): which group each registered repo is in comes
+ * from `orca repo list`; the groups' names and order are read, read-only, from Orca's own profile
+ * state. Either may be missing (another Orca version, no CLI): then repos are simply not grouped.
+ */
+let groupsCache = null
+async function orcaGroups() {
+  if (groupsCache && Date.now() - groupsCache.at < 60_000) return groupsCache.value
+  const value = { byPath: new Map(), groups: new Map() }
+  // tests: groups from a file, and never the person's own Orca data
+  if (process.env.GITX_GROUPS_JSON || process.env.GITX_NO_BROWSER) {
+    try {
+      const t = JSON.parse(readFileSync(process.env.GITX_GROUPS_JSON, 'utf8'))
+      for (const [p, id, order] of t.repos) value.byPath.set(path.resolve(p).toLowerCase(), { id, order })
+      for (const g of t.groups) value.groups.set(g.id, g)
+    } catch {}
+    groupsCache = { at: Date.now(), value }
+    return value
+  }
+  try {
+    const r = await runProc(ORCA_BIN, ['repo', 'list', '--json'], { timeout: 15_000 })
+    for (const repo of JSON.parse(r.stdout)?.result?.repos || [])
+      if (repo.path && repo.projectGroupId) value.byPath.set(path.resolve(repo.path).toLowerCase(), { id: repo.projectGroupId, order: repo.projectGroupOrder ?? 0 })
+  } catch {}
+  if (value.byPath.size) {
+    try {
+      const { DatabaseSync } = await import('node:sqlite')
+      // Orca does not pass APPDATA to plugin workers: the usual places, from the home folder
+      const roots = [...new Set([process.env.APPDATA && path.join(process.env.APPDATA, 'orca'), path.join(os.homedir(), 'AppData', 'Roaming', 'orca'), path.join(os.homedir(), 'Library', 'Application Support', 'orca'), path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'orca')].filter(Boolean))]
+      for (const root of roots) {
+        const dir = path.join(root, 'profiles')
+        if (!existsSync(dir)) continue
+        for (const prof of readdirSync(dir)) {
+          const file = path.join(dir, prof, 'profile-state.db')
+          if (!existsSync(file)) continue
+          const db = new DatabaseSync(file, { readOnly: true })
+          try {
+            const row = db.prepare("select payload from profile_state_documents where domain = 'projectGroups'").get()
+            for (const g of JSON.parse(row?.payload || '[]')) if (g?.id && !value.groups.has(g.id)) value.groups.set(g.id, { id: g.id, name: String(g.name || ''), order: g.tabOrder ?? 0 })
+          } finally {
+            db.close()
+          }
+        }
+      }
+    } catch (e) {
+      value.error = String(e.message || e).slice(0, 300)
+    }
+  }
+  groupsCache = { at: Date.now(), value }
+  return value
+}
+
+// ---------- tags on several repositories at once (Repo Overview) ----------
+const TAG_PATTERN = /^[\w.*/-]{1,80}$/
+/** The tag naming patterns these repositories use (v*, dev_v*, uat_v*…), most used first. */
+async function tagPatterns(repos) {
+  const count = new Map()
+  await pool(repos, 4, async (r) => {
+    const out = await gitOnce(r, ['tag', '--list', '--sort=-creatordate'], { timeout: 15_000 }).catch(() => '')
+    const seen = new Set()
+    for (const t of out.split('\n').slice(0, 300)) {
+      const m = t.trim().match(/^(.*?)\d+(?:\.\d+)*(.*)$/)
+      if (!m || m[2]) continue // only names that end in a version
+      const p = m[1] + '*'
+      if (!seen.has(p)) seen.add(p), count.set(p, (count.get(p) || 0) + 1)
+    }
+  })
+  return [...count.entries()].sort((a, b) => b[1] - a[1]).map(([pattern, repos]) => ({ pattern, repos }))
+}
+/** The next version after a tag: its last number goes up by one (dev_v1.4.2 → dev_v1.4.3). */
+function nextTag(latest, pattern) {
+  if (!latest) return pattern.includes('*') ? pattern.replace('*', '1.0.0') : ''
+  const m = latest.match(/^(.*?)(\d+)(\D*)$/)
+  return m ? `${m[1]}${+m[2] + 1}${m[3]}` : ''
+}
+/**
+ * For each repository: the newest tag matching the pattern, the commit the new tag would go on (the
+ * branch as the remote has it, the checked-out commit, or the newest tag of another pattern), and
+ * whether that commit already carries a tag of this pattern (nothing to do then).
+ */
+async function tagPlan({ repos = [], pattern, base = {}, branches = {} } = {}) {
+  if (!TAG_PATTERN.test(String(pattern || ''))) throw new GitError('Pick a tag pattern like v* or dev_v*')
+  // branches: { repo: branch } picks a branch per repository (the tag window's per-row choice)
+  for (const b of Object.values(branches)) req(b, 'branch')
+  if (base.kind === 'tag' && !TAG_PATTERN.test(String(base.pattern || ''))) throw new GitError('Pick the pattern of the tag to start from')
+  if (base.kind === 'branch') req(base.name, 'branch')
+  const rows = await pool(repos.slice(0, 100), 4, async (repo) => {
+    const g = (args) => gitOnce(repo, args, { timeout: 15_000 }).then((o) => o.trim(), () => '')
+    const row = { repo, name: path.basename(repo) }
+    const base_ = branches[repo] ? { kind: 'branch', name: branches[repo] } : base
+    try {
+      const tags = (await g(['tag', '--list', pattern, '--sort=-v:refname'])).split('\n').filter(Boolean)
+      row.latest = tags[0] || null
+      row.latestHash = row.latest ? (await g(['rev-list', '-n1', row.latest])).slice(0, 40) : null
+      // where the new tag goes
+      if (base_.kind === 'branch') {
+        const remote = await defaultRemote(repo).catch(() => null)
+        const remoteRef = remote ? `refs/remotes/${remote}/${base_.name}` : null
+        row.at = remoteRef && (await g(['rev-parse', '--verify', '-q', remoteRef])) ? `${remote}/${base_.name}` : (await g(['rev-parse', '--verify', '-q', `refs/heads/${base_.name}`])) ? base_.name : null
+        if (!row.at) throw new GitError(`no branch ${base_.name}`)
+      } else if (base_.kind === 'tag') {
+        row.at = (await g(['tag', '--list', base_.pattern, '--sort=-v:refname'])).split('\n').filter(Boolean)[0] || null
+        if (!row.at) throw new GitError(`no tag like ${base_.pattern}`)
+      } else row.at = (await g(['branch', '--show-current'])) || 'HEAD' // the checked-out branch, by name
+      row.hash = await g(['rev-list', '-n1', row.at])
+      if (!row.hash) throw new GitError(`cannot read ${row.at}`)
+      row.subject = await g(['log', '-1', '--format=%s', row.hash])
+      // already done: that commit carries a tag of this pattern
+      row.already = (await g(['tag', '--points-at', row.hash, '--list', pattern])).split('\n').filter(Boolean)
+      row.next = row.already.length ? '' : nextTag(row.latest, pattern)
+      row.remote = await defaultRemote(repo).catch(() => null)
+    } catch (e) {
+      row.error = String(e.message || e).split('\n')[0]
+    }
+    return row
+  })
+  return { rows }
+}
+/** Create (and push) the tags one repository after another, 4 at a time; each says how it went. */
+async function tagApply({ items = [], push = true, message = '' } = {}) {
+  return pool(items.slice(0, 100), 4, async (it) => {
+    try {
+      const name = req(it.name, 'tag name')
+      if (!/^[\w.\/-]{1,120}$/.test(name) || name.includes('..')) throw new GitError(`${name} is not a valid tag name`)
+      const hash = req(it.hash, 'commit')
+      if (!/^[0-9a-f]{7,40}$/i.test(hash)) throw new GitError('bad commit')
+      const exists = (await gitOnce(it.repo, ['tag', '--list', name], { timeout: 15_000 })).trim()
+      if (exists) throw new GitError(`${name} already exists`)
+      await git(it.repo, message ? ['tag', '-a', '-m', String(message), name, hash] : ['tag', name, hash])
+      let pushed = false
+      if (push) {
+        const remote = await defaultRemote(it.repo).catch(() => null)
+        if (remote) {
+          await git(it.repo, ['push', remote, `refs/tags/${name}`], net)
+          pushed = true
+        }
+      }
+      return { repo: it.repo, name, ok: true, pushed }
+    } catch (e) {
+      return { repo: it.repo, name: it.name, ok: false, error: String(e.message || e).split('\n').slice(-2).join(' ') }
+    }
+  })
+}
+
 async function reposOverview(workspaces, scan) {
   const rows = new Map()
   const key = (p) => path.resolve(p).toLowerCase()
@@ -1969,6 +2136,9 @@ async function reposOverview(workspaces, scan) {
       })
       const where = await repoWhere(r.path)
       if (where) Object.assign(r, { remote: where.path, remoteHost: where.host })
+      // the newest tag (by when it was made), shown on the row
+      const t = (await gitOnce(r.path, ['for-each-ref', 'refs/tags', '--sort=-creatordate', '--count=1', '--format=%(refname:short)%09%(creatordate:unix)'], { timeout: 8000 }).catch(() => '')).trim()
+      if (t) [r.tag, r.tagAt] = [t.split('	')[0], +t.split('	')[1] || null]
     } catch (e) {
       r.error = String(e.message || e).split('\n')[0].slice(0, 200)
     }
@@ -1976,7 +2146,20 @@ async function reposOverview(workspaces, scan) {
   // one row per folder git knows (two workspaces of the same folder are one repo)
   const seen = new Set()
   const out = list.filter((r) => !r.toplevel || (seen.has(key(r.toplevel)) ? false : seen.add(key(r.toplevel))))
-  return { repos: out, roots }
+  // the Orca Project Group of each: by its repository (a worktree finds it through its shared .git),
+  // or by the registered folder it sits in (A inside the folder project ABC)
+  const { byPath, groups } = await orcaGroups()
+  if (byPath.size) {
+    await pool(out, 4, async (r) => {
+      const common = await gitOnce(r.path, ['rev-parse', '--path-format=absolute', '--git-common-dir'], { timeout: 8000 }).then((o) => o.trim(), () => '')
+      const main = common ? path.dirname(common.replace(/[\\/]+$/, '')) : r.path
+      const cands = [main, r.path].map((p) => path.resolve(p).toLowerCase())
+      let hit = cands.map((c) => byPath.get(c)).find(Boolean)
+      if (!hit) for (const [p, g] of byPath) if (cands.some((c) => c.startsWith(p + path.sep))) hit = g
+      if (hit) r.group = { id: hit.id, name: groups.get(hit.id)?.name || '', order: groups.get(hit.id)?.order ?? 999, repoOrder: hit.order }
+    })
+  }
+  return { repos: out, roots, grouped: byPath.size > 0 }
 }
 
 /** Where the open repository's main remote lives, or null. */
@@ -1990,11 +2173,25 @@ async function repoWhere(repo) {
   }
 }
 
+/** Where the repositories open in Orca live (host and project), kept for five minutes. */
+let remotesCache = null
+async function orcaRemotes(orca) {
+  if (remotesCache && Date.now() - remotesCache.at < 5 * 60_000) return remotesCache.value
+  const ws = (await listWorkspaces(orca).catch(() => [])).filter((w) => w.path)
+  const seen = new Set()
+  const value = []
+  for (const w of await pool(ws, 4, (w) => repoWhere(w.path))) if (w && !seen.has(`${w.host}|${w.path}`)) seen.add(`${w.host}|${w.path}`), value.push({ kind: w.kind, host: w.host, path: w.path })
+  remotesCache = { at: Date.now(), value }
+  return value
+}
+
 async function reviewsList(orca, repo, { page = 1, mergedOnly = false, merged = mergedOnly } = {}) {
   const where = await repoWhere(repo)
   const items = []
   const errors = []
   let moreMerged = false
+  let mergedTotal = null
+  const others = mergedOnly ? [] : await orcaRemotes(orca).catch(() => [])
   const hosts = await forgeHosts(orca, where)
   const install = canInstall()
   // via: 'gh' | 'glab' (the CLI is signed in) or 'git' (the saved Git login), null when neither
@@ -2011,9 +2208,9 @@ async function reviewsList(orca, repo, { page = 1, mergedOnly = false, merged = 
       .filter((p) => p.signedIn)
       .map((p) => {
         const via = p.via === 'git' ? 'git' : 'cli'
-        const opt = { page: Math.max(1, Math.min(50, +page || 1)), mergedOnly: !!mergedOnly, merged: !!merged }
+        const opt = { page: Math.max(1, Math.min(50, +page || 1)), mergedOnly: !!mergedOnly, merged: !!merged, others }
         return (p.provider === 'github' ? githubInbox(p._h, where, via, opt) : gitlabInbox(p._h, where, via, opt)).then(
-          (list) => (items.push(...list), (moreMerged ||= !!list.more)),
+          (list) => (items.push(...list), (moreMerged ||= !!list.more), list.mergedTotal != null && (mergedTotal = (mergedTotal || 0) + list.mergedTotal)),
           (e) => errors.push(`${p.host}: ${e.message}`)
         )
       })
@@ -2021,13 +2218,13 @@ async function reviewsList(orca, repo, { page = 1, mergedOnly = false, merged = 
   providers.forEach((p) => delete p._h)
   items.sort((a, b) => b.updated - a.updated)
   await Promise.all(
-    items.filter((it) => it.state === 'open').slice(0, 40).map(async (it) => {
+    items.filter((it) => it.state === 'open' || it.recent).slice(0, 40).map(async (it) => {
       const [ci, ap] = await Promise.all([reviewCi(it).catch(() => null), reviewApprovals(it).catch(() => null)])
       it.ci = ci
       if (ap) Object.assign(it, ap)
     })
   )
-  return { items, providers, errors, moreMerged, repoPath: where?.path || null, repoHost: where?.host || null }
+  return { items, providers, errors, moreMerged, mergedTotal, repoPath: where?.path || null, repoHost: where?.host || null }
 }
 
 /** A review item as an API target, and how to reach it (gh/glab or the saved Git login). */
@@ -2122,7 +2319,14 @@ async function reviewMerge(w, via, it) {
   }
   const body = { squash: !!o.squash, should_remove_source_branch: !!o.removeSource }
   if (o.auto) body.merge_when_pipeline_succeeds = true
-  const before = await forgeCall(w, via, 'GET', `/${w.mr}`).catch(() => null)
+  let before = await forgeCall(w, via, 'GET', `/${w.mr}`).catch(() => null)
+  // The merge request keeps its own "delete source branch" and "squash" (set when it was opened), and
+  // GitLab follows those over the merge call's, above all when it merges later, once the pipeline
+  // passes: make them say what was chosen here first.
+  const fix = {}
+  if (before && o.removeSource !== undefined && !!before.force_remove_source_branch !== !!o.removeSource) fix.remove_source_branch = !!o.removeSource
+  if (before && o.squash !== undefined && !!before.squash !== !!o.squash) fix.squash = !!o.squash
+  if (Object.keys(fix).length) before = (await forgeCall(w, via, 'PUT', `/${w.mr}`, fix).catch(() => null)) || before
   if (!o.auto && (before?.has_conflicts || before?.detailed_merge_status === 'conflict' || before?.detailed_merge_status === 'broken_status'))
     throw new GitError('It has merge conflicts: resolve them first (on GitLab, or merge the target branch into it and push)')
   let r = await forgeCall(w, via, 'PUT', `/${w.mr}/merge`, body)
@@ -2157,8 +2361,10 @@ function queueMerges(items, { approve = true } = {}) {
   for (const it of items) {
     const cur = mergeJobs.get(it.url)
     if (cur && !['merged', 'failed'].includes(cur.state)) continue // already queued
+    // the options chosen when it was queued (delete source branch, squash); none: the MR's own
+    const options = it.options && typeof it.options === 'object' ? { squash: it.options.squash === undefined ? undefined : !!it.options.squash, removeSource: it.options.removeSource === undefined ? undefined : !!it.options.removeSource } : null
     const clean = { ...it, ci: undefined, action: undefined, options: undefined }
-    mergeJobs.set(it.url, { it: clean, approve: approve && !!it.wantApprove, state: 'queued', note: 'Waiting for its turn', at: Date.now() })
+    mergeJobs.set(it.url, { it: clean, options, approve: approve && !!it.wantApprove, state: 'queued', note: 'Waiting for its turn', at: Date.now() })
   }
   for (const lane of new Set(items.map(laneOf))) if (!mergeLanes.has(lane)) runLane(lane)
   return mergeQueueState()
@@ -2219,7 +2425,7 @@ async function runMergeJob(job) {
     const st = d.mergeable || ''
     if (m.ready) {
       set('merging', 'Merging')
-      const r = await reviewMerge(w, via, { ...it, options: { squash: m.squash, removeSource: m.removeSource } })
+      const r = await reviewMerge(w, via, { ...it, options: { squash: job.options?.squash ?? m.squash, removeSource: job.options?.removeSource ?? m.removeSource } })
       if (r.state === 'merged') return set('merged', 'Merged')
     } else if (['checking', 'unchecked', 'unknown', 'preparing'].includes(st)) {
       set('waiting', 'Waiting for ' + (d.provider === 'github' ? 'GitHub' : 'GitLab') + ' to check it')
@@ -2232,7 +2438,7 @@ async function runMergeJob(job) {
     } else if (m.canAuto || m.autoSet || (rebased && ['ci_still_running', 'ci_must_pass'].includes(st))) {
       // only the pipeline is in the way: GitLab merges it when it passes; the next one waits for that
       if (!m.autoSet && !autoSet) {
-        await reviewMerge(w, via, { ...it, options: { squash: m.squash, removeSource: m.removeSource, auto: true } }).catch(() => null)
+        await reviewMerge(w, via, { ...it, options: { squash: job.options?.squash ?? m.squash, removeSource: job.options?.removeSource ?? m.removeSource, auto: true } }).catch(() => null)
         autoSet = true
       }
       set('pipeline', 'Merges when the pipeline passes')
@@ -2550,6 +2756,78 @@ async function aiReview(input, agent) {
   // the verdict line is for the person; the posted review starts at the summary
   const review = text.replace(/^\s*\**verdict:?\**.*\n+/i, '').trim()
   return { review, verdict, title: mat.title }
+}
+
+// ---------- AI: review on this machine, before a merge request exists ----------
+// A branch against the branch it would merge into (what the merge request will show), or the staged
+// changes before a commit. Nothing leaves the machine but the prompt to the AI CLI.
+async function aiReviewLocal(repo, { source, target, staged, instructions } = {}, agent) {
+  const a = AI[agent] || AI.claude
+  let diff
+  let what
+  if (staged) {
+    diff = await git(repo, ['diff', '--cached', '--no-color', '-U3'])
+    what = 'staged changes about to be committed'
+    if (!diff.trim()) {
+      // nothing staged: "Commit all" commits every change, so review those (new files included)
+      const untracked = (await git(repo, ['ls-files', '--others', '--exclude-standard', '-z'])).split('\0').filter(Boolean).slice(0, 200)
+      diff = await git(repo, ['diff', 'HEAD', '--no-color', '-U3']).catch(() => git(repo, ['diff', '--no-color', '-U3']))
+      for (const f of untracked) diff += await git(repo, ['diff', '--no-index', '--no-color', '-U3', '--', '/dev/null', f], { okCodes: [0, 1] }).catch(() => '')
+      what = 'changes about to be committed'
+    }
+    if (!diff.trim()) throw new GitError('There are no changes to review')
+  } else {
+    // plain git, no GitHub/GitLab needed: works in any repository, with or without a remote
+    const tgt = req(target, 'target branch').replace(/^refs\/heads\//, '')
+    const src = source ? req(source, 'branch') : (await headInfo(repo)).branch
+    if (!src) throw new GitError('HEAD is detached; pick the branch to review')
+    const exists = async (ref) => !!(await git(repo, ['rev-parse', '--verify', '-q', ref], { okCodes: [0, 1] })).trim()
+    // the target as the remote has it when there is one (what the merge request compares with)
+    const remote = await defaultRemote(repo).catch(() => null)
+    const base = remote && (await exists(`refs/remotes/${remote}/${tgt}`)) ? `${remote}/${tgt}` : tgt
+    const head = (await exists(`refs/heads/${src}`)) ? src : remote && (await exists(`refs/remotes/${remote}/${src}`)) ? `${remote}/${src}` : src
+    if (!(await exists(base))) throw new GitError(`There is no branch ${tgt}`)
+    if (!(await exists(head))) throw new GitError(`There is no branch ${src}`)
+    // from where the branch split off: exactly what the merge request will show
+    diff = await git(repo, ['diff', '--no-color', '-U3', `${base}...${head}`]).catch(() => '')
+    if (!diff.trim()) throw new GitError(`${src} has no changes compared with ${tgt}`)
+    what = `branch ${src} before it is merged into ${tgt}`
+  }
+  // a very big diff: say which files were left out instead of cutting silently
+  const MAX = 90_000
+  const files = diff.split(/^(?=diff --git )/m)
+  let kept = ''
+  const left = []
+  for (const f of files) {
+    if (kept.length + f.length <= MAX) kept += f
+    else left.push((f.match(/^diff --git a\/(.+?) b\//) || [])[1] || '?')
+  }
+  const prompt = [
+    `You are a careful senior engineer. Review the ${what}, so the author can fix problems before asking teammates to review.`,
+    'Write the review as Markdown with exactly these parts:',
+    '1. A first line "Verdict: READY", "Verdict: FIX FIRST" or "Verdict: OK WITH NOTES".',
+    '2. "## Summary": two or three sentences on what the change does and whether it is sound.',
+    '3. "## Must fix": real problems only (bugs, security, data loss, broken edge cases), each as',
+    '   "- `path:line` problem, then the fix". Write "None found." when there are none.',
+    '4. "## Should fix": smaller problems worth fixing now, same format. Omit when there are none.',
+    '5. "## Suggestions": at most five optional improvements. Omit when there are none.',
+    'Use the file paths exactly as in the diff and the line numbers of the new file. Be specific and brief. Do not praise. Output only the review.',
+    String(instructions || '').trim() ? `Extra instructions: ${String(instructions).trim()}` : '',
+    left.length ? `\n(${left.length} more changed files were too big to include: ${left.slice(0, 20).join(', ')})` : '',
+    `\nDiff:\n${kept}`
+  ].join('\n')
+  // tests only: GITX_AI_SCRIPT runs a fake agent (node <script>) instead of the real CLI
+  const fake = process.env.GITX_AI_SCRIPT
+  const r = await runProc(fake ? process.execPath : a.bin, fake ? [fake] : a.args, { cwd: os.tmpdir(), input: prompt, timeout: 170_000, shell: fake ? false : a.shell })
+  if (r.code !== 0) {
+    const why = r.code === -1 ? `${a.name} CLI (${a.bin}) was not found on PATH` : r.stderr.trim().split('\n').slice(-3).join('\n')
+    throw new GitError(why || `${a.name} failed`)
+  }
+  const text = r.stdout.trim().replace(/^```(?:markdown)?\n?|```$/g, '').trim()
+  const v = text.match(/^\s*\**verdict:?\**\s*(ready|fix first|ok with notes)/im)?.[1]?.toLowerCase()
+  const verdict = v === 'ready' ? 'ready' : v === 'fix first' ? 'fix' : 'notes'
+  const review = text.replace(/^\s*\**verdict:?\**.*\n+/i, '').trim()
+  return { review, verdict, files: files.filter((f) => f.trim()).length, left, agent: a.name }
 }
 
 // ---------- AI: merge request title and description ----------
@@ -2890,7 +3168,8 @@ const ops = {
   tagDelete: (r, a) => git(r, ['tag', '-d', req(a.name, 'tag')]),
   tagPush: (r, a) => git(r, ['push', req(a.remote || 'origin', 'remote'), `refs/tags/${req(a.name, 'tag')}`], net),
 
-  fetch: (r, a = {}) => git(r, ['fetch', '--all', ...(a.prune === false ? [] : ['--prune'])], net),
+  // a.timeout (s): Repo Overview fetches many at once and gives up on a slow remote sooner
+  fetch: (r, a = {}) => git(r, ['fetch', '--all', ...(a.prune === false ? [] : ['--prune'])], a.timeout ? { timeout: Math.min(110, Math.max(10, +a.timeout || 45)) * 1000 } : net),
   pull: (r, a = {}) =>
     git(r, ['pull', a.rebase ? '--rebase' : a.ffOnly ? '--ff-only' : '--no-rebase'], net),
   push: (r, a) => push(r, a),
@@ -3524,6 +3803,7 @@ Click to open Git Control`
   // Show more under All: the next page of merged ones only
   orca.panels.handle('reviews.moreMerged', ({ repo, page } = {}) => reviewsList(orca, repo, { page, mergedOnly: true }))
   orca.panels.handle('ai.review', async (input = {}) => aiReview(input, AI[input.agent] ? input.agent : await agentSetting()))
+  orca.panels.handle('ai.reviewLocal', async (input = {}) => aiReviewLocal(req(input.repo, 'repo'), input, AI[input.agent] ? input.agent : await agentSetting()))
   orca.panels.handle('reviews.act', (input = {}) => reviewAct(input))
   orca.panels.handle('reviews.detail', (input = {}) => reviewDetail(input))
   orca.panels.handle('reviews.queue', ({ items = [], approve = true } = {}) => queueMerges(items, { approve }))
@@ -3558,10 +3838,11 @@ Click to open Git Control`
       const waiting = items.filter((i) => i.state === 'open' && (i.roles.includes('review') || i.roles.includes('assigned')))
       await orca.host.call('statusBar.update', {
         id: 'reviews',
-        visible: waiting.length > 0,
-        text: `${waiting.length} review${waiting.length === 1 ? '' : 's'}`,
+        // always there once signed in: how many wait for you (0 too); a click opens MR / PR
+        visible: true,
+        text: `MR/PR ${waiting.length}`,
         tone: waiting.length ? 'accent' : 'neutral',
-        tooltip: waiting.slice(0, 5).map((i) => `${i.repo} ${i.provider === 'github' ? '#' : '!'}${i.number}: ${i.title}`).join('\n') + '\nClick to open Reviews'
+        tooltip: (waiting.length ? waiting.slice(0, 5).map((i) => `${i.repo} ${i.provider === 'github' ? '#' : '!'}${i.number}: ${i.title}`).join('\n') : 'Nothing waits for you') + '\nClick to open MR / PR'
       }).catch(() => {})
       const urls = new Set(waiting.map((i) => i.url))
       if (knownReviews && orca.host.has('notifications.show'))
@@ -3601,10 +3882,11 @@ Click to open Git Control`
       const line = (r) => `${r.name} (${r.branch || 'detached'})${r.ahead ? ` ↑${r.ahead}` : ''}${r.behind ? ` ↓${r.behind}` : ''}${r.conflicts ? ` · ${r.conflicts} conflicts` : r.changes ? ` · ${r.changes} changed` : ''}`
       await orca.host.call('statusBar.update', {
         id: 'repos',
-        visible: ok.length > 1,
-        text: busy.length ? `${busy.length} of ${ok.length} repos` : `${ok.length} repos`,
+        // always there: a click opens Repo Overview; how many repos need you when some do
+        visible: ok.length > 0,
+        text: busy.length ? `Overview ${busy.length}/${ok.length}` : 'Overview',
         tone: bad ? 'warning' : busy.length ? 'accent' : 'neutral',
-        tooltip: (busy.length ? `Need you:\n${busy.slice(0, 8).map(line).join('\n')}` : 'Every repo is clean and up to date') + '\nClick to open Repos overview'
+        tooltip: (busy.length ? `${busy.length} of ${ok.length} repos need you:\n${busy.slice(0, 8).map(line).join('\n')}` : `${ok.length} repos, every one clean and up to date`) + '\nClick to open Repo Overview'
       }).catch(() => {})
     } catch (e) {
       orca.log(`repos poll: ${e.message}`)
@@ -3645,6 +3927,9 @@ Click to open Git Control`
     return reposOverview(await listWorkspaces(orca).catch(() => []), scan)
   })
 
+  orca.panels.handle('repos.tagPatterns', ({ repos = [] } = {}) => tagPatterns(repos.map((r) => req(r, 'repo'))))
+  orca.panels.handle('repos.tagPlan', (input = {}) => tagPlan({ ...input, repos: (input.repos || []).map((r) => req(r, 'repo')) }))
+  orca.panels.handle('repos.tagApply', (input = {}) => tagApply(input))
   orca.panels.handle('repo.inside', ({ path: p } = {}) => reposInside(req(p, 'path')))
   orca.panels.handle('repos.setScan', async ({ folders = '' } = {}) => {
     const value = String(folders).split(/[;\n]/).map((x) => x.trim()).filter(Boolean).join('; ')

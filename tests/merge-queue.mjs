@@ -30,6 +30,7 @@ const mrs = {
   '43/5': { state: 'opened', st: 'mergeable' }
 }
 const events = []
+const mergeBodies = {}
 let checks = 0
 const server = http.createServer((rq, rs) => {
   let body = ''
@@ -55,8 +56,17 @@ const server = http.createServer((rq, rs) => {
       setTimeout(() => (mr.st = 'mergeable'), 400)
       return send(202, { rebase_in_progress: true })
     }
+    if (rq.method === 'PUT' && !sub) {
+      // the merge request's own settings change (delete source branch, squash)
+      const b = JSON.parse(body || '{}')
+      events.push(`update ${key} ${JSON.stringify(b)}`)
+      if ('remove_source_branch' in b) mr.force = b.remove_source_branch
+      if ('squash' in b) mr.squash = b.squash
+      return send(200, { state: mr.state, force_remove_source_branch: !!mr.force, squash: !!mr.squash })
+    }
     if (rq.method === 'PUT' && sub === '/merge') {
       if (mr.st !== 'mergeable') return send(406, { message: 'Branch cannot be merged' })
+      mergeBodies[key] = JSON.parse(body || '{}')
       mr.state = 'merged'
       events.push(`merge ${key}`)
       // the other one of the same project: GitLab checks it again, then wants a rebase
@@ -72,7 +82,7 @@ const server = http.createServer((rq, rs) => {
     if (!sub) {
       if (mr.st === 'checking') checks++
       const st = key === '42/1' && !mr.approved ? 'not_approved' : mr.st
-      return send(200, { state: mr.state, detailed_merge_status: st, title: key, source_branch: 'f' + m[2], target_branch: 'main', author: { username: 'ann' }, user: { can_merge: true }, head_pipeline: { status: 'success' } })
+      return send(200, { state: mr.state, force_remove_source_branch: !!mr.force, squash: !!mr.squash, detailed_merge_status: st, title: key, source_branch: 'f' + m[2], target_branch: 'main', author: { username: 'ann' }, user: { can_merge: true }, head_pipeline: { status: 'success' } })
     }
     send(404, { message: 'no route ' + u })
   })
@@ -127,6 +137,17 @@ try {
   const j7 = st.jobs.find((j) => j.number === 7)
   ok(j7?.state === 'failed' && /conflict/i.test(j7.error), 'conflict: failed with the reason', JSON.stringify(j7))
   ok(st.jobs.find((j) => j.number === 8)?.state === 'merged', 'the next one still merges')
+  // made with "delete source branch" on; queued with it off: the merge request is changed first
+  mrs['42/9'] = { state: 'opened', st: 'mergeable', force: true }
+  await handlers['reviews.queue']({ items: [item(42, 9, { options: { removeSource: false, squash: false } })] })
+  const t2 = Date.now()
+  while (Date.now() - t2 < 10_000) {
+    st = await handlers['reviews.queueState']({})
+    if (['merged', 'failed'].includes(st.jobs.find((j) => j.number === 9)?.state)) break
+    await new Promise((r) => setTimeout(r, 100))
+  }
+  ok(mrs['42/9'].force === false && events.some((e) => e.startsWith('update 42/9') && e.includes('"remove_source_branch":false')), 'its own "delete source branch" is turned off before merging', events.filter((e) => e.includes('42/9')).join(' | '))
+  ok(mergeBodies['42/9']?.should_remove_source_branch === false, 'and the merge asks not to delete it', JSON.stringify(mergeBodies['42/9']))
 } catch (e) {
   fails++
   console.log('CRASH', e.stack)

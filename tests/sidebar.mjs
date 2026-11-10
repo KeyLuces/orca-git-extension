@@ -195,7 +195,7 @@ try {
     await until(() => page.$eval('.tab.active', (t) => t.textContent.includes('Stash')), 'remembered tab (Stash) for app')
   })
   await step('Review & MR fits the sidebar: one row per request, no sideways scroll', async () => {
-    await page.evaluate(() => [...document.querySelectorAll('.tab')].find((t) => t.textContent.includes('Review')).click())
+    await page.evaluate(() => [...document.querySelectorAll('.tab')].find((t) => t.textContent.includes('MR / PR')).click())
     await until(() => page.$$eval('.review-row', (r) => r.length === 2), 'two requests listed')
     const rows = await page.$$eval('.review-row', (rs) => rs.map((r) => { const a = r.querySelector('.review-actions').getBoundingClientRect(); const t = r.querySelector('.review-title').getBoundingClientRect(); return { sameLine: a.top < t.bottom + 30, h: r.getBoundingClientRect().height } }))
     if (rows.some((x) => !x.sameLine)) throw new Error('row actions dropped to their own line: ' + JSON.stringify(rows))

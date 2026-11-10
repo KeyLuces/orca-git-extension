@@ -165,7 +165,11 @@ try {
     const un = await call('reviews.act', { ...it, action: 'unapprove' }).then(() => null, (e) => e)
     ok(un && /GitHub does not let you take back/.test(un.message), 'github revoke explains')
   } else {
-    ok(put?.url.endsWith('/merge_requests/3/merge') && put.body?.squash === true && put.body?.should_remove_source_branch === true && !put.body.merge_when_pipeline_succeeds, 'gitlab merge request', JSON.stringify(put))
+    // the merge request's own settings are made to match first, then it is merged with them
+    const upd = log.find((x) => x.method === 'PUT' && x.url.endsWith('/merge_requests/3'))
+    const mput = log.find((x) => x.method === 'PUT' && x.url.endsWith('/merge_requests/3/merge'))
+    ok(!upd || (upd.body?.remove_source_branch === true && upd.body?.squash === true), 'gitlab: its own settings follow the choice', JSON.stringify(upd))
+    ok(mput && mput.body?.squash === true && mput.body?.should_remove_source_branch === true && !mput.body.merge_when_pipeline_succeeds, 'gitlab merge request', JSON.stringify(mput))
     log.length = 0
     await call('reviews.act', { ...it, action: 'merge', options: { auto: true } }).catch(() => null)
     ok(log.find((x) => x.method === 'PUT')?.body?.merge_when_pipeline_succeeds === true, 'gitlab auto-merge flag')

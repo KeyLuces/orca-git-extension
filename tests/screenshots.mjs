@@ -262,6 +262,11 @@ try {
   sib('acme-docs') // clean
   void mobile
 
+  // made-up Orca Project Groups, so Repo Overview shows its group headings
+  const groupsFile = path.join(root, 'groups.json')
+  writeFileSync(groupsFile, JSON.stringify({ repos: [[path.join(code, 'acme-web'), 'shop', 0], [path.join(code, 'acme-api'), 'shop', 1], [path.join(code, 'acme-admin'), 'shop', 2], [path.join(code, 'acme-mobile'), 'apps', 0], [path.join(code, 'shared-ui'), 'apps', 1]], groups: [{ id: 'shop', name: 'Shop', order: 0 }, { id: 'apps', name: 'Apps', order: 1 }] }))
+  process.env.GITX_GROUPS_JSON = groupsFile
+
   // ---------- worker + browser ----------
   const { default: activate } = await import(pathToFileURL(path.join(PLUGIN, 'worker/main.mjs')).href)
   const handlers = {}
@@ -362,7 +367,7 @@ try {
   await shot('commit')
 
   // 3. a merge request read in full before deciding
-  await clickText('.tab', 'Review & MR')
+  await clickText('.tab', 'MR / PR')
   await until(() => page.$$eval('.review-row', (r) => r.length >= 2), 'merge requests listed')
   await clickText('.review-row', 'price, brand and stock')
   await until(() => page.$eval('.mr-detail .mrd-thread', (t) => t.textContent.includes('sorted by result count')).catch(() => false), 'detail page')
@@ -403,6 +408,17 @@ try {
   await until(() => page.$('.rov-row .ci').then(Boolean), 'CI on acme-web', 20000).catch(() => {})
   await sleep(600)
   await shot('repos-overview')
+
+  // 8. tag several repos at once: tick them, Tag…, everything filled in
+  await page.evaluate(() => {
+    for (const r of document.querySelectorAll('.rov-row')) if (/acme-(web|api|admin)/.test(r.textContent)) r.querySelector('.rov-pick')?.click()
+  })
+  await until(() => page.$('.rov-tag-btn').then(Boolean), 'tag button')
+  await page.click('.rov-tag-btn')
+  await until(() => page.$$eval('.tag-many-dialog .tm-name', (i) => i.length >= 2), 'tag window', 30000)
+  await sleep(800)
+  await shot('tag-many')
+  await page.keyboard.press('Escape')
 } catch (e) {
   console.log('FAILED', e.stack)
   process.exitCode = 1

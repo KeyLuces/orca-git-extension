@@ -28,7 +28,7 @@ const cover = () => `<!doctype html><html><head><meta charset="utf-8"><style>
   * { box-sizing: border-box; margin: 0; }
   html, body { width: 1440px; height: 900px; overflow: hidden; }
   body { background: #0a0a0d; color: #efe9de; font-family: "Segoe UI", system-ui, sans-serif; position: relative; }
-  .glow { position: absolute; left: 50%; top: -160px; width: 1200px; height: 560px; transform: translateX(-50%); background: radial-gradient(closest-side, rgba(143,176,240,.13), transparent); }
+  .glow { position: absolute; left: 50%; top: -160px; width: 1200px; height: 560px; transform: translateX(-50%); background: transparent; }
   .head { position: relative; padding-top: 70px; display: flex; flex-direction: column; align-items: center; text-align: center; }
   .head img { width: 76px; height: 76px; border-radius: 19px; margin-bottom: 24px; box-shadow: 0 10px 30px rgba(0,0,0,.6); }
   h1 { font-size: 58px; font-weight: 650; letter-spacing: -0.02em; line-height: 1.05; }
@@ -59,7 +59,7 @@ const marketCover = () => `<!doctype html><html><head><meta charset="utf-8"><sty
   * { box-sizing: border-box; margin: 0; }
   html, body { width: 1600px; height: 1000px; overflow: hidden; }
   body { background: #0a0a0d; color: #efe9de; font-family: "Segoe UI", system-ui, sans-serif; position: relative; }
-  .glow { position: absolute; left: 900px; top: 120px; width: 1000px; height: 800px; background: radial-gradient(closest-side, rgba(143,176,240,.14), transparent); }
+  .glow { position: absolute; left: 900px; top: 120px; width: 1000px; height: 800px; background: transparent; }
   .text { position: absolute; left: 88px; top: 0; bottom: 0; width: 560px; display: flex; flex-direction: column; justify-content: center; }
   .logo { width: 112px; height: 112px; border-radius: 26px; box-shadow: 0 16px 40px rgba(0,0,0,.6); margin-bottom: 34px; }
   h1 { font-size: 76px; font-weight: 650; letter-spacing: -0.025em; line-height: 1; }
@@ -70,8 +70,8 @@ const marketCover = () => `<!doctype html><html><head><meta charset="utf-8"><sty
   li i { flex: none; width: 10px; height: 10px; border-radius: 50%; background: #8fb0f0; }
   li:nth-child(even) i { background: #b49be8; }
   li:first-child { color: #efe9de; font-weight: 600; }
-  li:first-child i { background: linear-gradient(135deg, #8fb0f0, #b49be8); }
-  .ai-badge { display: inline-block; align-self: flex-start; margin-top: 18px; padding: 7px 16px; border-radius: 999px; font-size: 20px; font-weight: 650; color: #fff; background: linear-gradient(135deg, #5b7fd6, #9b7be0); box-shadow: 0 8px 24px rgba(120, 110, 220, .35); }
+  li:first-child i { background: #8fb0f0; }
+  .ai-badge { display: inline-block; align-self: flex-start; margin-top: 18px; padding: 7px 16px; border-radius: 999px; font-size: 20px; font-weight: 650; color: #fff; background: #7b6fe0; }
   .win { position: absolute; border-radius: 14px; overflow: hidden; border: 1px solid rgba(239,233,222,.14); background: #0d0d10; box-shadow: 0 30px 90px rgba(0,0,0,.7); }
   .bar { height: 30px; display: flex; align-items: center; gap: 7px; padding: 0 12px; background: #16161b; border-bottom: 1px solid rgba(239,233,222,.07); }
   .bar b { width: 10px; height: 10px; border-radius: 50%; background: #3a3946; }
@@ -102,7 +102,7 @@ const notifyMock = () => {
   const card = ([t, b, w]) => `<div class="nc">${ico}<div class="nb"><div class="nt"><b>Git Control: ${t}</b><span>${w}</span></div><div class="nx">${b}</div></div></div>`
   return `<style>
   .phone { position: absolute; left: 640px; top: 70px; width: 390px; height: 800px; border-radius: 54px; padding: 12px; background: #1d1c22; box-shadow: 0 30px 80px rgba(0,0,0,.6), inset 0 0 0 1px rgba(239,233,222,.12); }
-  .scr { position: relative; height: 100%; border-radius: 44px; overflow: hidden; background: radial-gradient(120% 70% at 30% 10%, #2a3350, #14151c 60%, #0c0c10); padding: 22px 16px; }
+  .scr { position: relative; height: 100%; border-radius: 44px; overflow: hidden; background: #17181f; padding: 22px 16px; }
   .isl { position: absolute; left: 50%; top: 12px; width: 110px; height: 30px; margin-left: -55px; border-radius: 20px; background: #000; }
   .clock { text-align: center; margin-top: 46px; font-size: 76px; font-weight: 300; letter-spacing: -0.02em; color: #f2eee6; }
   .date { text-align: center; font-size: 16px; color: #c9c4d6; margin-bottom: 40px; }
