@@ -893,9 +893,17 @@ async function ignoreGraphFiles(repo) {
  * the tab opens in its worktree in the background, without changing what the person is looking at.
  */
 async function openGraphTab(repo, { focus = true } = {}) {
-  const top = (await paths(repo)).toplevel
+  // a folder that is not a repository but holds some (ABC with A, B and C inside): the tab lives in
+  // the folder, and Git Control shows the repositories inside it
+  let top
+  try {
+    top = (await paths(repo)).toplevel
+  } catch (e) {
+    if (!(await reposInside(repo)).children.length) throw e
+    top = path.resolve(repo)
+  }
   const file = path.join(top, TAB_FILE)
-  await ignoreGraphFiles(top) // ignored before the file exists, so it never shows as a change
+  if (existsSync(path.join(top, '.git'))) await ignoreGraphFiles(top) // ignored before the file exists, so it never shows as a change
   // tab files of earlier versions; removed first, since on Windows and macOS "Git.Control" and
   // "Git.control" are one file and writing would keep the old spelling
   for (const old of OLD_TAB_FILES)
@@ -1070,6 +1078,8 @@ function apiBase(where) {
   return `${where.protocol}://${where.host}/api/v4`
 }
 
+const authStyle = new Map() // GitLab host → 'pat' | 'bearer': how its token is sent
+
 /** Call the GitHub/GitLab REST API with the saved Git login. Resolves the JSON (or text with `raw`). */
 async function forgeApi(where, method, apiPath, { body, accept, raw, cwd } = {}) {
   const cred = await gitCredential(where, cwd)
@@ -1088,9 +1098,15 @@ async function forgeApi(where, method, apiPath, { body, accept, raw, cwd } = {})
     })
   let res
   try {
-    res = await send({ Authorization: `Bearer ${cred.token}` })
-    // GitLab: an OAuth token works as Bearer; a personal access token also as PRIVATE-TOKEN
-    if (res.status === 401 && where.kind === 'gitlab') res = await send({ 'PRIVATE-TOKEN': cred.token })
+    // GitLab: an OAuth token works as Bearer; a personal access token only as PRIVATE-TOKEN. Remember
+    // which one this host took, so every later request is one request, not a refused one and a retry.
+    const hostKey = `${where.protocol}://${where.host}`
+    const pat = where.kind === 'gitlab' && authStyle.get(hostKey) === 'pat'
+    res = await send(pat ? { 'PRIVATE-TOKEN': cred.token } : { Authorization: `Bearer ${cred.token}` })
+    if (res.status === 401 && where.kind === 'gitlab') {
+      res = await send(pat ? { Authorization: `Bearer ${cred.token}` } : { 'PRIVATE-TOKEN': cred.token })
+      if (res.status !== 401) authStyle.set(hostKey, pat ? 'bearer' : 'pat')
+    }
   } catch (e) {
     throw new GitError(`${where.host} could not be reached: ${e.cause?.message || e.message}`)
   }
@@ -1099,6 +1115,11 @@ async function forgeApi(where, method, apiPath, { body, accept, raw, cwd } = {})
   try {
     json = text ? JSON.parse(text) : null
   } catch {}
+  // GitHub's rate limit (403 or 429): not a login problem; say when it lifts
+  if ((res.status === 403 || res.status === 429) && (RATE_LIMIT.test(json?.message || '') || res.headers.get('x-ratelimit-remaining') === '0')) {
+    const reset = +res.headers.get('x-ratelimit-reset') * 1000 || (+res.headers.get('retry-after') ? Date.now() + +res.headers.get('retry-after') * 1000 : 0)
+    throw Object.assign(new GitError(`${where.host} rate limit reached${reset ? `; it lifts at ${new Date(reset).toLocaleTimeString()}` : ''}`), { status: res.status, resetAt: reset || null })
+  }
   if (res.status === 401 || res.status === 403) {
     if (res.status === 401) credCache.delete(`${where.protocol}://${where.host}`)
     const detail = json?.message || json?.error_description || json?.error || ''
@@ -1348,7 +1369,22 @@ const pipeId = (v) => {
 }
 
 /** Pipelines for a branch (default: the checked-out one), newest first. */
-async function pipelines(repo, { branch, sha, all } = {}) {
+// Finished pipelines' details and commit titles, kept for the session (they never change).
+const PIPE_DONE = new Set(['success', 'failed', 'canceled', 'skipped'])
+const pipeExtraCache = new Map()
+const commitTitleCache = new Map()
+function commitTitle(w, via, p, sha, repo) {
+  const key = `${w.host}|${p}|${sha}`
+  if (commitTitleCache.has(key)) return commitTitleCache.get(key)
+  const pr = forgeCall(w, via, 'GET', `/projects/${p}/repository/commits/${sha}`, null, repo).then(
+    (c) => c?.title || '',
+    () => (commitTitleCache.delete(key), '') // a failure is not remembered
+  )
+  remember(commitTitleCache, key, pr, 3000)
+  return pr
+}
+
+async function pipelines(repo, { branch, sha, all, light } = {}) {
   const { w, via } = await pipeTarget(repo)
   // all: every branch's recent runs (the Pipelines tab); otherwise one branch (the current one by default)
   const b = all ? null : branch ? req(branch, 'branch') : (await headInfo(repo)).branch
@@ -1380,30 +1416,38 @@ async function pipelines(repo, { branch, sha, all } = {}) {
   const q = sha ? `sha=${encodeURIComponent(sha)}` : b ? `ref=${encodeURIComponent(b)}` : ''
   const list = await forgeCall(w, via, 'GET', `/projects/${p}/pipelines?per_page=${n}${q ? '&' + q : ''}`, null, repo)
   // The list lacks who started it, the commit's message and the stages: for the Pipelines tab, fetch
-  // them for the newest runs (a few at a time, so a big project stays quick).
+  // them for the newest runs, 8 at a time. A finished run never changes and a commit's title never
+  // does, so both are kept: a refresh asks only about runs still going. light: the list alone.
   const extra = new Map()
-  if (all && Array.isArray(list)) {
+  if (all && !light && Array.isArray(list)) {
     const top = list.slice(0, 25)
-    const titles = new Map()
+    const base = `${w.host}|${p}|`
     let i = 0
     const worker = async () => {
       while (i < top.length) {
         const x = top[i++]
-        const [d, jobs] = await Promise.all([
+        const cached = pipeExtraCache.get(base + x.id)
+        if (cached && cached.status === x.status) {
+          extra.set(x.id, cached.e)
+          continue
+        }
+        const [d, jobs, title] = await Promise.all([
           forgeCall(w, via, 'GET', `/projects/${p}/pipelines/${x.id}`, null, repo).catch(() => null),
-          i <= 15 ? forgeCall(w, via, 'GET', `/projects/${p}/pipelines/${x.id}/jobs?per_page=100`, null, repo).catch(() => null) : null
+          forgeCall(w, via, 'GET', `/projects/${p}/pipelines/${x.id}/jobs?per_page=100`, null, repo).catch(() => null),
+          commitTitle(w, via, p, x.sha, repo)
         ])
-        if (!titles.has(x.sha)) titles.set(x.sha, forgeCall(w, via, 'GET', `/projects/${p}/repository/commits/${x.sha}`, null, repo).then((c) => c?.title || '', () => ''))
         const stages = []
         for (const j of Array.isArray(jobs) ? jobs.slice().reverse() : []) {
           let s = stages.find((z) => z.name === j.stage)
           if (!s) stages.push((s = { name: j.stage, states: [] }))
           s.states.push(PIPE_STATE(j.status))
         }
-        extra.set(x.id, { d, stages: stages.map((s) => ({ name: s.name, state: ['failed', 'running', 'pending', 'manual', 'canceled', 'skipped', 'passed'].find((k) => s.states.includes(k)) || 'passed', jobs: s.states.length })), title: await titles.get(x.sha) })
+        const e = { d, stages: stages.map((s) => ({ name: s.name, state: ['failed', 'running', 'pending', 'manual', 'canceled', 'skipped', 'passed'].find((k) => s.states.includes(k)) || 'passed', jobs: s.states.length })), title }
+        extra.set(x.id, e)
+        if (d && Array.isArray(jobs) && PIPE_DONE.has(x.status)) remember(pipeExtraCache, base + x.id, { status: x.status, e }, 2000)
       }
     }
-    await Promise.all(Array.from({ length: 6 }, worker))
+    await Promise.all(Array.from({ length: 8 }, worker))
   }
   return {
     kind: 'gitlab',
@@ -1660,8 +1704,38 @@ function collect(lists, make) {
 
 const MERGED_PAGE = 20
 
+// GitHub allows 30 searches a minute. Each search is remembered for 90 s (the status bar poll, the
+// panel's prefetch and the tab then share one answer), and when GitHub says the limit is reached no
+// search is sent until it lifts: the last answer is shown instead.
+const ghSearchCache = new Map() // host|query → { at, value }
+const ghPausedUntil = new Map() // host → ms
+const RATE_LIMIT = /rate limit|secondary rate|abuse detection/i
+async function ghSearch(host, key, fn) {
+  const k = `${host}|${key}`
+  const hit = ghSearchCache.get(k)
+  if (hit && Date.now() - hit.at < 90_000) return hit.value
+  const until = ghPausedUntil.get(host) || 0
+  if (Date.now() < until) {
+    if (hit) return hit.value
+    throw new GitError(`GitHub limits how often it can be searched; trying again at ${new Date(until).toLocaleTimeString()}`)
+  }
+  try {
+    const value = await fn()
+    remember(ghSearchCache, k, { at: Date.now(), value }, 200)
+    return value
+  } catch (e) {
+    if (RATE_LIMIT.test(e.message)) {
+      ghPausedUntil.set(host, Date.now() + (e.resetAt ? Math.max(30_000, e.resetAt - Date.now()) : 90_000))
+      if (hit) return hit.value
+      throw new GitError(`GitHub limits how often it can be searched; trying again at ${new Date(ghPausedUntil.get(host)).toLocaleTimeString()}`)
+    }
+    throw e
+  }
+}
+
 /** opt.page: which page of merged ones; opt.mergedOnly: only that page (Show more). The list's .more says if more merged ones wait. */
-async function githubInbox(h, where, via, { page = 1, mergedOnly = false } = {}) {
+const ghLogin = new Map() // host → the signed-in login
+async function githubInbox(h, where, via, { page = 1, mergedOnly = false, merged: merged_ = mergedOnly } = {}) {
   const here = where?.kind === 'github' && where.host === h.host && /^[\w.-]+\/[\w.-]+$/.test(where.path) ? where.path : null
   const base = { provider: 'github', host: h.host, protocol: h.protocol, via }
   if (via === 'cli') {
@@ -1669,26 +1743,31 @@ async function githubInbox(h, where, via, { page = 1, mergedOnly = false } = {})
     base.me = meR?.code === 0 ? meR.stdout.trim() : ''
     const fields = 'number,title,url,repository,author,updatedAt,isDraft,labels,commentsCount,state'
     const env = h.host === 'github.com' ? undefined : { GH_HOST: h.host }
-    const search = (...q) => runProc('gh', ['search', 'prs', ...q, '--state=open', '--json', fields, '--limit', '50'], { timeout: 30_000, env })
+    // a failed gh search (rate limit included) becomes an error, so ghSearch can pause and fall back
+    const ghRun = (args) =>
+      runProc('gh', args, { timeout: 30_000, env }).then((r) => (r.code === 0 ? r : Promise.reject(new GitError((r.stderr || r.stdout).trim() || 'gh could not search'))))
+    const search = (...q) => ghSearch(h.host, `open ${q.join(' ')}`, () => ghRun(['search', 'prs', ...q, '--state=open', '--json', fields, '--limit', '50'])).catch((e) => ({ code: 1, stderr: e.message, stdout: '[]' }))
     // gh search has no page: ask for all up to this page, keep this page
     const merged = (...q) =>
-      runProc('gh', ['search', 'prs', ...q, '--merged', '--sort', 'updated', '--json', fields, '--limit', String(MERGED_PAGE * page)], { timeout: 30_000, env }).then((r) => {
+      ghSearch(h.host, `merged ${page} ${q.join(' ')}`, () => ghRun(['search', 'prs', ...q, '--merged', '--sort', 'updated', '--json', fields, '--limit', String(MERGED_PAGE * page)])).then((r) => {
         const all = jsonOf(r)
         return { code: r.code, stderr: r.stderr, stdout: JSON.stringify(Array.isArray(all) ? all.slice(MERGED_PAGE * (page - 1)) : []) }
       })
     const none = Promise.resolve({ code: 0, stdout: '[]' })
     const open = (...q) => (mergedOnly ? none : search(...q))
+    const done = (...q) => (merged_ ? merged(...q).catch((e) => ({ code: 1, stderr: e.message, stdout: '[]' })) : none)
     const [rev, asg, mine, repo, dRev, dAsg, dMine, dRepo] = await Promise.all([
       open('--review-requested=@me'),
       open('--assignee=@me'),
       open('--author=@me'),
       here ? open('--repo', here) : none,
-      merged('--review-requested=@me'),
-      merged('--assignee=@me'),
-      merged('--author=@me'),
-      here ? merged('--repo', here) : none
+      mergedOnly ? none : done('--involves=@me'), // All lists this repository's merged ones only
+      none,
+      none,
+      here ? done('--repo', here) : none
     ])
     if (!mergedOnly && rev.code !== 0 && asg.code !== 0) throw new GitError((rev.stderr || asg.stderr).trim() || 'gh could not list pull requests')
+    if (mergedOnly && dRepo.code !== 0) throw new GitError(dRepo.stderr || 'gh could not list merged pull requests')
     const roles = ['review', 'assigned', 'mine', 'repo']
     const more = [dRev, dAsg, dMine, dRepo].some((r) => jsonOf(r)?.length >= MERGED_PAGE)
     return withMore(more, collect([rev, asg, mine, repo, dRev, dAsg, dMine, dRepo].map((r, i) => [jsonOf(r), roles[i % 4]]), (p) => ({
@@ -1706,14 +1785,21 @@ async function githubInbox(h, where, via, { page = 1, mergedOnly = false } = {})
     })))
   }
   // the saved Git login: @me works only for user tokens, so ask who that is first
-  const me = await forgeApi(h, 'GET', '/user')
+  const login = ghLogin.get(h.host)
+  const me = login ? { login } : await forgeApi(h, 'GET', '/user') // who that is does not change
   if (!me?.login) throw new GitError(`could not tell who is signed in to ${h.host}`)
+  ghLogin.set(h.host, me.login)
   base.me = me.login
-  const q = (s, st = 'open', n = 50) => forgeApi(h, 'GET', `/search/issues?per_page=${n}&sort=updated${st === 'merged' ? `&page=${page}` : ''}&q=${encodeURIComponent(`is:pr is:${st} ${s}`)}`).then((r) => r?.items || [])
+  const url = (s, st, n) => `/search/issues?per_page=${n}&sort=updated${st === 'merged' ? `&page=${page}` : ''}&q=${encodeURIComponent(`is:pr is:${st} ${s}`)}`
+  const q = (s, st = 'open', n = 50) => ghSearch(h.host, url(s, st, n), () => forgeApi(h, 'GET', url(s, st, n))).then((r) => r?.items || [])
   const scopes = [`review-requested:${me.login}`, `assignee:${me.login}`, `author:${me.login}`, here ? `repo:${here}` : null]
   const roles = ['review', 'assigned', 'mine', 'repo']
-  // open ones, then the latest merged ones (for the All tab)
-  const lists = await Promise.all([...scopes.map((s) => (s && !mergedOnly ? q(s) : [])), ...scopes.map((s) => (s ? q(s, 'merged', MERGED_PAGE).catch(() => []) : []))])
+  // open ones; merged ones only for the All tab: everything I am part of, and this repo (two searches)
+  const doneScopes = [mergedOnly ? null : `involves:${me.login}`, null, null, here ? `repo:${here}` : null] // All: this repo's only
+  const lists = await Promise.all([
+    ...scopes.map((s) => (s && !mergedOnly ? q(s) : [])),
+    ...doneScopes.map((s) => (s && merged_ ? q(s, 'merged', MERGED_PAGE).catch((e) => (mergedOnly ? Promise.reject(e) : [])) : []))
+  ])
   const more = lists.slice(4).some((l) => l.length >= MERGED_PAGE)
   return withMore(more, collect(lists.map((l, i) => [l, roles[i % 4]]), (p) => ({
     ...base,
@@ -1739,7 +1825,7 @@ function gitlabGet(h, via, apiPath) {
   return forgeApi(h, 'GET', '/' + apiPath)
 }
 
-async function gitlabInbox(h, where, via, { page = 1, mergedOnly = false } = {}) {
+async function gitlabInbox(h, where, via, { page = 1, mergedOnly = false, merged: merged_ = mergedOnly } = {}) {
   const me = await gitlabGet(h, via, 'user')
   if (!me?.username) throw new GitError(`${via === 'cli' ? 'glab is' : 'the saved Git login is'} not signed in to ${h.host}`)
   const q = 'merge_requests?state=opened&scope=all&per_page=50'
@@ -1752,17 +1838,18 @@ async function gitlabInbox(h, where, via, { page = 1, mergedOnly = false } = {})
   // merged ones too (for the All tab): the latest of each list
   const done = (p) => p.replace('state=opened', 'state=merged').replace('per_page=50', `per_page=${MERGED_PAGE}&page=${page}&order_by=updated_at`)
   const open = (p) => (mergedOnly ? [] : soft(p))
+  const old = (p) => (merged_ && !mergedOnly ? soft(done(p)) : []) // the All tab lists this repo's merged ones only
   const [rev, asg, mine, repo, dRev, dAsg, dMine, dRepo] = await Promise.all([
     open(`${q}&reviewer_username=${u}`),
     open(`${q}&assignee_username=${u}`),
     open(`${q}&author_username=${u}`),
     here ? open(here) : [],
-    soft(done(`${q}&reviewer_username=${u}`)),
-    soft(done(`${q}&assignee_username=${u}`)),
-    soft(done(`${q}&author_username=${u}`)),
-    here ? soft(done(here)) : []
+    old(`${q}&reviewer_username=${u}`),
+    old(`${q}&assignee_username=${u}`),
+    old(`${q}&author_username=${u}`),
+    here && merged_ ? soft(done(here)) : []
   ])
-  if (mergedOnly ? dRev === null && dAsg === null && dMine === null : rev === null && asg === null && mine === null) throw new GitError(`could not list merge requests on ${h.host} (it did not answer); showing the last list`)
+  if (mergedOnly ? dRepo === null : rev === null && asg === null && mine === null) throw new GitError(`could not list merge requests on ${h.host} (it did not answer); showing the last list`)
   const more = [dRev, dAsg, dMine, dRepo].some((l) => l?.length >= MERGED_PAGE)
   return withMore(more, collect([[rev, 'review'], [asg, 'assigned'], [mine, 'mine'], [repo, 'repo'], [dRev, 'review'], [dAsg, 'assigned'], [dMine, 'mine'], [dRepo, 'repo']], (m) => ({
     state: m.state === 'merged' ? 'merged' : m.state === 'closed' ? 'closed' : 'open',
@@ -1808,6 +1895,31 @@ function scanForRepos(roots) {
   return found
 }
 
+/**
+ * What a folder is: a repository itself, or a plain folder with repositories inside (up to two levels
+ * deep). Asked whenever the focus moves, so the answer is kept for a minute.
+ */
+const insideCache = new Map()
+async function reposInside(dir) {
+  const p = path.resolve(String(dir || ''))
+  const hit = insideCache.get(p)
+  if (hit && Date.now() - hit.at < 60_000) return hit.value
+  let value
+  try {
+    const top = (await gitOnce(p, ['rev-parse', '--show-toplevel'], { timeout: 8000 })).trim()
+    value = { path: p, isRepo: !!top, toplevel: top || null, children: [] }
+  } catch {
+    const found = existsSync(p) ? scanForRepos([p]).filter((c) => path.resolve(c) !== p) : []
+    const children = await pool(found, 4, async (c) => {
+      const branch = await gitOnce(c, ['branch', '--show-current'], { timeout: 8000 }).then((o) => o.trim(), () => '')
+      return { path: c, name: path.relative(p, c).replace(/\\/g, '/'), branch }
+    })
+    value = { path: p, isRepo: false, toplevel: null, children: children.sort((a, b) => a.name.localeCompare(b.name)) }
+  }
+  remember(insideCache, p, { at: Date.now(), value }, 50)
+  return value
+}
+
 /** Run fn over items, at most n at a time (many repos must not start many git processes at once). */
 async function pool(items, n, fn) {
   const out = new Array(items.length)
@@ -1824,8 +1936,18 @@ async function pool(items, n, fn) {
 async function reposOverview(workspaces, scan) {
   const rows = new Map()
   const key = (p) => path.resolve(p).toLowerCase()
-  for (const w of workspaces)
-    if ((w.kind === 'worktree' || w.kind === 'folder' || !w.kind) && w.path) rows.set(key(w.path), { path: w.path, name: w.repoName || path.basename(w.path), workspace: w.name || '', main: w.main !== false, source: 'orca' })
+  for (const w of workspaces) {
+    if (!((w.kind === 'worktree' || w.kind === 'folder' || !w.kind) && w.path)) continue
+    // a folder that is not a repository: the repositories inside it instead (ABC → A, B, C)
+    if (!w.repoName) {
+      const inside = await reposInside(w.path).catch(() => null)
+      if (inside && !inside.isRepo && inside.children.length) {
+        for (const c of inside.children) if (!rows.has(key(c.path))) rows.set(key(c.path), { path: c.path, name: path.basename(c.path), workspace: w.name || '', main: true, source: 'folder', folder: path.basename(w.path) })
+        continue
+      }
+    }
+    rows.set(key(w.path), { path: w.path, name: w.repoName || path.basename(w.path), workspace: w.name || '', main: w.main !== false, source: 'orca' })
+  }
   const roots = String(scan || '').split(/[;\n]/).map((x) => x.trim()).filter(Boolean)
   for (const p of scanForRepos(roots)) if (!rows.has(key(p))) rows.set(key(p), { path: p, name: path.basename(p), workspace: '', main: true, source: 'scan' })
   const list = [...rows.values()]
@@ -1868,7 +1990,7 @@ async function repoWhere(repo) {
   }
 }
 
-async function reviewsList(orca, repo, { page = 1, mergedOnly = false } = {}) {
+async function reviewsList(orca, repo, { page = 1, mergedOnly = false, merged = mergedOnly } = {}) {
   const where = await repoWhere(repo)
   const items = []
   const errors = []
@@ -1889,7 +2011,7 @@ async function reviewsList(orca, repo, { page = 1, mergedOnly = false } = {}) {
       .filter((p) => p.signedIn)
       .map((p) => {
         const via = p.via === 'git' ? 'git' : 'cli'
-        const opt = { page: Math.max(1, Math.min(50, +page || 1)), mergedOnly: !!mergedOnly }
+        const opt = { page: Math.max(1, Math.min(50, +page || 1)), mergedOnly: !!mergedOnly, merged: !!merged }
         return (p.provider === 'github' ? githubInbox(p._h, where, via, opt) : gitlabInbox(p._h, where, via, opt)).then(
           (list) => (items.push(...list), (moreMerged ||= !!list.more)),
           (e) => errors.push(`${p.host}: ${e.message}`)
@@ -3523,6 +3645,7 @@ Click to open Git Control`
     return reposOverview(await listWorkspaces(orca).catch(() => []), scan)
   })
 
+  orca.panels.handle('repo.inside', ({ path: p } = {}) => reposInside(req(p, 'path')))
   orca.panels.handle('repos.setScan', async ({ folders = '' } = {}) => {
     const value = String(folders).split(/[;\n]/).map((x) => x.trim()).filter(Boolean).join('; ')
     await orca.host.call('settings.set', { key: 'scanFolders', value })

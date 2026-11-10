@@ -73,7 +73,9 @@ page.on('pageerror', (e) => consoleErrors.push(String(e)))
 page.on('console', (m) => m.type() === 'error' && !/favicon|status of 404/.test(m.text()) && consoleErrors.push(m.text()))
 // Tests can stand in for the AI agent (no claude/codex here): name -> async (input) => output
 const fakes = {}
+const LATENCY = +process.env.GITX_E2E_LATENCY || 0 // e.g. 150: every request as slow as on a big repo
 await page.exposeFunction('__orcaRequest', async (name, input) => {
+  if (LATENCY) await new Promise((r) => setTimeout(r, LATENCY))
   try {
     if (fakes[name]) return { out: await fakes[name](input) }
     return { out: await handlers[name](input) }
@@ -658,7 +660,10 @@ const apiServer = http.createServer((req, res) => {
         const pg = +u.searchParams.get('page') || 1
         if (pg === 2) return send(200, role === 'repo' ? [old(300, 60), old(301, 61), old(302, 62)] : [])
         if (pg > 2) return send(200, [])
-        const now1 = api.merged.has(n) ? [{ iid: n, project_id: 5, state: 'merged', merged_at: new Date().toISOString(), web_url: `https://gitlab2.example.test/team/app/-/merge_requests/${n}`, title: `MR ${role}`, author: { username: 'dev' }, source_branch: 's' + n, target_branch: 'main', updated_at: new Date().toISOString(), references: { full: 'team/app!' + n } }] : []
+        const ROLE = { 11: 'review', 12: 'assigned', 13: 'mine', 14: 'repo' }
+        const mergedMr = (k) => ({ iid: k, project_id: 5, state: 'merged', merged_at: new Date().toISOString(), web_url: `https://gitlab2.example.test/team/app/-/merge_requests/${k}`, title: `MR ${ROLE[k]}`, author: { username: 'dev' }, source_branch: 's' + k, target_branch: 'main', updated_at: new Date().toISOString(), references: { full: 'team/app!' + k } })
+        // the project's list has every merged one of the project; the others only their own
+        const now1 = role === 'repo' ? [...api.merged].filter((k) => ROLE[k]).map(mergedMr) : api.merged.has(n) ? [mergedMr(n)] : []
         return send(200, role === 'repo' ? now1.concat(Array.from({ length: 20 }, (_, i) => old(200 + i, 2 + i))) : now1)
       }
       if (api.merged.has(n)) return send(200, role === 'review' ? [{ iid: 99, project_id: 6, web_url: 'https://gitlab2.example.test/other/proj/-/merge_requests/99', title: 'MR other repo', author: { username: 'dev' }, source_branch: 'x', target_branch: 'main', updated_at: new Date().toISOString(), references: { full: 'other/proj!99' } }] : [])
@@ -794,10 +799,12 @@ await step('Inbox (GitLab, saved Git login): to review, assigned, opened by me, 
     await until(() => page.$eval('.reviews', (r, w) => r.textContent.includes(w), want), `${label} lists ${want}`, 20000)
     if (not && (await page.$eval('.reviews .rv-list', (r, n) => r.textContent.includes(n), not))) throw new Error(`${label} also lists ${not}`)
   }
-  await seg2('To review', 'MR assigned', 'MR mine')
-  await seg2('Opened by me', 'MR mine', 'MR assigned')
+  // Review: asked of me and opened by me together, each tagged; the repo's other MRs only under All
+  await seg2('Review', 'MR assigned', 'MR repo')
+  await until(() => page.$$eval('.reviews .review-row', (rs) => rs.some((r) => r.textContent.includes('MR mine') && r.textContent.includes('Opened by me')) && rs.some((r) => r.textContent.includes('MR assigned') && r.textContent.includes('Assigned'))), 'Review lists mine and assigned, tagged')
   await seg2('All', 'MR repo')
-  await seg2('To review', 'MR review')
+  if (await exists('.reviews .segmented button.on[title*="Every repository"]')) throw new Error('All offers All repos')
+  await seg2('Review', 'MR review')
   // follows the repository's remote: another project's MR shows only with "All repos"
   if (await page.$eval('.reviews', (r) => r.textContent.includes('MR other repo'))) throw new Error('another repo listed by default')
   await clickText('.reviews .segmented button', 'All repos')
@@ -844,7 +851,7 @@ await step('Inbox (GitLab, saved Git login): to review, assigned, opened by me, 
 await step('Review & MR list: approve leaves To review, multi-select merge, real data after', async () => {
   await tab('Review & MR')
   await until(() => exists('.reviews .rv-tabs'), 'tabs')
-  await page.evaluate(() => [...document.querySelectorAll('.reviews .rv-tabs button')].find((b) => b.textContent.startsWith('To review')).click())
+  await page.evaluate(() => [...document.querySelectorAll('.reviews .rv-tabs button')].find((b) => b.textContent.startsWith('Review')).click())
   // MR review (11) was approved on its page: it is no longer waiting for me
   await until(() => page.evaluate(() => [...document.querySelectorAll('.reviews .rv-list .review-row')].some((r) => r.textContent.includes('MR review') && r.textContent.includes('waiting merge')) && document.querySelector('.reviews .rv-list').textContent.includes('MR assigned')), 'approved MR stays in To review, marked waiting merge', 20000)
   api.calls = []
@@ -1356,20 +1363,29 @@ await step('Repos overview: every repo at once, filters, Fetch all, Pull all onl
   writeFileSync(path.join(multi, 'web', 'readme.md'), 'web changed\n')
   settings.scanFolders = multi
 
+  // the Repo Overview button beside the branch opens it as a page (not a pop-up); pressed again, back
+  await clickSel('.rov-nav-btn')
+  await until(() => exists('.rov-page') && exists('.rov-nav-btn.on'), 'Repo Overview opens as a page, its button marked')
+  if (await exists('.sheet .rov')) throw new Error('Repos overview opened in a sheet')
+  await clickSel('.rov-nav-btn')
+  await until(() => page.evaluate(() => !document.querySelector('.rov-page') && !document.querySelector('.rov-nav-btn.on')), 'pressed again: back where it was')
+  // the repository menu opens it too
   await clickSel('#repoBtn')
-  await page.evaluate(() => [...document.querySelectorAll('.menu .menu-item, .menu button, .menu [role=menuitem]')].find((x) => x.textContent.includes('All repos overview')).click())
+  await page.evaluate(() => [...document.querySelectorAll('.menu .menu-item, .menu button, .menu [role=menuitem]')].find((x) => x.textContent.includes('Repo Overview')).click())
+  await until(() => exists('.rov-page'), 'Repo Overview from the repository menu')
+  await until(() => page.$eval('.rov-mr', (c) => /Merge requests/.test(c.textContent) && /to review/.test(c.textContent)).catch(() => false), 'merge requests card', 20000)
   await until(() => page.$$eval('.rov-row', (r) => r.length).then((n) => n >= 3), 'a row per repo', 30000)
   const names = await page.$$eval('.rov-row .rov-title', (r) => r.map((x) => x.textContent))
   for (const n of ['api', 'web', 'docs']) if (!names.some((x) => x.startsWith(n))) throw new Error('missing ' + n + ' in ' + names)
   // web has a change: it is counted and listed above the clean ones
   const web = await page.$eval('.rov-row:has(.rov-path[title], .rov-title)', () => true)
   if (!web) throw new Error('no rows')
-  const chip = await page.$eval('.rov-summary', (s) => s.textContent)
-  if (!/with changes/.test(chip)) throw new Error('summary: ' + chip)
-  await page.evaluate(() => [...document.querySelectorAll('.rov-chip')].find((c) => c.textContent.includes('with changes')).click())
+  const dash = await page.$eval('.rov-summary', (s) => s.textContent)
+  if (!/With changes\s*1/i.test(dash) || !/Health/.test(dash) || !/Clean/.test(dash)) throw new Error('dashboard: ' + dash)
+  await page.evaluate(() => document.querySelector('.rov-tile[data-k="changes"]').click())
   const only = await page.$$eval('.rov-row .rov-title', (r) => r.map((x) => x.textContent))
   if (!only.every((x) => !x.startsWith('docs')) || !only.some((x) => x.startsWith('web'))) throw new Error('filter: ' + only)
-  await page.evaluate(() => [...document.querySelectorAll('.rov-chip')].find((c) => /repos?$/.test(c.textContent.trim())).click())
+  await page.evaluate(() => document.querySelector('.rov-tile[data-k="all"]').click())
   // Fetch all finds that api is behind
   await clickSel('.rov-fetch-all')
   await until(() => page.$$eval('.rov-row', (rs) => rs.some((r) => r.textContent.includes('api') && r.querySelector('.rov-sync .down')?.textContent === '↓1')), 'api shows ↓1 after Fetch all', 30000)
@@ -1393,7 +1409,7 @@ await step('Repos overview: every repo at once, filters, Fetch all, Pull all onl
   writeFileSync(path.join(multi, 'api', 'mine.txt'), 'mine\n')
   run(path.join(multi, 'api'), 'add', '.')
   run(path.join(multi, 'api'), 'commit', '-qm', 'Mine')
-  await page.evaluate(() => document.querySelector('.rov-sheet .sheet-head .icon-btn[title="Refresh"], .rov-sheet .sheet-head [aria-label="Refresh"]')?.click())
+  await page.evaluate(() => document.querySelector('.rov-refresh')?.click())
   await until(() => page.evaluate(`${rowOf('api')}?.querySelector('.rov-sync .up')?.textContent === '↑1'`), 'api shows ↑1', 20000)
   await clickSel('.rov-push-all')
   await until(() => page.$eval('.overlay .dialog', (d) => d.textContent.includes('api') && !d.textContent.includes('docs')).catch(() => false), 'push all lists only api')
@@ -1444,6 +1460,72 @@ await step('no stray "false", "null" or "[object" text anywhere', async () => {
 
 await step('pages that open on top fit a phone (MR, conflicts, rebase, reset)', async () => {
   if (phoneIssues.length) throw new Error(phoneIssues.join('\n      '))
+})
+
+await step('a folder of repositories (ABC with A, B, C): opens one, its repos as tabs, switching is remembered', async () => {
+  const abc = path.join(root, 'ABC')
+  const run = (cwd, ...a) => execFileSync('git', a, { cwd, encoding: 'utf8' }).trim()
+  for (const n of ['A', 'B', 'C']) {
+    const d = path.join(abc, n)
+    mkdirSync(d, { recursive: true })
+    run(d, 'init', '-q', '-b', n === 'B' ? 'dev' : 'main')
+    writeFileSync(path.join(d, `${n}.txt`), n + '\n')
+    run(d, 'add', '.')
+    run(d, 'commit', '-qm', `Start ${n}`)
+  }
+  const openPath = async (p) => {
+    await clickSel('#repoBtn')
+    await page.evaluate(() => [...document.querySelectorAll('.menu button')].find((x) => x.textContent.includes('Open path')).click())
+    await until(() => exists('.overlay .dialog input[type=text]'), 'path dialog')
+    await page.$eval('.overlay .dialog input[type=text]', (i, v) => { i.value = v; i.dispatchEvent(new Event('input', { bubbles: true })) }, p)
+    await page.evaluate(() => [...document.querySelectorAll('.overlay .dialog .btn')].find((b) => b.textContent.trim() === 'Open').click())
+  }
+  await page.evaluate(() => [...document.querySelectorAll('#tabs .tab')].find((t) => t.textContent.startsWith('Graph')).click())
+  await openPath(abc)
+  // not "Not a Git repository": the first repo opens, every repo of the folder is a tab
+  await until(() => page.$$eval('#folderBar .folder-tab:not(.more)', (t) => t.map((x) => x.querySelector('.folder-tab-name').textContent).join(',')).then((t) => t === 'A,B,C'), 'A, B and C as tabs', 20000)
+  await until(() => page.$eval('#repoName', (n) => n.textContent === 'ABC › A'), 'header says ABC › A')
+  await until(() => page.$$eval('.commit-row', (r) => r.some((x) => x.textContent.includes('Start A'))), "A's graph")
+  // one click switches; the tab shows its branch
+  await page.evaluate(() => [...document.querySelectorAll('#folderBar .folder-tab')].find((t) => t.textContent.startsWith('B')).click())
+  await until(() => page.$eval('#repoName', (n) => n.textContent === 'ABC › B'), 'switched to B', 20000)
+  await until(() => page.$$eval('.commit-row', (r) => r.some((x) => x.textContent.includes('Start B'))), "B's graph", 20000)
+  if (!(await page.$eval('#folderBar .folder-tab.on', (t) => t.textContent.includes('dev')))) throw new Error('the B tab does not show its branch')
+  // the repository menu lists the folder's repos first
+  await clickSel('#repoBtn')
+  const menuText = await page.$eval('.menu', (m) => m.textContent)
+  await page.keyboard.press('Escape')
+  if (!/In ABC/.test(menuText) || !/C/.test(menuText)) throw new Error('menu: ' + menuText)
+  // opened again later: B, the one used last in this folder
+  await openPath(REPO)
+  await until(() => page.evaluate(() => !document.getElementById('folderBar') && document.querySelector('#repoName').textContent === 'app'), 'back on app, no folder tabs', 20000)
+  await openPath(abc)
+  await until(() => page.$eval('#repoName', (n) => n.textContent === 'ABC › B'), 'ABC opens on B, used last', 20000)
+  await shot('folder-of-repos')
+  await phoneCheck('folder-of-repos')
+  await openPath(REPO)
+  await until(() => page.$eval('#repoName', (n) => n.textContent === 'app'), 'back on app', 20000)
+})
+
+await step('switching tabs shows the new tab quickly (each one, twice)', async () => {
+  const tabs = await page.$$eval('#tabs .tab', (t) => t.map((x) => x.textContent.replace(/\d+$/, '').trim()))
+  const times = []
+  for (const round of [1, 2])
+    for (const name of tabs) {
+      const ms = await page.evaluate(async (n) => {
+        const main = document.querySelector('#main')
+        const before = main.querySelector('.view')
+        const t0 = performance.now()
+        ;[...document.querySelectorAll('#tabs .tab')].find((x) => x.textContent.trim().startsWith(n)).click()
+        // the new tab is on screen: the old view is gone and something new stands there
+        while (main.querySelector('.view') === before && performance.now() - t0 < 10000) await new Promise((r) => requestAnimationFrame(r))
+        return Math.round(performance.now() - t0)
+      }, name)
+      times.push([round, name, ms])
+    }
+  console.log('      tab switch ms: ' + times.map(([r, n, ms]) => `${r === 1 ? '' : '2nd '}${n} ${ms}`).join(' · '))
+  const slow = times.filter(([r, , ms]) => ms > (r === 1 ? 400 : 150))
+  if (slow.length) throw new Error('slow: ' + slow.map(([r, n, ms]) => `${r === 1 ? '' : '2nd '}${n} ${ms} ms`).join(', '))
 })
 
 await step('no page errors', async () => {

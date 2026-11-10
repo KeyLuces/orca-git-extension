@@ -1,6 +1,7 @@
 // Status bar items: node tests/statusbar.mjs
 // 1. The Git item stays visible when the focused worktree cannot be told (Orca gives no context).
-// 2. With two repositories open, the Repos item shows how many need you ("1 of 2 repos").
+// 2. A folder workspace holding two repositories: the Repos item counts both, and shows how many
+//    need you ("1 of 2 repos").
 import path from 'node:path'
 import fs from 'node:fs'
 import { execFileSync } from 'node:child_process'
@@ -30,7 +31,8 @@ const orca = {
     call: async (n, a) => {
       if (n === 'statusBar.update') sent.push(a)
       if (n === 'workspace.readContext') throw new Error('no context')
-      if (n === 'workspace.list') return { workspaces: repos.map((p) => ({ name: path.basename(p), path: p, kind: 'folder', hostId: 'local' })) }
+      // one Orca workspace: the plain folder that holds both repositories (ABC with A and B inside)
+      if (n === 'workspace.list') return { workspaces: [{ name: 'parent', path: W, kind: 'folder', hostId: 'local' }] }
       return {}
     }
   },

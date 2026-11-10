@@ -36,7 +36,11 @@ straight to a shared main branch is pointed out first. **Ctrl+Z** undoes the las
 ![The Commit tab: changed files on the left, the diff on the right](assets/screenshots/commit.png)
 
 ### Review merge requests
-**Review & MR** has three tabs: **To review** (asked to review or assigned to you), **Opened by me** and **All** (open ones first, then merged ones by day: Today, Last 7 days, then by month, with **Show more merged** at the end for older ones);
+**Review & MR** has two tabs. **Review** holds everything still open that is yours to act on: asked to review, assigned or
+opened by you, each tagged, and it stays there until it is really merged (approved and waiting, pipeline running, queued);
+it shows this repository or all of them. **All** is this repository's every merge request: open ones first, then merged
+ones by day, with **Show more merged** for older ones. Merged ones are only fetched when All is open, and GitHub searches
+are shared and paused when GitHub's rate limit is reached;
 the count is what still waits for your approval, and it shows as soon as a project opens. Search, filter by project
 or label, and see new comments since you last looked. Approve or merge right from the list, or tick several and **Approve & merge** them together:
 they merge in the background while you keep working. Within one project they go one at a time, each waiting
@@ -93,10 +97,17 @@ updates by itself while runs go on, and a click opens the run's jobs and logs.
 
 ![The Pipelines tab with every branch's runs, their stages and who started them](assets/screenshots/pipelines.png)
 
+### A folder of repositories
+Open a folder that is not a repository itself but holds some (`ABC` with `A`, `B` and `C` inside, up to two levels
+deep) and Git Control opens one of them instead of saying *Not a Git repository*. The folder's repositories show as
+tabs under the header, each with its branch; one click switches, and the folder opens on the one you used last.
+The repository menu and **Ctrl+.** (type its name) switch too, and Repo Overview lists them all.
+
 ### All your repos on one page
-Working in several repos at once? **All repos overview** (top of the repository picker, or **Ctrl+.**) lists each
-one with its branch, how far it is ahead or behind, its changes, CI and the reviews waiting for you. The ones that
-need you come first, and the summary on top (*3 with changes*, *1 behind*, *on 4 branches*) filters the list.
+Working in several repos at once? **Repo Overview** (the button beside the branch, or **Ctrl+.**) is a dashboard: tiles
+for what needs you (attention, changes, to pull, to push) that filter the list, a health bar, and the open merge
+requests across every repo. Below, each repo is listed with its branch, how far it is ahead or behind, its changes, CI and its open merge requests. The ones that
+need you come first; a tile on top (*With changes*, *To pull*…) shows only those.
 **Fetch all** fetches every repo; **Pull all** and **Push all** act only where it is safe and say why they skipped the
 rest. **More** switches every repo that has a branch to it, or creates the same branch in the repos you tick. Each
 row can fetch, pull, switch branch, or open that repo on its Graph, merge requests or pipelines. It lists the repos
@@ -149,6 +160,8 @@ node sidebar.mjs <plugin folder> <shots folder>   # the right-sidebar panel at s
 node worker-api.mjs github|gitlab                 # merge requests, reviews and CI through the Git login
 node merge-queue.mjs                              # Approve & merge on several: one at a time per project
 node statusbar.mjs                                # the status bar items: Git never disappears, Repos counts
+node github-ratelimit.mjs                         # GitHub searches shared, paused at the rate limit
+node pipelines-perf.mjs --check                   # Pipelines tab load time against a slow fake GitLab
 node screenshots.mjs <plugin folder> <out folder> # the screenshots above, on a made-up project
 node promo.mjs <plugin folder>                    # marketplace posters from assets/screenshots → assets/promo
 ```

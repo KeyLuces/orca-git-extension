@@ -398,8 +398,7 @@ try {
   await shot('pipelines')
 
   // 7. Repos overview: every repository at once
-  await page.click('#repoBtn')
-  await clickText('.menu button', 'All repos overview')
+  await page.click('.rov-nav-btn')
   await until(() => page.$$eval('.rov-row', (r) => r.length >= 6), 'repos overview')
   await until(() => page.$('.rov-row .ci').then(Boolean), 'CI on acme-web', 20000).catch(() => {})
   await sleep(600)

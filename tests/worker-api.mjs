@@ -129,8 +129,9 @@ try {
     ok(JSON.stringify(post.body) === JSON.stringify({ title: 'Hello', body: 'Body', head: 'feature', base: 'main', draft: true }), 'github body', JSON.stringify(post.body))
   } else {
     const posts = log.filter((x) => x.method === 'POST')
-    ok(posts.length === 2 && posts[0].auth === 'Bearer TESTTOKEN' && posts[1].pt === 'TESTTOKEN', '401 Bearer → PRIVATE-TOKEN retry', JSON.stringify(posts))
-    ok(JSON.stringify(posts[1].body) === JSON.stringify({ source_branch: 'feature', target_branch: 'main', title: 'Draft: Hello', description: 'Body' }), 'gitlab body', JSON.stringify(posts[1].body))
+    // earlier calls found that this host takes PRIVATE-TOKEN (Bearer was refused once): sent that way at once
+    ok(posts.length === 1 && posts[0].pt === 'TESTTOKEN' && !posts[0].auth, 'PRIVATE-TOKEN remembered: one request, no refused Bearer first', JSON.stringify(posts))
+    ok(JSON.stringify(posts[posts.length - 1].body) === JSON.stringify({ source_branch: 'feature', target_branch: 'main', title: 'Draft: Hello', description: 'Body' }), 'gitlab body', JSON.stringify(posts[posts.length - 1].body))
   }
   // denied
   deny = true
