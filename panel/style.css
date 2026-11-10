@@ -1914,3 +1914,31 @@ body.compact .pc-ref, body.compact .pc-stages, body.compact .pc-by, .side-panel 
 .rov-grp { top: 53px; z-index: 2; }
 .rov-summary { border-bottom: 0; padding-bottom: 4px; }
 .pill.rv-noreviewer { color: var(--t2); border: 1px dashed var(--line-hi); background: transparent; white-space: nowrap; } .rv-who { margin-left: 8px; }
+
+/* Servers: SSH hosts whose projects the repository menu lists */
+.servers-intro { margin: 0; padding: 12px 16px; color: var(--t2); font-size: 12px; line-height: 1.5; border-bottom: 1px solid var(--line); }
+.server-row { padding: 10px 12px 10px 16px; border-bottom: 1px solid var(--line); }
+.server-row > .row { gap: 10px; }
+.server-row > .row > svg { flex: none; color: var(--t3); }
+.server-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.server-meta { color: var(--t3); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.server-row.hidden-server .server-name { color: var(--t3); font-weight: 500; }
+.pill.server-bad { background: color-mix(in srgb, var(--del) 18%, transparent); color: var(--del); }
+.server-error { margin: 8px 0 0 26px; padding: 8px 10px; border-radius: 6px; background: color-mix(in srgb, var(--del) 8%, transparent); color: var(--t2); font-size: 12px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* A text field with a suggestion list under it (dialog combo box) */
+.combo { position: relative; display: flex; }
+.combo > input { flex: 1; min-width: 0; padding-right: 30px; }
+.combo-caret { position: absolute; top: 0; right: 0; bottom: 0; width: 30px; display: flex; align-items: center; justify-content: center; border: 0; background: none; color: var(--t3); cursor: pointer; }
+.combo-caret:hover { color: var(--t1); }
+.combo-caret svg { transition: transform .15s var(--ease); }
+.combo.open .combo-caret svg { transform: rotate(180deg); }
+.combo-list { position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 5; max-height: 232px; overflow-y: auto; padding: 4px; border-radius: var(--radius); background: var(--card); border: 1px solid var(--line-hi); box-shadow: var(--shadow); animation: pop .12s var(--ease); }
+.combo-list[hidden] { display: none; }
+.combo-item { display: flex; align-items: center; gap: 10px; min-height: 32px; padding: 4px 8px; border-radius: var(--r-xs); cursor: pointer; font-size: 13px; }
+.combo-item.active { background: var(--hover); }
+.combo-item.disabled { cursor: default; opacity: .5; }
+.combo-value { flex: none; max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--t1); font-weight: 500; }
+.combo-detail { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--t3); font-size: 12px; text-align: right; font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace); }
+.combo-item .pill { flex: none; }
+.combo-empty { padding: 8px; color: var(--t3); font-size: 12px; }

@@ -1,7 +1,8 @@
 # Git Control for Orca
 
 A Git client inside Orca: the commit graph, commits, branches, stashes, merge requests and pipelines for
-GitHub and GitLab, in one editor tab and a sidebar panel. It runs your installed `git` and signs in with
+GitHub and GitLab, in one editor tab and a sidebar panel, for projects on your computer and on your SSH
+servers. It runs your installed `git` and signs in with
 the Git login you already have (or `gh` / `glab` when they are set up), so there are no tokens to create.
 
 ![Git Control for Orca: commit graph, commits, branches, merge requests, CI pipelines and more](assets/promo/graph.png)
@@ -13,7 +14,8 @@ the Git login you already have (or `gh` / `glab` when they are set up), so there
 3. Click **Git** in the status bar (or run **Git: Open Git Control**) for the full tab, or open the
    **Git Control** panel (layers icon) in the right sidebar.
 
-Requires Orca 1.4.248 or later and `git` on your PATH.
+Requires Orca 1.4.248 or later and `git` on your PATH (and on your servers, for projects there; see
+[Projects on a server](#projects-on-a-server-ssh)).
 
 ## What you can do
 
@@ -133,6 +135,38 @@ the status bar says how many need you, and opens this page. (Idea from
 
 ![Tag several repos at once: each repo's newest tag and the next version, filled in](assets/screenshots/tag-many.png)
 
+### Projects on a server (SSH)
+*New in 0.9.0.* Projects on your servers are listed in the repository menu next to the local ones,
+marked with the server (`my-app · office-server`), without opening each one in Orca first. Everything
+works there: the graph, commits, conflicts, rebase, worktrees, merge requests.
+
+![A repository on an SSH server: its name and server in the header, branches, remotes and the full graph](assets/screenshots/ssh-server-graph.png)
+
+- **Every SSH host you set up in Orca** (Settings → SSH) is a server automatically.
+- **Servers…** in the repository menu lists them with what was found, and adds any other server by its
+  `~/.ssh/config` name or `user@host`. Each one is searched for Git repositories in your home folder,
+  4 levels deep (dependency and hidden folders skipped); change the folders, search again or hide a
+  server there.
+
+![Add a server: an SSH host from ~/.ssh/config (suggested as you type) and the folders to search](assets/screenshots/ssh-add-server.png)
+
+Orca's plugins run on your computer, so Git Control connects with your own `ssh` (one shared
+connection per server). When Orca shows a server by its address (`172.26.166.220`), the `~/.ssh/config`
+alias that points to it is used, with its user and key, and the server is shown by that alias. It must log in without a password prompt;
+check in a terminal on your computer:
+
+```sh
+ssh -o BatchMode=yes <host> 'git --version'
+```
+
+If it asks for a password, add a key (`ssh-copy-id <host>`) or an `IdentityFile` in `~/.ssh/config`;
+the Servers page shows why a server cannot be reached. **Settings → Plugins → Git Control → SSH hosts**
+maps a server name to another ssh destination (`office-server = frank@10.0.0.5`) when needed, and
+**Open path…** takes a folder on a server directly: `ssh://<host>/home/me/my-app`.
+
+`gh`, `glab` and the AI agents still run on your computer; Git's saved login on the server is used for
+GitHub and GitLab when it has one. Hosts paired as a remote Orca server run their own plugins instead.
+
 ### Work by keyboard
 **Ctrl+.** opens every command by name (fetch, pull, push, stash, new branch, any tab). In the graph,
 ↑ ↓ (or j k) move, Enter opens, / searches and Esc closes. **Ctrl+Z** undoes the last action.
@@ -150,7 +184,8 @@ AI features use the Claude Code or Codex CLI you have installed (Settings → Pl
 
 ## Privacy
 
-Git Control runs `git`, and `gh` / `glab` when present, on your machine. It talks only to your own
+Git Control runs `git`, and `gh` / `glab` when present, on your machine (and `git` on your SSH hosts,
+over your own ssh). It talks only to your own
 GitHub or GitLab hosts, with the login Git already uses; the token is never shown, logged or sent
 anywhere else.
 
@@ -180,6 +215,7 @@ node github-ratelimit.mjs                         # GitHub searches shared, paus
 node pipelines-perf.mjs --check                   # Pipelines tab load time against a slow fake GitLab
 node tag-many.mjs                                 # tag several repos: newest tag, next version, already tagged
 node ai-review-local.mjs                          # Review with AI before a merge request or a commit
+node remote-ops.mjs                               # a repository on an SSH host, through a stand-in ssh
 node screenshots.mjs <plugin folder> <out folder> # the screenshots above, on a made-up project
 node promo.mjs <plugin folder>                    # marketplace posters from assets/screenshots → assets/promo
 ```
@@ -187,6 +223,7 @@ node promo.mjs <plugin folder>                    # marketplace posters from ass
 ```
 orca-plugin.json   manifest (trusted-worker: the worker runs git)
 worker/main.mjs    git, GitHub and GitLab operations, exposed to the panel
+worker/hosts.mjs   where git runs: this machine, or an SSH host (ssh://host/path locators)
 panel/             tab.html (editor tab), index.html (sidebar panel), style.css, app.js
 tools/build.mjs    packs each page into one self-contained file
 ```
