@@ -27,7 +27,9 @@ let browser = null
 try {
   // ---------- a realistic little project ----------
   const origin = path.join(root, 'origin.git')
-  const repo = path.join(root, 'acme-web')
+  const code = path.join(root, 'code') // the folder the repos live in (Repos overview shows …\code\name)
+  mkdirSync(code)
+  const repo = path.join(code, 'acme-web')
   execFileSync('git', ['init', '-q', '--bare', '-b', 'main', origin])
   execFileSync('git', ['clone', '-q', origin, repo])
   const now = Math.floor(Date.now() / 1000)
@@ -205,6 +207,61 @@ try {
   await new Promise((r) => server.listen(0, '127.0.0.1', r))
   process.env.GITX_API_BASE = `http://127.0.0.1:${server.address().port}/api/v4`
 
+  // ---------- more repositories beside it (Repos overview) ----------
+  const sib = (name, branch = 'main') => {
+    const bare = path.join(root, `${name}-origin.git`)
+    const dir = path.join(code, name)
+    execFileSync('git', ['init', '-q', '--bare', '-b', 'main', bare])
+    execFileSync('git', ['clone', '-q', bare, dir])
+    const run = (...a) => execFileSync('git', a, { cwd: dir, encoding: 'utf8' }).trim()
+    const put = (f, t) => (mkdirSync(path.dirname(path.join(dir, f)), { recursive: true }), writeFileSync(path.join(dir, f), t))
+    put('README.md', `# ${name}\n`)
+    run('add', '.')
+    run('commit', '-qm', 'Initial commit')
+    run('push', '-qu', 'origin', 'main')
+    if (branch !== 'main') {
+      run('switch', '-qc', branch)
+      put('src/index.ts', 'export {}\n')
+      run('add', '.')
+      run('commit', '-qm', `Start ${branch}`)
+      run('push', '-qu', 'origin', branch)
+    }
+    return { dir, bare, run, put }
+  }
+  const theirs = (repoInfo, branch, n) => {
+    const other = path.join(root, path.basename(repoInfo.dir) + '-other')
+    execFileSync('git', ['clone', '-q', '-b', branch, repoInfo.bare, other])
+    for (let i = 0; i < n; i++) {
+      writeFileSync(path.join(other, `change-${i}.md`), `change ${i}\n`)
+      execFileSync('git', ['add', '.'], { cwd: other })
+      execFileSync('git', ['commit', '-qm', `Teammate change ${i}`], { cwd: other })
+    }
+    execFileSync('git', ['push', '-q'], { cwd: other })
+    rmSync(other, { recursive: true, force: true })
+    repoInfo.run('fetch', '-q')
+  }
+  const api = sib('acme-api', 'feature/checkout-v2')
+  theirs(api, 'feature/checkout-v2', 3) // behind by 3
+  const admin = sib('acme-admin')
+  admin.put('src/orders/table.tsx', 'export const Table = () => null\n')
+  admin.run('add', '.')
+  admin.run('commit', '-qm', 'Orders table')
+  admin.put('src/orders/filters.tsx', 'export const Filters = () => null\n')
+  admin.put('README.md', '# acme-admin\n\nOrders and refunds.\n') // 2 changes, 1 to push
+  const mobile = sib('acme-mobile', 'release/2.4') // clean
+  const ui = sib('shared-ui')
+  ui.run('switch', '-qc', 'theme-tokens')
+  ui.put('tokens.css', ':root { --brand: teal; }\n')
+  ui.run('add', '.')
+  ui.run('commit', '-qm', 'Teal brand')
+  ui.run('switch', '-q', 'main')
+  ui.put('tokens.css', ':root { --brand: indigo; }\n')
+  ui.run('add', '.')
+  ui.run('commit', '-qm', 'Indigo brand')
+  try { ui.run('merge', 'theme-tokens') } catch {} // a merge with a conflict, still open
+  sib('acme-docs') // clean
+  void mobile
+
   // ---------- worker + browser ----------
   const { default: activate } = await import(pathToFileURL(path.join(PLUGIN, 'worker/main.mjs')).href)
   const handlers = {}
@@ -214,7 +271,14 @@ try {
     panels: { handle: (n, f) => (handlers[n] = f), post() {} },
     commands: { register: () => ({ dispose() {} }) },
     events: { on: () => ({ dispose() {} }) },
-    host: { has: (m) => m === 'settings.get', call: async () => ({ settings: { aiAgent: 'claude' } }) }
+    host: {
+      has: (m) => m === 'settings.get' || m === 'workspace.list',
+      // acme-web, acme-api and acme-admin are open in Orca; the others are found by scanning the folder
+      call: async (m) =>
+        m === 'workspace.list'
+          ? { workspaces: ['acme-web', 'acme-api', 'acme-admin'].map((n) => ({ name: n, path: path.join(code, n), kind: 'folder', hostId: 'local' })) }
+          : { settings: { aiAgent: 'claude', scanFolders: code } }
+    }
   })
   browser = await puppeteer.launch({ executablePath: CHROME, headless: true })
   const page = await browser.newPage()
@@ -332,6 +396,14 @@ try {
   await until(() => page.$$eval('.pipe-list .pipe-row', (r) => r.length >= 6), 'pipelines tab')
   await sleep(600)
   await shot('pipelines')
+
+  // 7. Repos overview: every repository at once
+  await page.click('#repoBtn')
+  await clickText('.menu button', 'All repos overview')
+  await until(() => page.$$eval('.rov-row', (r) => r.length >= 6), 'repos overview')
+  await until(() => page.$('.rov-row .ci').then(Boolean), 'CI on acme-web', 20000).catch(() => {})
+  await sleep(600)
+  await shot('repos-overview')
 } catch (e) {
   console.log('FAILED', e.stack)
   process.exitCode = 1

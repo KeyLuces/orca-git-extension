@@ -624,6 +624,8 @@ async function repoMenu(anchor) {
   if (!state.workspaces.length) state.workspaces = (await request('repo.resolve', {}).catch(() => null))?.workspaces || []
   const ws = state.workspaces.filter((w) => w.kind === 'worktree' || w.kind === 'folder')
   menu(anchor, [
+    { label: 'All repos overview', icon: 'layers', onClick: () => reposOverview() },
+    '-',
     { header: 'Repository' },
     {
       label: 'Follow focused workspace',
@@ -671,6 +673,298 @@ async function repoMenu(anchor) {
     }
   ])
 }
+/* =========================================================================
+   Repos overview: every local repository at once
+   ========================================================================= */
+const ROV_FILTERS = [
+  ['attention', 'need attention', (r) => rovScore(r) >= 3],
+  ['changes', 'with changes', (r) => r.changes > 0],
+  ['behind', 'behind', (r) => r.behind > 0],
+  ['ahead', 'to push', (r) => r.ahead > 0]
+]
+/** Higher first: something to fix, then something to do, then clean ones. */
+function rovScore(r) {
+  if (r.conflicts || r.state) return 5
+  if (r.error) return 4
+  if (r.ci === 'failed') return 3
+  return r.behind || r.changes || r.ahead ? 2 : 0
+}
+/** A long folder path as its last two parts ("…\work\api"); the full one is in the tooltip. */
+function shortPath(p) {
+  const parts = String(p).split(/[\\/]/).filter(Boolean)
+  const sep = String(p).includes('\\') ? '\\' : '/'
+  return parts.length > 2 ? `…${sep}${parts.slice(-2).join(sep)}` : p
+}
+/** Merge requests waiting for my review in this repository (from the last Review & MR list). */
+function rovReviews(r) {
+  const d = state.reviews
+  if (!d?.items) return 0
+  // by the remote's project path (GitLab's "group/web" for a folder named acme-web), else by name
+  const same = (it) => (r.remote ? String(it.repo).toLowerCase() === r.remote.toLowerCase() && (!r.remoteHost || it.host === r.remoteHost) : String(it.repo).split('/').pop().toLowerCase() === String(r.name).toLowerCase())
+  return d.items.filter((it) => needsMe(it) && same(it)).length
+}
+
+async function reposOverview() {
+  const body = h('div', { class: 'rov' })
+  const busy = new Map() // path → what runs there now
+  let data = null
+  let filter = ''
+  let text = ''
+  const fetchAllBtn = h('button', { class: 'btn sm rov-fetch-all', title: 'Fetch every repository (4 at a time)', onClick: () => fetchAll() }, icon('fetch', 12), 'Fetch all')
+  const pullAllBtn = h('button', { class: 'btn sm rov-pull-all', title: 'Pull every repository where it is safe', onClick: () => pullAll() }, icon('pull', 12), 'Pull all')
+  openSheet('Repos overview', body, [
+    fetchAllBtn,
+    pullAllBtn,
+    h('button', { class: 'btn sm rov-scan', title: 'Also list the repositories inside these folders', onClick: () => scanFolders() }, icon('folder', 12), 'Scan folders…'),
+    iconBtn('refresh', 'Refresh', () => load())
+  ])
+  const sheet = state.sheets[state.sheets.length - 1]
+  sheet.el.classList.add('wide-sheet', 'rov-sheet')
+  placeSheet(sheet.el)
+
+  const summary = h('div', { class: 'rov-summary' })
+  const list = h('div', { class: 'rov-list' })
+
+  async function load() {
+    if (!data) clear(body).append(h('div', { class: 'inline-skeleton', style: { margin: '16px' } }, h('span'), h('span'), h('span')))
+    try {
+      const prevCi = new Map((data?.repos || []).map((r) => [r.path, [r.ci, r.ciUrl]]))
+      data = await request('repos.overview', {}, 120000)
+      for (const r of data.repos) if (prevCi.has(r.path)) [r.ci, r.ciUrl] = prevCi.get(r.path)
+    } catch (e) {
+      if (sheet.el.isConnected) clear(body).append(h('div', { class: 'empty' }, icon('alert', 28), h('div', null, e.message)))
+      return
+    }
+    if (!sheet.el.isConnected) return
+    draw()
+    loadCi()
+  }
+  // CI comes after the rows (it asks GitHub / GitLab), 3 at a time
+  async function loadCi() {
+    const todo = data.repos.filter((r) => !r.error && r.branch)
+    let i = 0
+    await Promise.all(
+      [0, 1, 2].map(async () => {
+        while (i < todo.length && sheet.el.isConnected) {
+          const r = todo[i++]
+          const c = await request('git', { op: 'ciStatus', repo: r.path, args: {} }, 40000).catch(() => null)
+          r.ci = c?.state || null
+          r.ciUrl = c?.url || null
+          paintRow(r)
+        }
+      })
+    )
+    if (sheet.el.isConnected) drawSummary()
+  }
+  async function refreshOne(r) {
+    const fresh = await request('repos.overview', {}, 120000).catch(() => null)
+    const n = fresh?.repos.find((x) => x.path === r.path)
+    if (n) Object.assign(r, n, { ci: r.ci, ciUrl: r.ciUrl })
+  }
+
+  function drawSummary() {
+    const rs = data.repos
+    const branches = new Set(rs.filter((r) => r.branch).map((r) => r.branch))
+    const search = h('input', { class: 'rov-search', type: 'search', placeholder: 'Filter by name or branch…', value: text })
+    search.addEventListener('input', () => ((text = search.value), drawList()))
+    append(clear(summary), [
+      h('button', { class: `rov-chip ${!filter ? 'on' : ''}`, onClick: () => ((filter = ''), draw()) }, h('b', null, String(rs.length)), ` repo${rs.length === 1 ? '' : 's'}`),
+      ...ROV_FILTERS.map(([k, label, fn]) => {
+        const n = rs.filter(fn).length
+        return n > 0 ? h('button', { class: `rov-chip rov-${k} ${filter === k ? 'on' : ''}`, title: `Show only these ${n}`, onClick: () => ((filter = filter === k ? '' : k), draw()) }, h('b', null, String(n)), ` ${label}`) : null
+      }),
+      branches.size > 1 ? h('span', { class: 'rov-chip rov-info', title: [...branches].join('\n') }, 'on ', h('b', null, String(branches.size)), ' branches') : null,
+      search
+    ].filter(Boolean))
+  }
+  function draw() {
+    clear(body)
+    drawSummary()
+    body.append(summary, list)
+    body.append(
+      data.roots?.length
+        ? h('div', { class: 'rov-foot dim', title: data.roots.join('\n') }, icon('folder', 12), `Also listing the repos inside ${data.roots.map(shortPath).join('; ')}`, ' · ', h('button', { class: 'linkish', onClick: () => scanFolders() }, 'Change'))
+        : h('div', { class: 'rov-foot dim' }, 'Lists the repositories opened in Orca. ', h('button', { class: 'linkish', onClick: () => scanFolders() }, 'Scan a folder'), ' to add the repos inside it too.')
+    )
+    drawList()
+  }
+  function drawList() {
+    const fn = ROV_FILTERS.find(([k]) => k === filter)?.[2] || (() => true)
+    const words = text.toLowerCase().split(/\s+/).filter(Boolean)
+    const rows = data.repos
+      .filter(fn)
+      .filter((r) => words.every((w) => `${r.name} ${r.branch || ''} ${r.path}`.toLowerCase().includes(w)))
+      .sort((a, b) => rovScore(b) - rovScore(a) || a.name.localeCompare(b.name))
+    clear(list)
+    if (!rows.length) list.append(h('div', { class: 'empty' }, icon('check', 24), h('div', null, data.repos.length ? 'No repository matches' : 'No repositories yet: open some in Orca, or scan a folder')))
+    for (const r of rows) {
+      const row = h('div', { class: 'rov-row', 'data-path': r.path })
+      fillRow(row, r)
+      list.append(row)
+    }
+  }
+  function paintRow(r) {
+    const row = [...list.children].find((x) => x.dataset?.path === r.path)
+    if (row) fillRow(row, r)
+  }
+  function fillRow(row, r) {
+    const doing = busy.get(r.path)
+    const here = state.repo && sameRepoPath(state.repo, r.toplevel || r.path)
+    const tone = r.error || r.conflicts || r.state || r.ci === 'failed' ? 'bad' : r.behind || r.changes || r.ahead ? 'warn' : 'ok'
+    const reviews = rovReviews(r)
+    row.classList.toggle('busy', !!doing)
+    clear(row).append(
+      h('span', { class: `rov-dot ${tone}`, title: tone === 'ok' ? 'Clean and up to date' : tone === 'bad' ? 'Needs fixing' : 'Something to do' }),
+      h(
+        'div',
+        { class: 'rov-name', title: r.path },
+        h(
+          'div',
+          { class: 'rov-title' },
+          h('span', { class: 'ellipsis' }, r.name),
+          here && h('span', { class: 'pill' }, 'open here'),
+          r.source === 'scan' && h('span', { class: 'pill', title: 'Found by scanning a folder; not opened in Orca' }, 'scanned')
+        ),
+        h('div', { class: 'rov-path dim mono ellipsis' }, shortPath(r.path))
+      ),
+      r.error
+        ? h('span', { class: 'rov-err', title: r.error }, icon('alert', 12), h('span', { class: 'ellipsis' }, r.error))
+        : h(
+            'div',
+            { class: 'rov-cells' },
+            h('button', { class: 'rov-branch', title: 'Switch branch', disabled: !!doing, onClick: (e) => switchMenu(e.currentTarget, r) }, icon('branch', 11), h('span', { class: 'ellipsis' }, r.branch || `detached ${r.oid}`), icon('down', 10)),
+            h(
+              'span',
+              { class: 'rov-sync', title: r.upstream ? `Compared with ${r.upstream}` : 'This branch has no upstream' },
+              r.ahead ? h('span', { class: 'up' }, `↑${r.ahead}`) : null,
+              r.behind ? h('span', { class: 'down' }, `↓${r.behind}`) : null,
+              !r.ahead && !r.behind ? h('span', { class: 'dim' }, r.upstream ? 'up to date' : 'no upstream') : null
+            ),
+            h(
+              'span',
+              { class: `rov-changes ${r.changes ? 'has' : ''}` },
+              r.conflicts ? h('span', { class: 'bad' }, `${r.conflicts} conflict${r.conflicts > 1 ? 's' : ''}`) : r.changes ? `${r.changes} changed` : h('span', { class: 'dim' }, 'clean'),
+              r.state ? h('span', { class: 'pill rv-conflict' }, `${r.state}`) : null
+            ),
+            h('span', { class: 'rov-ci' }, r.ci ? h('button', { class: `ci ci-${r.ci}`, title: r.ciUrl ? 'Open the pipeline' : `CI ${r.ci}`, onClick: () => r.ciUrl && openLink(r.ciUrl) }, ciIcon(r.ci), r.ci) : null),
+            h('span', { class: 'rov-rv' }, reviews ? h('span', { class: 'pill rv-new', title: 'Merge requests waiting for your review' }, `${reviews} review${reviews > 1 ? 's' : ''}`) : null)
+          ),
+      h(
+        'div',
+        { class: 'rov-actions' },
+        doing
+          ? h('span', { class: 'rov-doing dim' }, h('span', { class: 'spinner sm' }), doing)
+          : [
+              !r.error && iconBtn('fetch', `Fetch ${r.name}`, () => act(r, 'fetch'), { class: 'icon-btn rov-fetch' }),
+              !r.error && r.behind > 0 ? h('button', { class: 'btn sm rov-pull', title: `Pull ${r.behind} commit${r.behind > 1 ? 's' : ''} into ${r.branch}`, onClick: () => act(r, 'pull') }, icon('pull', 12), 'Pull') : null,
+              h('button', { class: 'btn sm primary rov-open', title: `Open ${r.name} in Git Control`, onClick: () => openRepo(r) }, 'Open')
+            ]
+      )
+    )
+  }
+  async function act(r, op, args = {}, quiet = false) {
+    busy.set(r.path, { fetch: 'Fetching…', pull: 'Pulling…', checkout: 'Switching…' }[op])
+    paintRow(r)
+    let err = null
+    try {
+      await request('git', { op, repo: r.path, args: op === 'pull' ? { ffOnly: true, ...args } : args }, 180000)
+    } catch (e) {
+      err = e.message
+    }
+    busy.delete(r.path)
+    await refreshOne(r)
+    if (!sheet.el.isConnected) return err
+    paintRow(r)
+    drawSummary()
+    if (!quiet) err ? toast(`${r.name}: ${err}`, 'error') : toast(`${r.name}: ${{ fetch: 'fetched', pull: 'pulled', checkout: `now on ${r.branch}` }[op]}`)
+    return err
+  }
+  async function runMany(rs, op) {
+    let i = 0
+    const errs = []
+    await Promise.all(
+      [0, 1, 2, 3].map(async () => {
+        while (i < rs.length) {
+          const r = rs[i++]
+          const e = await act(r, op, {}, true)
+          if (e) errs.push(`${r.name}: ${e}`)
+        }
+      })
+    )
+    return errs
+  }
+  const plural = (n) => `${n} repositor${n === 1 ? 'y' : 'ies'}`
+  async function fetchAll() {
+    const rs = data.repos.filter((r) => !r.error && !busy.has(r.path))
+    fetchAllBtn.disabled = true
+    const errs = await runMany(rs, 'fetch')
+    fetchAllBtn.disabled = false
+    errs.length ? toast(`Fetched ${rs.length - errs.length} of ${rs.length}\n${errs.join('\n')}`, 'error') : toast(`Fetched ${plural(rs.length)}`)
+  }
+  async function pullAll() {
+    const behind = data.repos.filter((r) => !r.error && r.behind > 0)
+    if (!behind.length) return toast('Nothing to pull: no repository is behind (Fetch all first to check)')
+    const why = (r) =>
+      r.conflicts || r.state ? 'a merge or rebase is in progress' : r.changes ? `${r.changes} uncommitted change${r.changes > 1 ? 's' : ''}` : r.ahead ? `gone its own way: ${r.ahead} local commit${r.ahead > 1 ? 's' : ''} not pushed` : !r.branch ? 'not on a branch' : ''
+    const safe = behind.filter((r) => !why(r))
+    const skip = behind.filter((r) => why(r))
+    const msg = [
+      safe.length ? `Pull, fast-forward only:\n${safe.map((r) => `  • ${r.name} (${r.branch}) ↓${r.behind}`).join('\n')}` : 'No repository can be pulled safely.',
+      skip.length ? `\nSkipped (open them to pull by hand):\n${skip.map((r) => `  • ${r.name}: ${why(r)}`).join('\n')}` : ''
+    ].join('\n')
+    if (!safe.length) return confirmBox('Pull all', msg, 'OK')
+    if (!(await confirmBox(`Pull ${plural(safe.length)}?`, msg, 'Pull'))) return
+    pullAllBtn.disabled = true
+    const errs = await runMany(safe, 'pull')
+    pullAllBtn.disabled = false
+    errs.length ? toast(`Pulled ${safe.length - errs.length} of ${safe.length}\n${errs.join('\n')}`, 'error') : toast(`Pulled ${plural(safe.length)}`)
+  }
+  async function switchMenu(anchor, r) {
+    let refs
+    try {
+      refs = await request('git', { op: 'refs', repo: r.path, args: {} })
+    } catch (e) {
+      return toast(e.message, 'error')
+    }
+    const locals = refs.local.filter((b) => !b.current).slice(0, 30)
+    menu(
+      anchor,
+      [
+        { header: `Switch ${r.name} to` },
+        ...locals.map((b) => ({ label: b.name, icon: 'branch', hint: b.behind ? `↓${b.behind}` : '', onClick: () => doSwitch(r, b.name) })),
+        !locals.length && { label: 'No other local branch', disabled: true },
+        '-',
+        { label: 'Open in Git Control (remote branches, new branch)', icon: 'open', onClick: () => openRepo(r) }
+      ].filter(Boolean)
+    )
+  }
+  async function doSwitch(r, name) {
+    if (r.changes && !(await confirmBox(`Switch ${r.name} to ${name}?`, `${r.name} has ${r.changes} uncommitted change${r.changes > 1 ? 's' : ''}. Git keeps them when they do not clash with ${name}; otherwise it stops and changes nothing.`, 'Switch'))) return
+    act(r, 'checkout', { ref: name })
+  }
+  function openRepo(r) {
+    while (state.sheets.length) closeSheet()
+    pinRepo(r.toplevel || r.path)
+  }
+  async function scanFolders() {
+    const res = await dialog({
+      title: 'Scan folders for repos',
+      message: 'Repos overview also lists the Git repositories inside these folders (up to two levels deep), for repos not opened in Orca. Separate folders with ;',
+      fields: [{ key: 'folders', label: 'Folders', value: (data?.roots || []).join('; '), placeholder: 'C:\\work\\project' }],
+      ok: 'Save',
+      stack: true
+    })
+    if (!res) return
+    try {
+      await request('repos.setScan', { folders: res.folders || '' })
+    } catch (e) {
+      return toast(e.message, 'error')
+    }
+    load()
+  }
+  load()
+}
+
 function pinRepo(p) {
   state.pinned = p
   if (!IN_TAB) store.set('pinnedRepo', p)
@@ -7305,6 +7599,7 @@ function commandPalette() {
   const st = state.status || {}
   const cmds = [
     ['Fetch all', 'fetch', () => run('fetch', {}, { success: 'Fetched' })],
+    ['All repos overview', 'layers', () => reposOverview()],
     [st.behind ? `Pull (${st.behind} waiting)` : 'Pull', 'pull', () => run('pull', {}, { success: 'Pulled' })],
     ['Pull with rebase', 'pull', () => run('pull', { rebase: true }, { success: 'Pulled with rebase' })],
     [st.ahead ? `Push (${st.ahead} waiting)` : 'Push', 'push', () => run('push', {}, { success: 'Pushed' })],

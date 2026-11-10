@@ -93,6 +93,17 @@ updates by itself while runs go on, and a click opens the run's jobs and logs.
 
 ![The Pipelines tab with every branch's runs, their stages and who started them](assets/screenshots/pipelines.png)
 
+### All your repos on one page
+Working in several repos at once? **All repos overview** (top of the repository picker, or **Ctrl+.**) lists each
+one with its branch, how far it is ahead or behind, its changes, CI and the reviews waiting for you. The ones that
+need you come first, and the summary on top (*3 with changes*, *1 behind*, *on 4 branches*) filters the list.
+**Fetch all** fetches every repo; **Pull all** pulls only where it is safe (no local changes, nothing unpushed) and
+says why it skipped the rest. Each row can fetch, pull, switch branch or open that repo. It lists the repos
+opened in Orca; **Scan folders…** adds the repos inside any folder too. (Idea from
+[Multi-Repo Git Overview](https://github.com/gino8080/orca-git-overview) by gino8080.)
+
+![Repos overview: every repository with its branch, ahead/behind, changes, CI and reviews](assets/screenshots/repos-overview.png)
+
 ### Work by keyboard
 **Ctrl+.** opens every command by name (fetch, pull, push, stash, new branch, any tab). In the graph,
 ↑ ↓ (or j k) move, Enter opens, / searches and Esc closes. **Ctrl+Z** undoes the last action.

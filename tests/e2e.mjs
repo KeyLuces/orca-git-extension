@@ -1329,6 +1329,74 @@ await step('identity profiles: save once, use for this repo or set global with o
   g('config', '--local', '--unset', 'user.email'); g('config', '--local', '--unset', 'user.name')
 })
 
+await step('Repos overview: every repo at once, filters, Fetch all, Pull all only where safe, open one', async () => {
+  // three repos in a folder Orca does not know: api (clean, then behind its remote), web (changes), docs (clean)
+  const multi = path.join(root, 'multi')
+  const run = (cwd, ...a) => execFileSync('git', a, { cwd, encoding: 'utf8' }).trim()
+  mkdirSync(multi, { recursive: true })
+  const bare = path.join(root, 'api-origin.git')
+  run(root, 'init', '-q', '--bare', '-b', 'main', bare)
+  for (const name of ['api', 'web', 'docs']) {
+    const d = path.join(multi, name)
+    mkdirSync(d)
+    run(d, 'init', '-q', '-b', 'main')
+    writeFileSync(path.join(d, 'readme.md'), name + '\n')
+    run(d, 'add', '.')
+    run(d, 'commit', '-qm', 'Start ' + name)
+  }
+  run(path.join(multi, 'api'), 'remote', 'add', 'origin', bare)
+  run(path.join(multi, 'api'), 'push', '-qu', 'origin', 'main')
+  // someone else pushes to api
+  const other = path.join(root, 'api-other')
+  run(root, 'clone', '-q', bare, other)
+  writeFileSync(path.join(other, 'b.txt'), 'b\n')
+  run(other, 'add', '.')
+  run(other, 'commit', '-qm', 'Theirs')
+  run(other, 'push', '-q')
+  writeFileSync(path.join(multi, 'web', 'readme.md'), 'web changed\n')
+  settings.scanFolders = multi
+
+  await clickSel('#repoBtn')
+  await page.evaluate(() => [...document.querySelectorAll('.menu .menu-item, .menu button, .menu [role=menuitem]')].find((x) => x.textContent.includes('All repos overview')).click())
+  await until(() => page.$$eval('.rov-row', (r) => r.length).then((n) => n >= 3), 'a row per repo', 30000)
+  const names = await page.$$eval('.rov-row .rov-title', (r) => r.map((x) => x.textContent))
+  for (const n of ['api', 'web', 'docs']) if (!names.some((x) => x.startsWith(n))) throw new Error('missing ' + n + ' in ' + names)
+  // web has a change: it is counted and listed above the clean ones
+  const web = await page.$eval('.rov-row:has(.rov-path[title], .rov-title)', () => true)
+  if (!web) throw new Error('no rows')
+  const chip = await page.$eval('.rov-summary', (s) => s.textContent)
+  if (!/with changes/.test(chip)) throw new Error('summary: ' + chip)
+  await page.evaluate(() => [...document.querySelectorAll('.rov-chip')].find((c) => c.textContent.includes('with changes')).click())
+  const only = await page.$$eval('.rov-row .rov-title', (r) => r.map((x) => x.textContent))
+  if (!only.every((x) => !x.startsWith('docs')) || !only.some((x) => x.startsWith('web'))) throw new Error('filter: ' + only)
+  await page.evaluate(() => [...document.querySelectorAll('.rov-chip')].find((c) => /repos?$/.test(c.textContent.trim())).click())
+  // Fetch all finds that api is behind
+  await clickSel('.rov-fetch-all')
+  await until(() => page.$$eval('.rov-row', (rs) => rs.some((r) => r.textContent.includes('api') && r.querySelector('.rov-sync .down')?.textContent === '↓1')), 'api shows ↓1 after Fetch all', 30000)
+  const stray = await page.$eval('.rov', (r) => /\b(null|false|undefined)\b/.test(r.textContent))
+  if (stray) throw new Error('stray null/false text in the overview')
+  await shot('repos-overview')
+  await phoneCheck('repos-overview')
+  // Pull all: api is pulled (fast-forward); web is not behind so nothing else
+  await clickSel('.rov-pull-all')
+  await until(() => page.$eval('.overlay .dialog', (d) => d.textContent.includes('api')).catch(() => false), 'pull all lists api')
+  await page.evaluate(() => [...document.querySelectorAll('.overlay .dialog .btn')].find((b) => b.textContent.trim() === 'Pull').click())
+  await until(() => run(path.join(multi, 'api'), 'rev-parse', 'HEAD') === run(other, 'rev-parse', 'HEAD'), 'api pulled', 30000)
+  await until(() => page.$$eval('.rov-row', (rs) => rs.some((r) => r.textContent.includes('api') && !r.querySelector('.rov-sync .down'))), 'api row up to date', 20000)
+  // Open takes you to that repo
+  await page.evaluate(() => [...document.querySelectorAll('.rov-row')].find((r) => r.querySelector('.rov-title').textContent.startsWith('docs')).querySelector('.rov-open').click())
+  await until(() => page.$eval('#repoName', (n) => n.textContent === 'docs').catch(() => false), 'docs opened', 20000)
+  delete settings.scanFolders
+  // back to the test repo for the steps after
+  await page.evaluate(() => 0)
+  await clickSel('#repoBtn')
+  await page.evaluate(() => [...document.querySelectorAll('.menu .menu-item, .menu button, .menu [role=menuitem]')].find((x) => x.textContent.includes('Open path')).click())
+  await until(() => exists('.overlay .dialog input[type=text]'), 'path dialog')
+  await page.$eval('.overlay .dialog input[type=text]', (i, v) => { i.value = v; i.dispatchEvent(new Event('input', { bubbles: true })) }, REPO)
+  await page.evaluate(() => [...document.querySelectorAll('.overlay .dialog .btn')].find((b) => b.textContent.trim() === 'Open').click())
+  await until(() => page.$eval('#repoName', (n) => n.textContent === 'app').catch(() => false), 'back on app', 20000)
+})
+
 await step('no stray "false", "null" or "[object" text anywhere', async () => {
   const bad = await page.evaluate(() => {
     const out = []
@@ -1348,7 +1416,7 @@ await step('no page errors', async () => {
 })
 
 } catch (e) {
-  results.push({ name: 'setup', ok: false, ms: 0, error: e.message })
+  results.push({ name: 'setup', ok: false, ms: 0, error: e.message + ' @ ' + String(e.stack).split('\n').slice(1, 4).join(' | ') })
 } finally {
   // close Chrome and delete the throwaway repositories even when something throws outside step()
   await browser?.close().catch(() => {})

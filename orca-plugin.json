@@ -4,7 +4,7 @@
   "execution": "trusted-worker",
   "id": "git-control",
   "name": "Git Control",
-  "version": "0.8.12",
+  "version": "0.8.13",
   "description": "A Git client inside Orca, with AI: commit graph, commits, merges with a side-by-side conflict resolver, interactive rebase, stashes and worktrees, plus GitHub and GitLab merge requests (approve and merge) and every branch's pipelines, with your existing Git login. In a full tab and the right sidebar.",
   "license": "MIT",
   "author": {
@@ -38,9 +38,9 @@
       "caption": "Notified when a review is yours"
     },
     {
-      "path": "assets/promo/pipeline.png",
-      "alt": "A failed GitLab CI job log with its error lines highlighted",
-      "caption": "Step through a failed pipeline's errors"
+      "path": "assets/promo/repos-overview.png",
+      "alt": "Repos overview: six repositories in one list with branch, ahead and behind, changes, CI and reviews, the ones that need attention first",
+      "caption": "All your repos on one page"
     },
     {
       "path": "assets/promo/pipelines.png",
@@ -88,6 +88,13 @@
           "Claude Code",
           "Codex"
         ]
+      },
+      {
+        "key": "scanFolders",
+        "title": "Scan folders for repos",
+        "description": "Repos overview also lists the Git repositories inside these folders (two levels deep), for repos not opened in Orca. Separate folders with ;",
+        "type": "string",
+        "default": ""
       },
       {
         "key": "keepGraphOpen",

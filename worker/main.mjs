@@ -1788,6 +1788,75 @@ async function gitlabInbox(h, where, via, { page = 1, mergedOnly = false } = {})
   })))
 }
 
+/** Folders under each scan root (two levels deep) that hold a .git: repositories Orca does not list. */
+function scanForRepos(roots) {
+  const found = []
+  const skip = /^(node_modules|\.git|\.hg|vendor|dist|build|target|\.venv|venv|\.cache)$/i
+  const walk = (dir, depth) => {
+    if (found.length >= 200) return
+    let names
+    try {
+      names = readdirSync(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    if (names.some((n) => n.name === '.git')) return found.push(dir) // a repo: its own sub-folders are its business
+    if (depth >= 2) return
+    for (const n of names) if (n.isDirectory() && !skip.test(n.name) && !n.name.startsWith('.')) walk(path.join(dir, n.name), depth + 1)
+  }
+  for (const r of roots) if (r && existsSync(r)) walk(path.resolve(r), 0)
+  return found
+}
+
+/** Run fn over items, at most n at a time (many repos must not start many git processes at once). */
+async function pool(items, n, fn) {
+  const out = new Array(items.length)
+  let i = 0
+  await Promise.all(Array.from({ length: Math.min(n, items.length) }, async () => {
+    while (i < items.length) {
+      const k = i++
+      out[k] = await fn(items[k], k)
+    }
+  }))
+  return out
+}
+
+async function reposOverview(workspaces, scan) {
+  const rows = new Map()
+  const key = (p) => path.resolve(p).toLowerCase()
+  for (const w of workspaces)
+    if ((w.kind === 'worktree' || w.kind === 'folder' || !w.kind) && w.path) rows.set(key(w.path), { path: w.path, name: w.repoName || path.basename(w.path), workspace: w.name || '', main: w.main !== false, source: 'orca' })
+  const roots = String(scan || '').split(/[;\n]/).map((x) => x.trim()).filter(Boolean)
+  for (const p of scanForRepos(roots)) if (!rows.has(key(p))) rows.set(key(p), { path: p, name: path.basename(p), workspace: '', main: true, source: 'scan' })
+  const list = [...rows.values()]
+  await pool(list, 4, async (r) => {
+    try {
+      const st = await status(r.path, { untracked: 'normal' })
+      Object.assign(r, {
+        toplevel: st.toplevel,
+        branch: st.branch,
+        detached: !st.branch,
+        oid: (st.oid || '').slice(0, 7),
+        upstream: st.upstream,
+        ahead: st.ahead,
+        behind: st.behind,
+        changes: st.filesTotal ?? st.files.length,
+        conflicts: st.files.filter((f) => f.conflict).length,
+        state: st.state || null,
+        stashes: st.stashCount || 0
+      })
+      const where = await repoWhere(r.path)
+      if (where) Object.assign(r, { remote: where.path, remoteHost: where.host })
+    } catch (e) {
+      r.error = String(e.message || e).split('\n')[0].slice(0, 200)
+    }
+  })
+  // one row per folder git knows (two workspaces of the same folder are one repo)
+  const seen = new Set()
+  const out = list.filter((r) => !r.toplevel || (seen.has(key(r.toplevel)) ? false : seen.add(key(r.toplevel))))
+  return { repos: out, roots }
+}
+
 /** Where the open repository's main remote lives, or null. */
 async function repoWhere(repo) {
   if (!repo) return null
@@ -3406,6 +3475,21 @@ Click to open Git Control`
   orca.panels.handle('shell.open', async ({ url } = {}) => ({ opened: await openInBrowser(String(url || '')) }))
   orca.panels.handle('tab.open', async ({ repo } = {}) => openGraphTab(req(repo, 'repo')))
 
+  // Repos overview: every local repository at once (Orca's workspaces, plus the sub-folders of the
+  // folders in the "Scan folders" setting), each with its branch, ahead/behind and changes.
+  orca.panels.handle('repos.overview', async () => {
+    let scan = ''
+    try {
+      scan = (await orca.host.call('settings.get', {})).settings.scanFolders || ''
+    } catch {}
+    return reposOverview(await listWorkspaces(orca).catch(() => []), scan)
+  })
+
+  orca.panels.handle('repos.setScan', async ({ folders = '' } = {}) => {
+    const value = String(folders).split(/[;\n]/).map((x) => x.trim()).filter(Boolean).join('; ')
+    await orca.host.call('settings.set', { key: 'scanFolders', value })
+    return { folders: value }
+  })
   orca.panels.handle('repo.check', async ({ path: p } = {}) => {
     try {
       const top = (await git(req(p, 'path'), ['rev-parse', '--show-toplevel'])).trim()
