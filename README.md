@@ -114,6 +114,10 @@ Git Control runs `git`, and `gh` / `glab` when present, on your machine. It talk
 GitHub or GitLab hosts, with the login Git already uses; the token is never shown, logged or sent
 anywhere else.
 
+Merge request descriptions, comments and AI answers are treated as untrusted: their Markdown becomes
+text and plain `https` links, never markup of its own. The files Git Control writes in a working tree
+(`Git.control`, `.gitignore`) are never written through a symlink a repository commits.
+
 ## Development
 
 ```sh

@@ -7305,8 +7305,10 @@ function mdRender(src) {
       .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
       .replace(/(^|[\s(])\*([^*\s][^*]*)\*/g, '$1<em>$2</em>')
       .replace(/(^|[\s(])_([^_\s][^_]*)_(?=$|[\s).,:;!?])/g, '$1<em>$2</em>')
-      .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" data-ext="1">$1</a>')
-      .replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, '$1<a href="$2" data-ext="1">$2</a>')
+      // One pass for both link forms: a second pass matched the URL inside the href written by the first
+      // and broke out of its quotes, so a PR description could add an event handler to the link.
+      .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|(^|[\s(])(https?:\/\/[^\s<)]+)/g, (m, text, url, pre, bare) =>
+        url ? `<a href="${url}" data-ext="1">${text}</a>` : `${pre}<a href="${bare}" data-ext="1">${bare}</a>`)
   const lines = String(src || '').replace(/\r\n/g, '\n').split('\n')
   let html = ''
   let list = null
