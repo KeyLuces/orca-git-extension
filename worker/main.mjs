@@ -1,13 +1,10 @@
 // Git Control worker: runs git for the panel. No dependencies, plain Node.
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { constants, existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-
-// For files in the working tree: a cloned repository can commit them as symlinks, and writing through
-// one would overwrite a file outside the repository. O_NOFOLLOW makes the write fail instead.
-const NO_FOLLOW_WRITE = constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | (constants.O_NOFOLLOW ?? 0)
+import { collect as collectProc, commandLine, currentHost, fsx, hostKey, hpath, inRepo, isLocator, locator, onHost, parseLocator, remote, findRepos, setDestinationResolver, sshDestination, sshConfigAlias, sshConfigAliases, sshResolve, toLocator } from './hosts.mjs'
 
 // Orca starts workers with a minimal environment. git (global config, credential helpers) and
 // the Orca CLI need the usual user folders, so fill in whatever is missing.
@@ -52,7 +49,7 @@ async function git(cwd, args, opts = {}) {
 const CMD_LOG = []
 const QUIET_GIT = new Set(['diff-tree', 'status', 'log', 'rev-parse', 'for-each-ref', 'show', 'diff', 'config', 'rev-list', 'cat-file', 'ls-files', 'name-rev', 'worktree', 'stash', 'remote', 'reflog', 'branch', 'tag', 'merge-base', 'ls-tree', 'blame', 'check-ignore', 'credential', 'var', 'symbolic-ref', 'describe', 'shortlog', 'count-objects', 'merge-file', 'hash-object', 'ls-remote'])
 const SECRET = /(token|password|passwd|secret|authorization|private-token|extraheader)/i
-function logCmd(args, code, ms) {
+function logCmd(args, code, ms, host) {
   // our own plumbing (-c core.editor=true, the rebase plan's sequence editor) is not what the person ran
   const plain = []
   for (let i = 0; i < args.length; i++) {
@@ -61,57 +58,32 @@ function logCmd(args, code, ms) {
   }
   args = plain
   const shown = args.map((a) => (SECRET.test(a) ? a.replace(/=.*/, '=•••') : a))
-  CMD_LOG.push({ at: Date.now(), cmd: 'git ' + shown.map((a) => (/[\s"']/.test(a) ? JSON.stringify(a) : a)).join(' '), code, ms })
+  CMD_LOG.push({ at: Date.now(), host: host || undefined, cmd: 'git ' + shown.map((a) => (/[\s"']/.test(a) ? JSON.stringify(a) : a)).join(' '), code, ms })
   if (CMD_LOG.length > 150) CMD_LOG.splice(0, CMD_LOG.length - 150)
 }
 function gitOnce(cwd, args, { input, timeout = LOCAL_TIMEOUT, okCodes = [0], signal, env, raw } = {}) {
   const t0 = Date.now()
-  return new Promise((resolve, reject) => {
-    const child = spawn('git', args, {
-      cwd: cwd || undefined,
-      windowsHide: true,
-      env: {
-        ...BASE_ENV,
-        GIT_TERMINAL_PROMPT: '0', // never hang waiting for a password prompt
-        GIT_OPTIONAL_LOCKS: '0',
-        LC_ALL: 'C',
-        ...env
-      }
-    })
-    const out = []
-    const err = []
-    let size = 0
-    let killedFor = null // why we stopped it, for a clear message instead of "exit null"
-    const stop = (why) => {
-      killedFor ||= why
-      child.kill()
-    }
-    const timer = setTimeout(() => stop(`git ${args[0]} timed out after ${Math.round(timeout / 1000)} s`), timeout)
-    const onAbort = () => stop(`git ${args[0]} was cancelled`)
-    signal?.addEventListener('abort', onAbort)
-    child.stdout.on('data', (d) => {
-      size += d.length
-      if (size > 8 * 1024 * 1024) stop(`git ${args[0]} output too large`) // keep answers well under the 1 MiB-ish budget after trimming
-      else out.push(d)
-    })
-    child.stderr.on('data', (d) => err.push(d))
-    child.on('error', (e) =>
-      reject(new GitError(e.code === 'ENOENT' ? 'git was not found on PATH' : e.message))
-    )
-    child.on('close', (code) => {
-      clearTimeout(timer)
-      signal?.removeEventListener('abort', onAbort)
-      // everyday reads (status, log, refs…) would bury the commands people ran; keep the ones that change things
-      if (!QUIET_GIT.has(args[0])) logCmd(args, code, Date.now() - t0)
-      const stdout = raw ? Buffer.concat(out) : Buffer.concat(out).toString('utf8')
-      const stderr = Buffer.concat(err).toString('utf8').trim()
-      if (killedFor) reject(new GitError(killedFor))
-      else if (okCodes.includes(code)) resolve(stdout)
-      else reject(new GitError(stderr || stdout.trim() || `git ${args[0]} failed (exit ${code})`))
-    })
-    child.stdin.on('error', () => {}) // git may exit before reading its input
-    if (input != null) child.stdin.end(input)
-    else child.stdin.end()
+  const host = currentHost()
+  const gitEnv = {
+    GIT_TERMINAL_PROMPT: '0', // never hang waiting for a password prompt
+    GIT_OPTIONAL_LOCKS: '0',
+    LC_ALL: 'C',
+    ...env
+  }
+  const opts = { input, timeout, signal, maxBytes: 8 * 1024 * 1024, what: `git ${args[0]}` } // keep answers well under the 1 MiB-ish budget after trimming
+  // On an SSH host: the same git command line, run there in the repository's folder.
+  const run = host
+    ? remote(host, commandLine('git', args, { cwd, env: gitEnv }), opts)
+    : collectProc('git', args, { ...opts, cwd, env: { ...BASE_ENV, ...gitEnv } })
+  return run.then((r) => {
+    // everyday reads (status, log, refs…) would bury the commands people ran; keep the ones that change things
+    if (!QUIET_GIT.has(args[0])) logCmd(args, r.code, Date.now() - t0, host)
+    if (r.spawnError) throw new GitError(r.spawnError.code === 'ENOENT' ? 'git was not found on PATH' : r.spawnError.message)
+    if (r.killedFor) throw new GitError(r.killedFor)
+    if (host && r.code === 127 && !r.out.length) throw new GitError(`git was not found on ${host} (${r.err || 'command not found'})`)
+    if (okCodes.includes(r.code)) return raw ? r.out : r.out.toString('utf8')
+    const stdout = r.out.toString('utf8')
+    throw new GitError(r.err || stdout.trim() || `git ${args[0]} failed (exit ${r.code})`)
   })
 }
 
@@ -133,12 +105,12 @@ const trunc = (s, max = 400_000) =>
 // --git-dir and --show-toplevel never change for a folder: ask git once per repository.
 const repoPaths = new Map()
 async function paths(repo) {
-  const k = repo
+  const k = hostKey(repo)
   let p = repoPaths.get(k)
   if (!p) {
     p = git(repo, ['rev-parse', '--git-dir', '--show-toplevel']).then((out) => {
       const [d, top] = out.trim().split(/\r?\n/)
-      return { gitDir: path.resolve(repo, d), toplevel: top || repo }
+      return { gitDir: hpath().resolve(repo, d), toplevel: top || repo }
     })
     repoPaths.set(k, p)
     p.catch(() => repoPaths.delete(k))
@@ -154,39 +126,50 @@ async function gitDir(repo) {
  * "Current (main)" and "Incoming (feature-x)". Current is always what HEAD holds (git's "ours").
  */
 async function stateSides(repo, d, state, branch) {
-  const read = (f) => (existsSync(path.join(d, f)) ? readFileSync(path.join(d, f), 'utf8').trim() : '')
+  const P = hpath()
+  const read = async (f) => (await fsx.read(P.join(d, f), 'utf8').catch(() => '')).trim()
   const nameOf = async (sha) => (sha ? (await git(repo, ['name-rev', '--name-only', '--no-undefined', '--exclude=refs/stash', sha]).catch(() => '')).trim().replace(/^(remotes\/|tags\/)/, '').replace(/\^0$/, '') || sha.slice(0, 7) : '')
   const subject = async (sha) => (await git(repo, ['log', '-1', '--format=%s', sha]).catch(() => '')).trim()
   if (state === 'merge') {
-    const msg = read('MERGE_MSG').split('\n')[0]
+    const msg = (await read('MERGE_MSG')).split('\n')[0]
     const m = msg.match(/^Merge (?:remote-tracking )?(branch|tag|commit) '([^']+)'/)
-    return { current: branch || 'HEAD', incoming: m ? m[2] : await nameOf(read('MERGE_HEAD').split('\n')[0]), incomingKind: m ? m[1] : 'commit' }
+    return { current: branch || 'HEAD', incoming: m ? m[2] : await nameOf((await read('MERGE_HEAD')).split('\n')[0]), incomingKind: m ? m[1] : 'commit' }
   }
   if (state === 'rebase') {
-    const dir = existsSync(path.join(d, 'rebase-merge')) ? 'rebase-merge' : 'rebase-apply'
-    const head = read(`${dir}/head-name`).replace(/^refs\/heads\//, '')
-    const onto = read(`${dir}/onto`)
-    const stop = read(`${dir}/stopped-sha`) || read('REBASE_HEAD')
+    const dir = (await fsx.exists(P.join(d, 'rebase-merge'))) ? 'rebase-merge' : 'rebase-apply'
+    const [headName, onto, stopped, rebaseHead] = await Promise.all([read(`${dir}/head-name`), read(`${dir}/onto`), read(`${dir}/stopped-sha`), read('REBASE_HEAD')])
+    const head = headName.replace(/^refs\/heads\//, '')
+    const stop = stopped || rebaseHead
     return { current: await nameOf(onto), incoming: head ? `${head}${stop ? ` @ ${stop.slice(0, 7)}` : ''}` : stop.slice(0, 7), incomingKind: 'commit', incomingSubject: stop ? await subject(stop) : '' }
   }
-  const pick = read(state === 'cherry-pick' ? 'CHERRY_PICK_HEAD' : 'REVERT_HEAD')
+  const pick = await read(state === 'cherry-pick' ? 'CHERRY_PICK_HEAD' : 'REVERT_HEAD')
   return { current: branch || 'HEAD', incoming: pick.slice(0, 7), incomingKind: 'commit', incomingSubject: pick ? await subject(pick) : '' }
 }
 
-async function repoState(repo) {
-  const d = await gitDir(repo)
-  if (existsSync(path.join(d, 'rebase-merge')) || existsSync(path.join(d, 'rebase-apply')))
-    return 'rebase'
-  if (existsSync(path.join(d, 'MERGE_HEAD'))) return 'merge'
-  if (existsSync(path.join(d, 'CHERRY_PICK_HEAD'))) return 'cherry-pick'
-  if (existsSync(path.join(d, 'REVERT_HEAD'))) return 'revert'
+/** What is in the git folder that tells an operation is under way (one look, also on a remote host). */
+async function gitDirMarks(repo) {
+  const names = await fsx.readdir(await gitDir(repo)).catch(() => [])
+  return new Set(names)
+}
+function stateOf(marks) {
+  if (marks.has('rebase-merge') || marks.has('rebase-apply')) return 'rebase'
+  if (marks.has('MERGE_HEAD')) return 'merge'
+  if (marks.has('CHERRY_PICK_HEAD')) return 'cherry-pick'
+  if (marks.has('REVERT_HEAD')) return 'revert'
   return null
 }
+async function repoState(repo) {
+  return stateOf(await gitDirMarks(repo))
+}
+
+/** Whether Orca workspace `w` (its path a locator on a remote host) is the folder `p` of the current request. */
+const isWorkspaceOf = (w, p) => norm(w.path) === norm(toLocator(hpath().resolve(String(p))))
 
 /** A path for comparing; a relative one is taken against `base` (the repository). */
 const norm = (p, base) => {
-  const n = path.resolve(base || '', String(p)).replace(/\\/g, '/').replace(/\/+$/, '')
-  return process.platform === 'win32' ? n.toLowerCase() : n
+  if (isLocator(String(p))) return String(p).replace(/\/+$/, '') // a repository on another machine: compared as named
+  const n = hpath().resolve(base || '', String(p)).replace(/\\/g, '/').replace(/\/+$/, '')
+  return process.platform === 'win32' && !currentHost() ? n.toLowerCase() : n
 }
 
 let wsCache = null
@@ -200,24 +183,247 @@ async function listWorkspacesUncached(orca) {
   if (!orca.host.has('workspace.list')) return []
   try {
     const { workspaces } = await orca.host.call('workspace.list', {})
-    // local only: git runs on this machine
-    const local = workspaces.filter((w) => !w.hostId || w.hostId === 'local')
+    // This machine's workspaces, and those on SSH hosts (named by a locator; git runs there over ssh).
+    // A paired Orca server ("runtime:") runs its own plugins, so its workspaces are not listed here.
+    const list = []
+    for (const w of workspaces) {
+      const host = sshTargetOf(w.hostId)
+      if (host === undefined) continue
+      list.push({ ...w, path: host ? locator(host, w.path) : w.path, host: host || undefined, hostLabel: host ? (await serverName(host)).name : undefined })
+    }
     // Orca names a workspace after its branch; the repository's name comes from its shared git folder
     // (".../ecustom-web/.git" → "ecustom-web"), the same for every worktree of that repository.
     await Promise.all(
-      local.map(async (w) => {
-        const out = await gitOnce(w.path, ['rev-parse', '--path-format=absolute', '--git-common-dir', '--show-toplevel'], { timeout: 8000 }).catch(() => '')
-        const [common, top] = out.trim().split(/\r?\n/)
-        if (!common) return
-        const c = common.replace(/[\\/]+$/, '')
-        w.repoName = path.basename(/[\\/]\.git$/i.test(c) ? path.dirname(c) : c).replace(/\.git$/i, '')
-        w.main = !!top && path.resolve(path.dirname(c)).toLowerCase() === path.resolve(top).toLowerCase()
-      })
+      list.map((w) =>
+        inRepo(w.path, async (dir) => {
+          const out = await gitOnce(dir, ['rev-parse', '--path-format=absolute', '--git-common-dir', '--show-toplevel'], { timeout: 8000 }).catch(() => '')
+          const [common, top] = out.trim().split(/\r?\n/)
+          if (!common) return
+          const P = hpath()
+          const c = common.replace(/[\\/]+$/, '')
+          w.repoName = P.basename(/[\\/]\.git$/i.test(c) ? P.dirname(c) : c).replace(/\.git$/i, '')
+          w.main = !!top && P.resolve(P.dirname(c)).toLowerCase() === P.resolve(top).toLowerCase()
+        })
+      )
     )
-    return local
+    return list
   } catch {
     return []
   }
+}
+
+// ---------- SSH hosts ----------
+// Orca names a host "local", "ssh:<target id>" or "runtime:<environment id>". Git Control reaches an SSH
+// target with the system ssh, by the name Orca shows for it (normally the ~/.ssh/config alias it was
+// imported from); when that is an address, the ~/.ssh/config alias that logs in to it.
+
+/** The SSH target id of an Orca host id; null for this machine; undefined for a host Git Control cannot reach. */
+function sshTargetOf(hostId) {
+  if (!hostId || hostId === 'local') return null
+  if (!hostId.startsWith('ssh:')) return undefined
+  try {
+    return decodeURIComponent(hostId.slice(4)) || undefined
+  } catch {
+    return undefined
+  }
+}
+/** Orca's SSH targets, as `orca host list` shows them: [{ id, name }]. */
+function sshTargets() {
+  return onHost(null, () =>
+    memo('sshTargets', 60_000, async () => {
+      const r = await runProc(ORCA_BIN, ['host', 'list', '--json'], { timeout: 15_000 }).catch(() => null)
+      try {
+        const hosts = JSON.parse(r?.stdout || '').result?.hosts || []
+        return hosts.filter((h) => h.kind === 'ssh' && h.id).map((h) => ({ id: String(h.id), name: String(h.name || h.id) }))
+      } catch {
+        return []
+      }
+    })
+  )
+}
+async function hostLabel(host) {
+  return (await sshTargets()).find((t) => t.id === host)?.name || host
+}
+/**
+ * How a server is shown: its ~/.ssh/config alias when Orca names it by address ("172.26.166.220" →
+ * "office-server"), else Orca's name. `orcaName` keeps Orca's name when the two differ.
+ */
+async function serverName(host) {
+  const label = await hostLabel(host)
+  const alias = await sshConfigAlias(label).catch(() => label)
+  return alias !== label && !/^ssh:\/\//.test(alias) ? { name: alias, orcaName: label } : { name: label, orcaName: null }
+}
+/**
+ * The ssh destination for a host: the name Orca shows for it (or what was typed); an address there
+ * becomes the ~/.ssh/config alias that logs in to it, when there is one.
+ */
+async function destinationFor(host) {
+  return sshConfigAlias(await hostLabel(host))
+}
+setDestinationResolver(destinationFor)
+
+// ---------- servers: SSH hosts whose repositories the picker lists ----------
+// Every SSH host set up in Orca is a server here, and so is any ssh destination added in Git Control.
+// Each is searched for Git repositories (the home folder by default), so its projects show up in the
+// repository menu without opening each one in Orca first.
+
+const SERVERS_KEY = 'servers.v1' // { manual: [destination], prefs: { [id]: { roots, hidden } } }
+const SCANS_KEY = 'serverScans.v1' // { [id]: { at, dirs, error } }: shown at once after a restart
+const DEFAULT_ROOTS = ['~']
+const SCAN_TTL = 5 * 60_000
+const OWNED_TARGET = /^(runtime-ssh-|machine-)/ // Orca's own VMs and machines: not the person's servers
+
+async function storageGet(key) {
+  if (!ORCA?.host.has('storage.get')) return null
+  try {
+    return (await ORCA.host.call('storage.get', { key })).value ?? null
+  } catch {
+    return null
+  }
+}
+async function storageSet(key, value) {
+  if (ORCA?.host.has('storage.set')) await ORCA.host.call('storage.set', { key, value })
+}
+async function serverConfig() {
+  const c = (await storageGet(SERVERS_KEY)) || {}
+  return { manual: Array.isArray(c.manual) ? c.manual.map(String) : [], prefs: c.prefs && typeof c.prefs === 'object' ? c.prefs : {} }
+}
+const cleanRoots = (roots) => {
+  const list = (Array.isArray(roots) ? roots : String(roots || '').split(/[;\n]+/)).map((r) => String(r).trim()).filter(Boolean)
+  for (const r of list) if (!/^(~(\/|$)|\/)/.test(r)) throw new GitError(`"${r}" is not a folder on the server: start it with / or ~`)
+  return list.length ? [...new Set(list)].slice(0, 20) : DEFAULT_ROOTS
+}
+
+let scans = null // id -> { at, dirs, error, running }
+async function scanState() {
+  if (!scans) {
+    scans = new Map()
+    const saved = (await storageGet(SCANS_KEY)) || {}
+    for (const [id, v] of Object.entries(saved)) if (v && Array.isArray(v.dirs)) scans.set(id, { at: +v.at || 0, dirs: v.dirs.map(String), error: v.error || null })
+  }
+  return scans
+}
+let saveScansTimer = null
+function saveScans() {
+  clearTimeout(saveScansTimer)
+  saveScansTimer = setTimeout(() => {
+    const out = {}
+    for (const [id, v] of scans) out[id] = { at: v.at, dirs: v.dirs.slice(0, 2000), error: v.error }
+    storageSet(SCANS_KEY, out).catch(() => {})
+  }, 500)
+  saveScansTimer.unref?.()
+}
+
+/** Every server: Orca's SSH hosts and the ones added here, with where to look and what was found. */
+async function serverList() {
+  const [cfg, targets, state] = await Promise.all([serverConfig(), sshTargets(), scanState()])
+  const list = targets.filter((t) => !OWNED_TARGET.test(t.id)).map((t) => ({ id: t.id, label: t.name, source: 'orca' }))
+  for (const d of cfg.manual) if (!list.some((x) => x.id === d)) list.push({ id: d, label: d, source: 'manual' })
+  const names = await Promise.all(list.map((x) => serverName(x.id)))
+  return list.map((x, i) => {
+    const pref = cfg.prefs[x.id] || {}
+    const st = state.get(x.id)
+    return {
+      ...x,
+      label: names[i].name,
+      orcaName: names[i].orcaName,
+      roots: Array.isArray(pref.roots) && pref.roots.length ? pref.roots : DEFAULT_ROOTS,
+      hidden: !!pref.hidden,
+      scanning: !!st?.running,
+      scannedAt: st?.at || null,
+      repoCount: st?.dirs?.length ?? null,
+      error: st?.error || null
+    }
+  })
+}
+
+/** Look for repositories on one server again (unless a recent answer is good enough). */
+async function scanServer(server, { force = false } = {}) {
+  const state = await scanState()
+  const cur = state.get(server.id)
+  if (cur?.running) return cur.running
+  if (!force && cur?.at && Date.now() - cur.at < SCAN_TTL) return cur
+  const running = onHost(server.id, () => findRepos(server.roots))
+    .then(
+      (dirs) => ({ at: Date.now(), dirs, error: null }),
+      (e) => ({ at: Date.now(), dirs: cur?.dirs || [], error: e.message })
+    )
+    .then((r) => {
+      state.set(server.id, r)
+      saveScans()
+      return r
+    })
+  state.set(server.id, { ...(cur || { dirs: [] }), running })
+  return running
+}
+
+/** The repositories found on the servers that are not hidden, named by locator. */
+async function serverRepos({ refresh = false, wait = 1500 } = {}) {
+  const servers = (await serverList()).filter((x) => !x.hidden)
+  const all = Promise.all(servers.map((x) => scanServer(x, { force: refresh })))
+  // answer with what is known; a scan that takes longer reports back on the next call
+  await Promise.race([all, new Promise((res) => setTimeout(res, wait).unref?.())])
+  const state = await scanState()
+  const repos = []
+  for (const x of servers)
+    for (const dir of state.get(x.id)?.dirs || [])
+      repos.push({ id: `server:${locator(x.id, dir)}`, kind: 'folder', name: path.posix.basename(dir), repoName: path.posix.basename(dir), path: locator(x.id, dir), branch: null, host: x.id, hostLabel: x.label, discovered: true })
+  return { servers: await serverList(), repos }
+}
+
+async function serverUpdate(id, change) {
+  const cfg = await serverConfig()
+  if (change.remove) {
+    cfg.manual = cfg.manual.filter((d) => d !== id)
+    delete cfg.prefs[id]
+    ;(await scanState()).delete(id)
+    saveScans()
+  } else {
+    if (change.add && !cfg.manual.includes(id)) cfg.manual.push(id)
+    const pref = { ...(cfg.prefs[id] || {}) }
+    if (change.roots !== undefined) pref.roots = cleanRoots(change.roots)
+    if (change.hidden !== undefined) pref.hidden = !!change.hidden
+    cfg.prefs[id] = pref
+    if (change.roots !== undefined) (await scanState()).delete(id) // other folders: look again
+  }
+  await storageSet(SERVERS_KEY, cfg)
+  shortMemo.clear() // the add-server suggestions mark which hosts are servers
+  forgetFocusCaches()
+}
+
+/**
+ * The ~/.ssh/config hosts to offer when adding a server: each with where it connects
+ * ("frank@10.0.0.5:2222") and whether it already is a server by that name.
+ */
+function sshAliasChoices() {
+  return onHost(null, () =>
+    memo('sshAliasChoices', 60_000, async () => {
+      const aliases = sshConfigAliases().slice(0, 100)
+      const servers = await serverList()
+      const where = []
+      for (let i = 0; i < aliases.length; i += 8) where.push(...(await Promise.all(aliases.slice(i, i + 8).map((a) => sshResolve(a).catch(() => null)))))
+      const taken = new Set(servers.map((x) => x.label.toLowerCase()))
+      for (const x of servers) if (x.orcaName) taken.add(x.orcaName.toLowerCase())
+      return aliases.map((name, i) => {
+        const g = where[i]
+        const detail = g ? `${g.user ? g.user + '@' : ''}${g.hostname}${g.port && g.port !== '22' ? ':' + g.port : ''}` : ''
+        return { name, detail, added: taken.has(name.toLowerCase()) }
+      })
+    })
+  )
+}
+
+/** Add a server by ssh destination: it must log in without a password; then its repositories are found. */
+async function serverAdd({ dest, roots }) {
+  const d = sshDestination(String(dest || '').trim()) // validates
+  const targets = await sshTargets()
+  if (targets.some((t) => t.id === d || t.name.toLowerCase() === d.toLowerCase())) throw new GitError(`${d} is already a server (from Orca)`)
+  const r = await onHost(d, () => remote(d, 'git --version'))
+  if (r.code !== 0) throw new GitError(`${d} answers over ssh, but git is not installed there (${r.err || `exit ${r.code}`})`)
+  await serverUpdate(d, { add: true, roots: roots ?? DEFAULT_ROOTS })
+  const server = (await serverList()).find((x) => x.id === d)
+  const scan = await scanServer(server, { force: true })
+  return { id: d, repoCount: scan.dirs.length, error: scan.error }
 }
 
 // The Orca CLI knows the exact focused worktree (`--worktree active`); the host API does not.
@@ -230,7 +436,7 @@ function orcaCli() {
   }
   return 'orca' // on PATH
 }
-const ORCA_BIN = orcaCli()
+const ORCA_BIN = process.env.GIT_CONTROL_ORCA_BIN || orcaCli() // tests use a stand-in
 
 /** Map terminal ids to their worktree paths with `orca terminal list --json` (cached briefly). */
 let termCache = null
@@ -257,8 +463,8 @@ function terminalWorktreesUncached() {
       try {
         const list = JSON.parse(Buffer.concat(out).toString('utf8')).result?.terminals || []
         for (const t of list) {
-          const local = !t.executionHostId || t.executionHostId === 'local'
-          if (t.handle && t.worktreePath && local) map[t.handle] = t.worktreePath
+          const host = sshTargetOf(t.executionHostId)
+          if (t.handle && t.worktreePath && host !== undefined) map[t.handle] = host ? locator(host, t.worktreePath) : t.worktreePath
         }
       } catch {}
       resolve(map)
@@ -308,9 +514,9 @@ const STATUS_MAX = 3000
 async function status(repo, { untracked = 'all' } = {}) {
   // One git process: --show-stash adds "# stash <n>" to the header (git 2.35+).
   const run = (u) => git(repo, ['status', '--porcelain=v2', '--branch', '--show-stash', '-z', `--untracked-files=${u}`])
-  const [first, state, { gitDir: d, toplevel }, refsSig] = await Promise.all([
+  const [first, marks, { gitDir: d, toplevel }, refsSig] = await Promise.all([
     run(untracked === 'normal' ? 'normal' : 'all').catch((e) => (/too large/.test(e.message) ? null : Promise.reject(e))),
-    repoState(repo),
+    gitDirMarks(repo),
     paths(repo),
     refsFingerprint(repo).catch(() => '') // any branch, tag or remote moving changes this
   ])
@@ -329,9 +535,10 @@ async function status(repo, { untracked = 'all' } = {}) {
   }
   st.filesTotal = total
   const stashCount = +(raw.match(/(?:^|\0)# stash (\d+)/)?.[1] || 0)
-  const bisect = existsSync(path.join(d, 'BISECT_LOG'))
+  const state = stateOf(marks)
+  const bisect = marks.has('BISECT_LOG')
   const sides = state ? await stateSides(repo, d, state, st.branch).catch(() => null) : null
-  return { ...st, state, stashCount, toplevel, bisect, refsSig, sides }
+  return { ...st, state, stashCount, toplevel: toLocator(toplevel), bisect, refsSig, sides }
 }
 
 async function diff(repo, { file, staged, untracked, context = 3 }) {
@@ -356,7 +563,7 @@ async function fileImage(repo, { ref = '', file }) {
   if (!type) throw new GitError('not an image')
   let buf
   if (ref === '') {
-    buf = readFileSync(await workPath(repo, f))
+    buf = await fsx.read(await workPath(repo, f))
   } else {
     const r = String(ref)
     if (r.startsWith('-')) throw new GitError('bad revision')
@@ -378,16 +585,17 @@ const REC = '\x1e'
 // the cache is stale; only "which commit is HEAD" differs per worktree and is applied afterwards.
 const commonDirs = new Map()
 async function commonDir(repo) {
-  const k = norm(repo)
+  const k = hostKey(norm(repo))
   if (!commonDirs.has(k)) {
     const d = (await git(repo, ['rev-parse', '--git-common-dir'])).trim()
-    commonDirs.set(k, norm(path.resolve(repo, d)))
+    commonDirs.set(k, norm(hpath().resolve(repo, d)))
   }
   return commonDirs.get(k)
 }
 /** Share an answer for a moment: one refresh asks the same question several times. */
 const shortMemo = new Map()
 function cached(map, key, ms, fn) {
+  key = hostKey(key) // the same path on two machines is two repositories
   const hit = map.get(key)
   if (hit && Date.now() - hit.at < ms) return hit.p
   const p = Promise.resolve().then(fn)
@@ -440,7 +648,7 @@ async function log(repo, opts = {}) {
   const [common, sig] = await Promise.all([commonDir(repo), refsFingerprint(repo)])
   // The current-branch view depends on this worktree's HEAD; the all-branches view does not.
   const headKey = opts.all ? '' : (await headInfo(repo)).oid || ''
-  const key = JSON.stringify([common, !!opts.all, opts.ref || '', headKey, +opts.limit || 200, +opts.skip || 0])
+  const key = hostKey(JSON.stringify([common, !!opts.all, opts.ref || '', headKey, +opts.limit || 200, +opts.skip || 0]))
   const hit = logCache.get(key)
   let commits
   if (hit && hit.sig === sig) commits = hit.commits
@@ -588,7 +796,7 @@ async function searchAll(repo, { all = false, limit = 200, skip = 0, search = ''
 }
 
 async function commitShow(repo, args) {
-  const key = (await commonDir(repo)) + '|' + req(args.hash, 'hash')
+  const key = hostKey((await commonDir(repo)) + '|' + req(args.hash, 'hash'))
   const hit = showCache.get(key)
   if (hit && /^[0-9a-f]{40}$/.test(args.hash)) {
     // refs move; read the current ones (cheap) instead of trusting the cache
@@ -679,10 +887,10 @@ const refsCache = new Map() // repo -> { sig, value }
 async function refs(repo) {
   const [sig, head] = await Promise.all([refsFingerprint(repo), headInfo(repo)])
   const key = sig + '|' + (head.branch || head.oid)
-  const hit = refsCache.get(repo)
+  const hit = refsCache.get(hostKey(repo))
   if (hit && hit.key === key) return hit.value
   const value = await refsUncached(repo)
-  remember(refsCache, repo, { key, value }, 30)
+  remember(refsCache, hostKey(repo), { key, value }, 30)
   return value
 }
 
@@ -787,7 +995,7 @@ async function worktreeAdd(repo, { path: p, branch, newBranch, base, detach }) {
   const args = ['worktree', 'add']
   if (detach) args.push('--detach')
   if (newBranch) args.push('-b', req(newBranch, 'branch name'))
-  args.push(path.resolve(repo, target))
+  args.push(hpath().resolve(repo, target))
   if (newBranch && base) args.push(req(base, 'base'))
   else if (branch) args.push(req(branch, 'branch'))
   return git(repo, args, net)
@@ -847,6 +1055,9 @@ const stashRef = (r) => {
 
 /** Run any program; resolves { code, stdout, stderr }. `shell` is needed for .cmd shims on Windows. */
 function runProc(bin, args, { cwd, input, timeout = 60_000, shell = false, env } = {}) {
+  // Tools (gh, glab, the AI agents) run on this machine: a repository on a remote host has no folder
+  // here, so they start in the temp folder and get what they need from git through their input.
+  if (cwd && currentHost()) cwd = os.tmpdir()
   return new Promise((resolve) => {
     const child = spawn(bin, args, { cwd, shell, windowsHide: true, env: env ? { ...BASE_ENV, ...env } : BASE_ENV })
     const out = []
@@ -880,12 +1091,13 @@ const OLD_TAB_FILES = ['.orca-git-graph.gitgraph', 'Git.Control']
  */
 async function ignoreGraphFiles(repo) {
   const common = await commonDir(repo)
-  const exclude = path.join(common, 'info', 'exclude')
-  mkdirSync(path.dirname(exclude), { recursive: true })
-  const cur = existsSync(exclude) ? readFileSync(exclude, 'utf8') : ''
+  const P = hpath()
+  const exclude = P.join(common, 'info', 'exclude')
+  const cur = await fsx.read(exclude, 'utf8').catch(() => '')
   const lines = cur.split(/\r?\n/)
   const add = ['*.gitgraph', TAB_FILE].filter((x) => !lines.includes(x))
-  if (add.length) writeFileSync(exclude, cur + (cur && !cur.endsWith('\n') ? '\n' : '') + (lines.includes('*.gitgraph') ? '' : '# Git Control tabs\n') + add.join('\n') + '\n')
+  if (add.length) await fsx.mkdirp(P.dirname(exclude))
+  if (add.length) await fsx.write(exclude, cur + (cur && !cur.endsWith('\n') ? '\n' : '') + (lines.includes('*.gitgraph') ? '' : '# Git Control tabs\n') + add.join('\n') + '\n')
 }
 
 /**
@@ -893,33 +1105,55 @@ async function ignoreGraphFiles(repo) {
  * the tab opens in its worktree in the background, without changing what the person is looking at.
  */
 async function openGraphTab(repo, { focus = true } = {}) {
+  const P = hpath()
   // a folder that is not a repository but holds some (ABC with A, B and C inside): the tab lives in
   // the folder, and Git Control shows the repositories inside it
   let top
   try {
     top = (await paths(repo)).toplevel
   } catch (e) {
-    if (!(await reposInside(repo)).children.length) throw e
+    if (currentHost() || !(await reposInside(repo)).children.length) throw e
     top = path.resolve(repo)
   }
-  const file = path.join(top, TAB_FILE)
-  if (existsSync(path.join(top, '.git'))) await ignoreGraphFiles(top) // ignored before the file exists, so it never shows as a change
+  const file = P.join(top, TAB_FILE)
+  if (await fsx.exists(P.join(top, '.git'))) await ignoreGraphFiles(top) // ignored before the file exists, so it never shows as a change
   // tab files of earlier versions; removed first, since on Windows and macOS "Git.Control" and
   // "Git.control" are one file and writing would keep the old spelling
-  for (const old of OLD_TAB_FILES)
-    try {
-      if (readdirSync(top).includes(old)) rmSync(path.join(top, old), { force: true })
-    } catch {}
-  writeFileSync(file, JSON.stringify({ repo: top }) + '\n', { flag: NO_FOLLOW_WRITE })
-  const r = await runProc(ORCA_BIN, ['file', 'open', file, '--worktree', `path:${top}`, ...(focus ? ['--focus'] : []), '--json'], {
+  const names = await fsx.readdir(top).catch(() => [])
+  for (const old of OLD_TAB_FILES) if (names.includes(old)) await fsx.rm(P.join(top, old)).catch(() => {})
+  // the tab reads which repository it shows from its file: a locator for one on a remote host
+  await fsx.write(file, JSON.stringify({ repo: toLocator(top) }) + '\n')
+  await openInOrca(file, top, { focus, what: 'the tab' })
+  return { opened: true }
+}
+
+/**
+ * Open a file of a worktree as an Orca editor tab. On this machine through Orca's CLI (it can open in the
+ * background); on a remote host through the host API, by the workspace Orca knows that folder as.
+ */
+async function openInOrca(file, top, { focus = true, what = 'the file' } = {}) {
+  const host = currentHost()
+  if (host) {
+    if (!ORCA?.host.has('editor.open')) throw new GitError(`This Orca version cannot open ${what} on a remote host; update Orca`)
+    const P = path.posix
+    const inside = (w) => file === w.dir || file.startsWith(w.dir.replace(/\/+$/, '') + '/')
+    const ws = (await listWorkspaces(ORCA))
+      .map((w) => ({ ...w, ...parseLocator(w.path) }))
+      .map((w) => ({ ...w, dir: w.path }))
+      .filter((w) => w.host === host && inside(w))
+      .sort((a, b) => b.dir.length - a.dir.length)[0]
+    if (!ws) throw new GitError(`Orca has no workspace for ${top} on this host: add the folder in Orca to open ${what} there`)
+    await ORCA.host.call('editor.open', { workspaceId: ws.id, path: P.relative(ws.dir, file) })
+    return
+  }
+  const r = await runProc(ORCA_BIN, ['file', 'open', file, '--worktree', `path:${path.resolve(top)}`, ...(focus ? ['--focus'] : []), '--json'], {
     timeout: 15_000
   })
   let res = null
   try {
     res = JSON.parse(r.stdout)
   } catch {}
-  if (!res?.ok) throw new GitError(res?.error?.message || r.stderr.trim() || 'Orca could not open the tab')
-  return { opened: true }
+  if (!res?.ok) throw new GitError(res?.error?.message || r.stderr.trim() || `Orca could not open ${what}`)
 }
 
 // ---------- AI ----------
@@ -964,7 +1198,7 @@ async function aiCommitMessage(repo, agent, { instructions = '', scope: want = '
 /** Open a terminal in the repo's Orca workspace running the agent with a conflict-resolution prompt. */
 async function aiResolve(orca, repo, agent) {
   const a = AI[agent] || AI.claude
-  const ws = (await listWorkspaces(orca)).find((w) => norm(w.path) === norm(repo))
+  const ws = (await listWorkspaces(orca)).find((w) => isWorkspaceOf(w, repo))
   if (!ws) throw new GitError('This repository is not an Orca workspace, so a terminal cannot be opened for it')
   const state = await repoState(repo)
   const conflicted = (await git(repo, ['diff', '--name-only', '--diff-filter=U'])).trim().split('\n').filter(Boolean)
@@ -1051,20 +1285,25 @@ const credCache = new Map() // protocol://host -> { at, p }
  * used for API calls to that same host; never logged or sent to the panel.
  */
 function gitCredential(where, cwd) {
-  const key = `${where.protocol}://${where.host}`
+  const key = hostKey(`${where.protocol}://${where.host}`)
   const hit = credCache.get(key)
   if (hit && Date.now() - hit.at < hit.ttl) return hit.p
-  const p = gitOnce(cwd || os.homedir(), ['-c', 'credential.interactive=never', 'credential', 'fill'], {
-    input: `protocol=${where.protocol}\nhost=${where.host}\n\n`,
-    timeout: 15_000,
-    env: { GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never' }
-  }).then(
-    (out) => {
-      const kv = Object.fromEntries(out.split(/\r?\n/).filter((l) => l.includes('=')).map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]))
-      return kv.password ? { username: kv.username || '', token: kv.password } : null
-    },
-    () => null
-  )
+  const fill = (dir) =>
+    gitOnce(dir, ['-c', 'credential.interactive=never', 'credential', 'fill'], {
+      input: `protocol=${where.protocol}\nhost=${where.host}\n\n`,
+      timeout: 15_000,
+      env: { GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never' }
+    }).then(
+      (out) => {
+        const kv = Object.fromEntries(out.split(/\r?\n/).filter((l) => l.includes('=')).map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]))
+        return kv.password ? { username: kv.username || '', token: kv.password } : null
+      },
+      () => null
+    )
+  // A repository on a remote host: the login git uses there (it pushes from there), else this machine's.
+  const p = currentHost()
+    ? fill(cwd || null).then((c) => c || onHost(null, () => fill(os.homedir())))
+    : fill(cwd || os.homedir())
   const entry = { at: Date.now(), p, ttl: 10 * 60_000 }
   credCache.set(key, entry)
   p.then((c) => c || (entry.ttl = 60_000)) // no login: look again in a minute
@@ -1193,10 +1432,10 @@ async function mrTemplate(repo, kind, { targetRef, where } = {}) {
   }
   const top = (await paths(repo).catch(() => ({ toplevel: '' }))).toplevel
   for (const d of dirs) {
-    const dir = path.join(top, d)
-    if (!top || !existsSync(dir)) continue
-    const hit = readdirSync(dir).find((n) => want.test(n))
-    if (hit) return readFileSync(path.join(dir, hit), 'utf8').trim()
+    if (!top) break
+    const dir = hpath().join(top, d)
+    const hit = (await fsx.readdir(dir).catch(() => [])).find((n) => want.test(n))
+    if (hit) return (await fsx.read(hpath().join(dir, hit), 'utf8')).trim()
   }
   return ''
 }
@@ -1621,10 +1860,12 @@ async function mrCreate(repo, { target, source, title, body, draft, web, assigne
     return { url, opened: await openInBrowser(url), pushed: info.needsPush }
   }
   if (via === 'git') return { ...(await mrCreateApi(repo, info, { title, body, draft, ...extra })), pushed: info.needsPush, via }
+  // gh and glab find the repository from the folder they start in; one on a remote host has no folder here
+  const repoFlag = currentHost() ? ['--repo', `${info.host}/${info.path}`] : []
   const r =
     info.kind === 'github'
-      ? await runProc('gh', ['pr', 'create', '--base', info.target, '--head', info.source, '--title', title, '--body', body, ...(draft ? ['--draft'] : []), ...(assignees.length ? ['--assignee', assignees.map((a) => a.username).join(',')] : []), ...(reviewers.length ? ['--reviewer', reviewers.map((r) => r.username).join(',')] : [])], { cwd: repo, timeout: 90_000 })
-      : await runProc('glab', ['mr', 'create', '--source-branch', info.source, '--target-branch', info.target, '--title', title, '--description', body, '--yes', ...(draft ? ['--draft'] : []), ...(assignees.length ? ['--assignee', assignees.map((a) => a.username).join(',')] : []), ...(reviewers.length ? ['--reviewer', reviewers.map((r) => r.username).join(',')] : []), ...(removeSource ? ['--remove-source-branch'] : []), ...(squash ? ['--squash-before-merge'] : [])], { cwd: repo, timeout: 90_000 })
+      ? await runProc('gh', ['pr', 'create', ...repoFlag, '--base', info.target, '--head', info.source, '--title', title, '--body', body, ...(draft ? ['--draft'] : []), ...(assignees.length ? ['--assignee', assignees.map((a) => a.username).join(',')] : []), ...(reviewers.length ? ['--reviewer', reviewers.map((r) => r.username).join(',')] : [])], { cwd: repo, timeout: 90_000 })
+      : await runProc('glab', ['mr', 'create', ...repoFlag, '--source-branch', info.source, '--target-branch', info.target, '--title', title, '--description', body, '--yes', ...(draft ? ['--draft'] : []), ...(assignees.length ? ['--assignee', assignees.map((a) => a.username).join(',')] : []), ...(reviewers.length ? ['--reviewer', reviewers.map((r) => r.username).join(',')] : []), ...(removeSource ? ['--remove-source-branch'] : []), ...(squash ? ['--squash-before-merge'] : [])], { cwd: repo, timeout: 90_000 })
   const all = r.stdout + '\n' + r.stderr
   const url = all.match(/https?:\/\/\S+\/(?:pull|merge_requests)\/\d+/)?.[0]
   const number = url ? +url.match(/(\d+)$/)[1] : undefined
@@ -1649,6 +1890,8 @@ function setupCommand(step, host) {
 async function runSetup(orca, ws, step, host, title) {
   const command = setupCommand(step, host)
   toolMemo.clear() // signed in or installed afterwards: look again
+  // gh and glab run on this machine: sign in here, in a terminal of a workspace on this machine
+  if (ws?.host) ws = (await listWorkspaces(orca)).find((w) => !w.host)
   if (!ws || !orca.host.has('terminal.create')) return { ran: false, command }
   await orca.host.call('terminal.create', { workspaceId: ws.id, title, command })
   return { ran: true, command }
@@ -1658,7 +1901,7 @@ async function runSetup(orca, ws, step, host, title) {
 async function mrSetup(orca, repo, { step }) {
   const info = await mrInfo(repo, 'HEAD').catch(() => null)
   const host = info?.host || (/^gh-/.test(step) ? 'github.com' : 'gitlab.com')
-  const ws = (await listWorkspaces(orca)).find((w) => norm(w.path) === norm(repo))
+  const ws = (await listWorkspaces(orca)).find((w) => isWorkspaceOf(w, repo))
   return runSetup(orca, ws, step, host, 'Merge request setup')
 }
 
@@ -1671,7 +1914,7 @@ async function forgeHosts(orca, where) {
     const ws = orca ? await listWorkspaces(orca) : []
     await Promise.all(
       ws.slice(0, 60).map(async (w) => {
-        const r = await defaultRemote(w.path).then((rm) => rm && remoteWhere(w.path, rm)).catch(() => null)
+        const r = await inRepo(w.path, (dir) => defaultRemote(dir).then((rm) => rm && remoteWhere(dir, rm))).catch(() => null)
         if (r) found.set(`${r.kind}|${r.host}`, { ...r, path: '' })
       })
     )
@@ -2014,7 +2257,7 @@ const TAG_PATTERN = /^[\w.*/-]{1,80}$/
 async function tagPatterns(repos) {
   const count = new Map()
   await pool(repos, 4, async (r) => {
-    const out = await gitOnce(r, ['tag', '--list', '--sort=-creatordate'], { timeout: 15_000 }).catch(() => '')
+    const out = await inRepo(r, (p) => gitOnce(p, ['tag', '--list', '--sort=-creatordate'], { timeout: 15_000 })).catch(() => '')
     const seen = new Set()
     for (const t of out.split('\n').slice(0, 300)) {
       const m = t.trim().match(/^(.*?)\d+(?:\.\d+)*(.*)$/)
@@ -2042,10 +2285,11 @@ async function tagPlan({ repos = [], pattern, base = {}, branches = {} } = {}) {
   for (const b of Object.values(branches)) req(b, 'branch')
   if (base.kind === 'tag' && !TAG_PATTERN.test(String(base.pattern || ''))) throw new GitError('Pick the pattern of the tag to start from')
   if (base.kind === 'branch') req(base.name, 'branch')
-  const rows = await pool(repos.slice(0, 100), 4, async (repo) => {
+  // each repository where it is (a locator: on its server); the row names it as the panel does
+  const rows = await pool(repos.slice(0, 100), 4, (named) => inRepo(named, async (repo) => {
     const g = (args) => gitOnce(repo, args, { timeout: 15_000 }).then((o) => o.trim(), () => '')
-    const row = { repo, name: path.basename(repo) }
-    const base_ = branches[repo] ? { kind: 'branch', name: branches[repo] } : base
+    const row = { repo: named, name: hpath().basename(repo) }
+    const base_ = branches[named] ? { kind: 'branch', name: branches[named] } : base
     try {
       const tags = (await g(['tag', '--list', pattern, '--sort=-v:refname'])).split('\n').filter(Boolean)
       row.latest = tags[0] || null
@@ -2071,12 +2315,13 @@ async function tagPlan({ repos = [], pattern, base = {}, branches = {} } = {}) {
       row.error = String(e.message || e).split('\n')[0]
     }
     return row
-  })
+  }))
   return { rows }
 }
 /** Create (and push) the tags one repository after another, 4 at a time; each says how it went. */
 async function tagApply({ items = [], push = true, message = '' } = {}) {
-  return pool(items.slice(0, 100), 4, async (it) => {
+  return pool(items.slice(0, 100), 4, (item) => inRepo(String(item?.repo || ''), async (repo) => {
+    const it = { ...item, repo }
     try {
       const name = req(it.name, 'tag name')
       if (!/^[\w.\/-]{1,120}$/.test(name) || name.includes('..')) throw new GitError(`${name} is not a valid tag name`)
@@ -2093,34 +2338,46 @@ async function tagApply({ items = [], push = true, message = '' } = {}) {
           pushed = true
         }
       }
-      return { repo: it.repo, name, ok: true, pushed }
+      return { repo: item.repo, name, ok: true, pushed }
     } catch (e) {
-      return { repo: it.repo, name: it.name, ok: false, error: String(e.message || e).split('\n').slice(-2).join(' ') }
+      return { repo: item.repo, name: it.name, ok: false, error: String(e.message || e).split('\n').slice(-2).join(' ') }
     }
-  })
+  }))
 }
 
-async function reposOverview(workspaces, scan) {
+/**
+ * Every repository at once: Orca's workspaces (on this computer and on SSH hosts), the repos inside the
+ * scanned folders, and, with `servers`, the ones found on the servers. A row's path is a locator when
+ * the repo is on a server; its git runs there.
+ */
+async function reposOverview(workspaces, scan, { servers = true } = {}) {
   const rows = new Map()
-  const key = (p) => path.resolve(p).toLowerCase()
+  // on a server, paths are told apart by case (Linux); on this computer they are not (Windows, macOS)
+  const key = (p) => (isLocator(p) ? String(p).replace(/\/+$/, '') : path.resolve(p).toLowerCase())
+  const onServer = (w) => (w.host ? { host: w.host, hostLabel: w.hostLabel || w.host } : {})
   for (const w of workspaces) {
     if (!((w.kind === 'worktree' || w.kind === 'folder' || !w.kind) && w.path)) continue
     // a folder that is not a repository: the repositories inside it instead (ABC → A, B, C)
-    if (!w.repoName) {
+    if (!w.repoName && !isLocator(w.path)) {
       const inside = await reposInside(w.path).catch(() => null)
       if (inside && !inside.isRepo && inside.children.length) {
         for (const c of inside.children) if (!rows.has(key(c.path))) rows.set(key(c.path), { path: c.path, name: path.basename(c.path), workspace: w.name || '', main: true, source: 'folder', folder: path.basename(w.path) })
         continue
       }
     }
-    rows.set(key(w.path), { path: w.path, name: w.repoName || path.basename(w.path), workspace: w.name || '', main: w.main !== false, source: 'orca' })
+    rows.set(key(w.path), { path: w.path, name: w.repoName || path.posix.basename(String(w.path).replace(/\\/g, '/')), workspace: w.name || '', main: w.main !== false, source: 'orca', ...onServer(w) })
   }
   const roots = String(scan || '').split(/[;\n]/).map((x) => x.trim()).filter(Boolean)
   for (const p of scanForRepos(roots)) if (!rows.has(key(p))) rows.set(key(p), { path: p, name: path.basename(p), workspace: '', main: true, source: 'scan' })
+  // the projects found on the servers (Servers… in the repository menu): what is known now, no waiting
+  if (servers)
+    for (const x of (await serverRepos({ wait: 0 }).catch(() => ({ repos: [] }))).repos)
+      if (!rows.has(key(x.path))) rows.set(key(x.path), { path: x.path, name: x.name, workspace: '', main: true, source: 'server', ...onServer(x) })
   const list = [...rows.values()]
-  await pool(list, 4, async (r) => {
+  // each row's git runs where the repo is: this computer or its server (the server's shared ssh connection)
+  await pool(list, 4, (r) => inRepo(r.path, async (rp) => {
     try {
-      const st = await status(r.path, { untracked: 'normal' })
+      const st = await status(rp, { untracked: 'normal' })
       Object.assign(r, {
         toplevel: st.toplevel,
         branch: st.branch,
@@ -2134,23 +2391,25 @@ async function reposOverview(workspaces, scan) {
         state: st.state || null,
         stashes: st.stashCount || 0
       })
-      const where = await repoWhere(r.path)
+      const where = await repoWhere(rp)
       if (where) Object.assign(r, { remote: where.path, remoteHost: where.host })
       // the newest tag (by when it was made), shown on the row
-      const t = (await gitOnce(r.path, ['for-each-ref', 'refs/tags', '--sort=-creatordate', '--count=1', '--format=%(refname:short)%09%(creatordate:unix)'], { timeout: 8000 }).catch(() => '')).trim()
+      const t = (await gitOnce(rp, ['for-each-ref', 'refs/tags', '--sort=-creatordate', '--count=1', '--format=%(refname:short)%09%(creatordate:unix)'], { timeout: 8000 }).catch(() => '')).trim()
       if (t) [r.tag, r.tagAt] = [t.split('	')[0], +t.split('	')[1] || null]
     } catch (e) {
       r.error = String(e.message || e).split('\n')[0].slice(0, 200)
     }
-  })
+  }))
   // one row per folder git knows (two workspaces of the same folder are one repo)
   const seen = new Set()
   const out = list.filter((r) => !r.toplevel || (seen.has(key(r.toplevel)) ? false : seen.add(key(r.toplevel))))
   // the Orca Project Group of each: by its repository (a worktree finds it through its shared .git),
   // or by the registered folder it sits in (A inside the folder project ABC)
   const { byPath, groups } = await orcaGroups()
+  // a server's repos are grouped under the server, after Orca's groups
+  for (const r of out) if (r.host) r.group = { id: `server:${r.host}`, name: r.hostLabel, server: true, order: 1e8, repoOrder: 0 }
   if (byPath.size) {
-    await pool(out, 4, async (r) => {
+    await pool(out.filter((r) => !r.host), 4, async (r) => {
       const common = await gitOnce(r.path, ['rev-parse', '--path-format=absolute', '--git-common-dir'], { timeout: 8000 }).then((o) => o.trim(), () => '')
       const main = common ? path.dirname(common.replace(/[\\/]+$/, '')) : r.path
       const cands = [main, r.path].map((p) => path.resolve(p).toLowerCase())
@@ -2159,7 +2418,7 @@ async function reposOverview(workspaces, scan) {
       if (hit) r.group = { id: hit.id, name: groups.get(hit.id)?.name || '', order: groups.get(hit.id)?.order ?? 999, repoOrder: hit.order }
     })
   }
-  return { repos: out, roots, grouped: byPath.size > 0 }
+  return { repos: out, roots, grouped: byPath.size > 0, servers: out.some((r) => r.host) }
 }
 
 /** Where the open repository's main remote lives, or null. */
@@ -2630,7 +2889,7 @@ async function reviewMaterial(it) {
 async function aiResolveFile(repo, file, agent) {
   const a = AI[agent] || AI.claude
   const full = await workPath(repo, file)
-  const text = readFileSync(full, 'utf8')
+  const text = await fsx.read(full, 'utf8')
   if (!/^<<<<<<< /m.test(text)) throw new GitError(`${file} has no conflict markers`)
   if (text.length > 200_000) throw new GitError(`${file} is too large for AI (over 200 KB)`)
   const st = await status(repo, { untracked: 'normal' }).catch(() => null)
@@ -2964,19 +3223,11 @@ async function reviewLineComment(it, { path: file, line, side, body }) {
  * folder), so a link pointing outside the repository cannot be read or written through.
  */
 async function workPath(repo, file) {
-  const top = realpathSync(path.resolve((await paths(repo)).toplevel))
-  const p = path.resolve(top, String(file))
-  let dir = p
-  const rest = []
-  while (!existsSync(dir)) {
-    rest.unshift(path.basename(dir))
-    const up = path.dirname(dir)
-    if (up === dir) break
-    dir = up
-  }
-  const real = path.join(realpathSync(dir), ...rest)
-  const cmp = (x) => (process.platform === 'win32' ? x.toLowerCase() : x)
-  if (!cmp(real + path.sep).startsWith(cmp(top + path.sep)) || cmp(real) === cmp(top)) throw new GitError('That file is outside the repository')
+  const P = hpath()
+  const top = await fsx.realpath(P.resolve((await paths(repo)).toplevel))
+  const real = await fsx.realpath(P.resolve(top, String(file)))
+  const cmp = (x) => (process.platform === 'win32' && !currentHost() ? x.toLowerCase() : x)
+  if (!cmp(real + P.sep).startsWith(cmp(top + P.sep)) || cmp(real) === cmp(top)) throw new GitError('That file is outside the repository')
   return real
 }
 
@@ -3195,7 +3446,7 @@ const ops = {
       () => git(r, ['stash', 'show', '-p', '--no-color', stashRef(a.ref)])
     )),
 
-  worktrees: (r) => worktrees(r),
+  worktrees: async (r) => (await worktrees(r)).map((w) => ({ ...w, path: toLocator(w.path) })),
   worktreeAdd: (r, a) => worktreeAdd(r, a),
   worktreeRemove: async (r, a) => {
     const p = req(a.path, 'path')
@@ -3207,7 +3458,7 @@ const ops = {
     const done = async (extra = {}) => {
       // Git's own list is the truth: never report success while git still has the worktree.
       let still = await listed()
-      if (still?.prunable || (still && !existsSync(path.join(w.path, '.git')))) {
+      if (still?.prunable || (still && !(await fsx.exists(hpath().join(w.path, '.git'))))) {
         await git(r, ['worktree', 'prune']).catch(() => {})
         still = await listed()
       }
@@ -3221,7 +3472,7 @@ const ops = {
           extra.branchKept = e.message.split('\n')[0]
         }
       }
-      return { removed: true, leftover: existsSync(w.path), ...extra }
+      return { removed: true, leftover: await fsx.exists(w.path), ...extra }
     }
     // A worktree whose folder is gone or no longer linked ("missing"): drop its stale record.
     // Files left in the folder are not touched.
@@ -3229,7 +3480,8 @@ const ops = {
 
     // A worktree Orca shows as a workspace: let Orca remove it first. It stops the workspace's
     // terminals (on Windows git cannot delete a folder a terminal is still in) and drops it from the sidebar.
-    if (ORCA && (await listWorkspaces(ORCA)).some((x) => norm(x.path) === norm(p))) {
+    // (Orca's CLI names worktrees on this machine by path; one on a remote host is removed with git there)
+    if (ORCA && !currentHost() && (await listWorkspaces(ORCA)).some((x) => norm(x.path) === norm(p))) {
       const cli = ['worktree', 'rm', '--worktree', `path:${p}`, '--json']
       if (a.force) cli.push('--force')
       const res = await runProc(ORCA_BIN, cli, { timeout: 60_000 })
@@ -3283,17 +3535,18 @@ const ops = {
   pipelineAct: (r, a) => pipelineAct(r, a),
   readWorkFile: async (r, a) => {
     const p = await workPath(r, a.file)
-    const buf = readFileSync(p)
+    const buf = await fsx.read(p)
     if (buf.length > 4 * 1024 * 1024) throw new GitError('The file is too large to resolve here')
     return buf.toString('utf8')
   },
   writeWorkFile: async (r, a) => {
     const p = await workPath(r, a.file)
-    mkdirSync(path.dirname(p), { recursive: true })
-    writeFileSync(p, String(a.text ?? ''))
+    const P = hpath()
+    await fsx.mkdirp(P.dirname(p))
+    await fsx.write(p, String(a.text ?? ''))
     if (a.stage) {
-      const top = realpathSync((await paths(r)).toplevel)
-      await git(top, ['add', '--', path.relative(top, p).replace(/\\/g, '/')])
+      const top = await fsx.realpath((await paths(r)).toplevel)
+      await git(top, ['add', '--', P.relative(top, p).replace(/\\/g, '/')])
     }
     return ''
   },
@@ -3366,10 +3619,11 @@ const ops = {
   init: (_r, a) => git(req(a.path, 'path'), ['init']),
   clone: async (_r, a) => {
     const url = req(a.url, 'url')
-    const dir = path.resolve(req(a.path, 'folder'))
-    mkdirSync(path.dirname(dir), { recursive: true })
-    await git(path.dirname(dir), ['clone', ...(a.recursive ? ['--recurse-submodules'] : []), url, dir], net)
-    return dir
+    const P = hpath()
+    const dir = P.resolve(req(a.path, 'folder'))
+    await fsx.mkdirp(P.dirname(dir))
+    await git(P.dirname(dir), ['clone', ...(a.recursive ? ['--recurse-submodules'] : []), url, dir], net)
+    return toLocator(dir)
   },
 
   // Hunks: the panel sends a patch made of one file header and one hunk.
@@ -3384,9 +3638,9 @@ const ops = {
     const line = String(a.pattern || '').trim()
     if (!line) throw new GitError('pattern is required')
     if (/[\r\n]/.test(line)) throw new GitError('one pattern per line, please')
-    const file = path.join((await paths(r)).toplevel, '.gitignore')
-    const cur = existsSync(file) ? readFileSync(file, 'utf8') : ''
-    if (!cur.split(/\r?\n/).includes(line)) writeFileSync(file, cur + (cur && !cur.endsWith('\n') ? '\n' : '') + line + '\n', { flag: NO_FOLLOW_WRITE })
+    const file = hpath().join((await paths(r)).toplevel, '.gitignore')
+    const cur = await fsx.read(file, 'utf8').catch(() => '')
+    if (!cur.split(/\r?\n/).includes(line)) await fsx.write(file, cur + (cur && !cur.endsWith('\n') ? '\n' : '') + line + '\n')
     return ''
   },
 
@@ -3457,7 +3711,7 @@ const ops = {
   },
 
   submodules: async (r) => {
-    if (!existsSync(path.join((await paths(r)).toplevel, '.gitmodules'))) return []
+    if (!(await fsx.exists(hpath().join((await paths(r)).toplevel, '.gitmodules')))) return []
     const raw = await git(r, ['submodule', 'status', '--recursive'], { okCodes: [0, 128] })
     const states = { ' ': 'ok', '+': 'changed', '-': 'not initialized', U: 'conflict' }
     return raw
@@ -3500,13 +3754,16 @@ const ops = {
     if (!f || f.startsWith('-')) throw new GitError('bad file')
     const stage = (n) => git(r, ['show', `:${n}:${f}`]).catch(() => '')
     const [base, ours, theirs] = await Promise.all([stage(1), stage(2), stage(3)])
-    const dir = mkdtempSync(path.join(os.tmpdir(), 'orca-git-cf-'))
+    // the three sides as files where git runs (a temp folder there)
+    const dir = await fsx.mkdtemp('orca-git-cf-')
     try {
-      const p = (n, t) => (writeFileSync(path.join(dir, n), t), path.join(dir, n))
-      const out = await git(r, ['merge-file', '-p', '--diff3', '-L', 'current', '-L', 'base', '-L', 'incoming', p('ours', ours), p('base', base), p('theirs', theirs)], { okCodes: Array.from({ length: 128 }, (_, i) => i) })
+      const P = hpath()
+      const p = async (n, t) => (await fsx.write(P.join(dir, n), t), P.join(dir, n))
+      const [o, b, t] = await Promise.all([p('ours', ours), p('base', base), p('theirs', theirs)])
+      const out = await git(r, ['merge-file', '-p', '--diff3', '-L', 'current', '-L', 'base', '-L', 'incoming', o, b, t], { okCodes: Array.from({ length: 128 }, (_, i) => i) })
       return { text: out, hasBase: !!base }
     } finally {
-      rmSync(dir, { recursive: true, force: true })
+      await fsx.rm(dir, { recursive: true }).catch(() => {})
     }
   },
   gitLog: async () => CMD_LOG.slice(-100),
@@ -3525,32 +3782,39 @@ const ops = {
     const base = req(a.base, 'base')
     const ACTIONS = new Set(['pick', 'squash', 'fixup', 'drop', 'reword'])
     // kept until the rebase is over: a reword after a conflict still needs its message file
-    const dir = mkdtempSync(path.join(os.tmpdir(), 'orca-git-rebase-'))
-    let n = 0
-    const todo = (a.todo || [])
-      .map((t) => {
-        if (!ACTIONS.has(t.action) || !/^[0-9a-f]{7,40}$/.test(t.hash)) throw new GitError('invalid rebase plan')
-        if (t.action !== 'reword') return `${t.action} ${t.hash}`
-        const msg = String(t.message || '').trim()
-        if (!msg) return `pick ${t.hash}`
-        const mf = path.join(dir, `msg${n++}.txt`)
-        writeFileSync(mf, msg + '\n')
-        return `pick ${t.hash}\nexec git commit --amend --allow-empty -F "${mf.replace(/\\/g, '/')}"`
-      })
-      .join('\n')
-    if (!todo) throw new GitError('nothing to rebase')
+    for (const t of a.todo || []) if (!ACTIONS.has(t.action) || !/^[0-9a-f]{7,40}$/.test(t.hash)) throw new GitError('invalid rebase plan')
+    if (!(a.todo || []).length) throw new GitError('nothing to rebase')
+    // kept where git runs (this machine or the remote host) until the rebase is over
+    const P = hpath()
+    const dir = await fsx.mkdtemp('orca-git-rebase-')
+    const q = (p) => '"' + p.replace(/\\/g, '/') + '"'
     try {
-      const file = path.join(dir, 'todo.txt')
-      writeFileSync(file, todo + '\n')
-      // Git runs the sequence editor with the todo file's path; a tiny script copies our plan over it.
-      const script = path.join(dir, 'seq-editor.cjs')
-      writeFileSync(script, "require('fs').copyFileSync(process.env.ORCA_GIT_TODO, process.argv[2])\n")
-      const q = (p) => '"' + p.replace(/\\/g, '/') + '"'
+      let n = 0
+      const lines = []
+      for (const t of a.todo) {
+        const msg = t.action === 'reword' ? String(t.message || '').trim() : ''
+        if (t.action !== 'reword') lines.push(`${t.action} ${t.hash}`)
+        else if (!msg) lines.push(`pick ${t.hash}`)
+        else {
+          const mf = P.join(dir, `msg${n++}.txt`)
+          await fsx.write(mf, msg + '\n')
+          lines.push(`pick ${t.hash}\nexec git commit --amend --allow-empty -F ${q(mf)}`)
+        }
+      }
+      const file = P.join(dir, 'todo.txt')
+      await fsx.write(file, lines.join('\n') + '\n')
+      // Git runs the sequence editor with the todo file's path; it copies our plan over it.
+      if (currentHost()) {
+        // on a remote host git's own sh does it: no Node there
+        return await git(r, ['-c', `sequence.editor=cp ${q(file)}`, '-c', 'core.editor=true', 'rebase', '-i', base])
+      }
+      const script = P.join(dir, 'seq-editor.cjs')
+      await fsx.write(script, "require('fs').copyFileSync(process.env.ORCA_GIT_TODO, process.argv[2])\n")
       return await git(r, ['-c', `sequence.editor=${q(process.execPath)} ${q(script)}`, '-c', 'core.editor=true', 'rebase', '-i', base], {
         env: { ELECTRON_RUN_AS_NODE: '1', ORCA_GIT_TODO: file }
       })
     } finally {
-      if (!(await repoState(r))) rmSync(dir, { recursive: true, force: true })
+      if (!(await repoState(r).catch(() => null))) await fsx.rm(dir, { recursive: true }).catch(() => {})
     }
   }
 }
@@ -3563,6 +3827,30 @@ const READ_ONLY_OPS = new Set(['fileImage',
 const NO_REPO_OK = new Set(['configList', 'configSet', 'configUnset', 'init', 'clone'])
 
 let ORCA = null
+
+/**
+ * The panel names a repository on a remote host by a locator ("ssh://host/path"), in `repo`, `path`
+ * or an argument. Unwrap them to plain paths there and say which host the request runs on.
+ */
+const MANY_HOSTS = new Set(['repos.tagPatterns', 'repos.tagPlan', 'repos.tagApply'])
+function unwrapRequest(input) {
+  let host
+  const strip = (v) => {
+    if (!isLocator(v)) return v
+    const l = parseLocator(v)
+    if (host !== undefined && host !== l.host) throw new GitError('One request cannot work on two machines at once')
+    host = l.host
+    return l.path
+  }
+  const level = (o) =>
+    o && typeof o === 'object' && !Array.isArray(o)
+      ? Object.fromEntries(Object.entries(o).map(([k, v]) => [k, Array.isArray(v) ? v.map(strip) : strip(v)]))
+      : o
+  let out = level(input)
+  if (out?.args) out = { ...out, args: level(out.args) }
+  return { host: host ?? null, input: out }
+}
+
 export default function activate(orca) {
   // Orca accepts only plain JSON answers: a field left undefined (or NaN) made it refuse the whole reply
   // ("answered with a non-JSON value"). Every handler's answer is made plain JSON on the way out.
@@ -3573,8 +3861,10 @@ export default function activate(orca) {
     panels: {
       ...orca.panels,
       handle: (name, fn) =>
-        handle(name, async (input) => {
-          const r = await fn(input)
+        handle(name, async (raw) => {
+          // a request about repositories on several machines (Repo Overview) runs each one where it is
+          const { host, input } = MANY_HOSTS.has(name) ? { host: null, input: raw } : unwrapRequest(raw)
+          const r = await onHost(host, () => fn(input))
           if (r === undefined) return null
           const text = JSON.stringify(r)
           // Orca refuses answers over 1 MiB and the whole page breaks: say what happened instead
@@ -3631,6 +3921,21 @@ export default function activate(orca) {
   }
   orca.panels.handle('repo.resolve', () => resolveFocused())
 
+  // servers: list, add, change, remove, and the repositories found on them
+  orca.panels.handle('servers.repos', ({ refresh } = {}) => serverRepos({ refresh: !!refresh, wait: refresh ? 20_000 : 1500 }))
+  orca.panels.handle('servers.list', () => serverList())
+  orca.panels.handle('servers.add', (input = {}) => serverAdd(input))
+  orca.panels.handle('servers.update', async ({ id, roots, hidden } = {}) => {
+    await serverUpdate(req(id, 'server'), { roots, hidden })
+    return serverList()
+  })
+  orca.panels.handle('servers.remove', async ({ id } = {}) => {
+    if ((await sshTargets()).some((t) => t.id === id)) throw new GitError("This server comes from Orca's SSH hosts: remove it in Orca's settings, or hide it here")
+    await serverUpdate(req(id, 'server'), { remove: true })
+    return serverList()
+  })
+  orca.panels.handle('servers.sshAliases', () => sshAliasChoices())
+
   // Status bar: "⎇ branch ↑1 ↓2 • 3" for the focused worktree; pressing it opens Git Control in a tab.
   orca.commands.register('openGraph', async () => {
     const repo = (await resolveFocused().catch(() => ({}))).focused || lastRepo
@@ -3641,11 +3946,11 @@ export default function activate(orca) {
   // Opening the tab goes through Orca's CLI, which can miss once while Orca is busy: try again.
   async function openTabRetry(repo) {
     try {
-      return await openGraphTab(repo)
+      return await inRepo(repo, (p) => openGraphTab(p))
     } catch (e) {
       orca.log(`Git Control tab did not open (${e.message}); trying again`)
       await new Promise((res) => setTimeout(res, 400))
-      return openGraphTab(repo)
+      return inRepo(repo, (p) => openGraphTab(p))
     }
   }
   let lastBar = ''
@@ -3673,7 +3978,7 @@ export default function activate(orca) {
     } catch {}
     if (focused) {
       try {
-        const st = await status(focused, { untracked: 'normal' }) // a count is enough: no walk into new folders
+        const st = await inRepo(focused, (p) => status(p, { untracked: 'normal' })) // a count is enough: no walk into new folders
         const parts = [st.branch || `detached ${(st.oid || '').slice(0, 7)}`]
         if (st.ahead) parts.push(`↑${st.ahead}`)
         if (st.behind) parts.push(`↓${st.behind}`)
@@ -3683,7 +3988,7 @@ export default function activate(orca) {
           ...plain,
           text: parts.join(' '),
           tone: conflicts || st.state ? 'warning' : 'neutral',
-          tooltip: `${path.basename(st.toplevel)}${st.state ? ` · ${st.state} in progress` : ''}
+          tooltip: `${path.posix.basename(String(st.toplevel).replace(/\\/g, '/'))}${st.state ? ` · ${st.state} in progress` : ''}
 Click to open Git Control`
         }
         lastGood = { repo: focused, item }
@@ -3759,7 +4064,7 @@ Click to open Git Control`
       if (switched && wasOnGraph) {
         graphOpenedIn.add(key)
         graphHiddenAt = 0
-        return openGraphTab(focused, { focus: true }).catch((e) => orca.log(`Git Control tab not focused: ${e.message}`))
+        return inRepo(focused, (p) => openGraphTab(p, { focus: true })).catch((e) => orca.log(`Git Control tab not focused: ${e.message}`))
       }
       // Not on Git Control: leave the new project alone.
     })
@@ -3811,7 +4116,7 @@ Click to open Git Control`
   orca.panels.handle('reviews.setup', async ({ host, step } = {}) => {
     // same terminal setup as the merge request dialog, for a host instead of a repository
     setupCommand(step, host) // validates before looking up workspaces
-    return runSetup(orca, (await listWorkspaces(orca))[0], step, host, 'Review inbox setup')
+    return runSetup(orca, (await listWorkspaces(orca)).find((w) => !w.host), step, host, 'Review inbox setup')
   })
   orca.panels.handle('ai.mrDescription', async (input = {}) => aiMrDescription(req(input.repo, 'repo'), input, AI[input.agent] ? input.agent : await agentSetting()))
   orca.panels.handle('reviews.diff', async (input = {}) => {
@@ -3875,7 +4180,8 @@ Click to open Git Control`
       try {
         scan = (await orca.host.call('settings.get', {})).settings.scanFolders || ''
       } catch {}
-      const { repos } = await reposOverview(await listWorkspaces(orca).catch(() => []), scan)
+      // in the background: no ssh to the servers' found projects every two minutes
+      const { repos } = await reposOverview(await listWorkspaces(orca).catch(() => []), scan, { servers: false })
       const ok = repos.filter((r) => !r.error)
       const busy = ok.filter((r) => r.changes || r.ahead || r.behind || r.conflicts || r.state)
       const bad = ok.some((r) => r.conflicts || r.state)
@@ -3906,12 +4212,9 @@ Click to open Git Control`
   // open a repository file as an Orca editor tab (in its worktree)
   orca.panels.handle('file.open', async ({ repo, file } = {}) => {
     const p = await workPath(req(repo, 'repo'), req(file, 'file'))
-    if (!existsSync(p)) throw new GitError('That file is not in the working tree (deleted or on another branch)')
+    if (!(await fsx.exists(p))) throw new GitError('That file is not in the working tree (deleted or on another branch)')
     const { toplevel } = await paths(repo)
-    const r = await runProc(ORCA_BIN, ['file', 'open', p, '--worktree', `path:${path.resolve(toplevel)}`, '--focus', '--json'], { timeout: 15_000 })
-    let res = null
-    try { res = JSON.parse(r.stdout) } catch {}
-    if (!res?.ok) throw new GitError(res?.error?.message || r.stderr.trim() || 'Orca could not open the file')
+    await openInOrca(p, toplevel)
     return { opened: true }
   })
   orca.panels.handle('shell.open', async ({ url } = {}) => ({ opened: await openInBrowser(String(url || '')) }))
@@ -3939,7 +4242,7 @@ Click to open Git Control`
   orca.panels.handle('repo.check', async ({ path: p } = {}) => {
     try {
       const top = (await git(req(p, 'path'), ['rev-parse', '--show-toplevel'])).trim()
-      return { ok: true, toplevel: top }
+      return { ok: true, toplevel: toLocator(top) }
     } catch (e) {
       return { ok: false, error: e.message }
     }
@@ -3947,7 +4250,7 @@ Click to open Git Control`
 
   // Show a worktree in Orca when Orca knows it as a workspace.
   orca.panels.handle('worktree.open', async ({ path: p } = {}) => {
-    const ws = (await listWorkspaces(orca)).find((w) => norm(w.path) === norm(p))
+    const ws = (await listWorkspaces(orca)).find((w) => isWorkspaceOf(w, p))
     if (!ws || !orca.host.has('workspace.open')) return { opened: false }
     try {
       await orca.host.call('workspace.open', { workspaceId: ws.id })

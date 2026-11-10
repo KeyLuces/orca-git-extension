@@ -1923,6 +1923,43 @@ body.compact .pc-ref, body.compact .pc-stages, body.compact .pc-by, .side-panel 
 .rov-summary { border-bottom: 0; padding-bottom: 4px; }
 .pill.rv-noreviewer { color: var(--t2); border: 1px dashed var(--line-hi); background: transparent; white-space: nowrap; } .rv-who { margin-left: 8px; }
 
+/* Servers: SSH hosts whose projects the repository menu lists */
+.servers-intro { margin: 0; padding: 12px 16px; color: var(--t2); font-size: 12px; line-height: 1.5; border-bottom: 1px solid var(--line); }
+.server-row { padding: 8px 8px 8px 16px; border-bottom: 1px solid var(--line); }
+.server-row > .row { gap: 10px; }
+.server-row > .row > svg { flex: none; color: var(--t3); }
+.server-name { min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.server-row .pill { flex: none; }
+.server-row.hidden-server .server-name { color: var(--t3); font-weight: 500; }
+.pill.server-bad { background: color-mix(in srgb, var(--del) 18%, transparent); color: var(--del); }
+.server-error { margin: 8px 8px 4px 26px; padding: 10px 12px; border-radius: 6px; background: color-mix(in srgb, var(--del) 8%, transparent); color: var(--t2); font-size: 12px; line-height: 1.5; }
+.server-error-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.server-error-actions { margin-top: 8px; }
+
+/* A text field with a suggestion list under it (dialog combo box) */
+.combo { position: relative; display: flex; }
+.combo > input { flex: 1; min-width: 0; padding-right: 30px; }
+.combo-caret { position: absolute; top: 0; right: 0; bottom: 0; width: 30px; display: flex; align-items: center; justify-content: center; border: 0; background: none; color: var(--t3); cursor: pointer; }
+.combo-caret:hover { color: var(--t1); }
+.combo-caret svg { transition: transform .15s var(--ease); }
+.combo.open .combo-caret svg { transform: rotate(180deg); }
+.combo-list { position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 5; max-height: 232px; overflow-y: auto; padding: 4px; border-radius: var(--radius); background: var(--card); border: 1px solid var(--line-hi); box-shadow: var(--shadow); animation: pop .12s var(--ease); }
+.combo-list[hidden] { display: none; }
+.combo-item { display: flex; align-items: center; gap: 10px; min-height: 32px; padding: 4px 8px; border-radius: var(--r-xs); cursor: pointer; font-size: 13px; }
+.combo-item.active { background: var(--hover); }
+.combo-item.disabled { cursor: default; opacity: .5; }
+.combo-value { flex: none; max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--t1); font-weight: 500; }
+.combo-detail { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--t3); font-size: 12px; text-align: right; font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace); }
+.combo-item .pill { flex: none; }
+.combo-empty { padding: 8px; color: var(--t3); font-size: 12px; }
+
+/* The server a repository is on, beside its name in the header: the name truncates, never this */
+.host-badge { flex: none; display: inline-flex; align-items: center; gap: 4px; padding: 1px 7px 1px 5px; border-radius: 999px; background: color-mix(in srgb, var(--ren) 14%, transparent); color: var(--ren); font-size: 11px; font-weight: 600; line-height: 16px; }
+.host-badge[hidden] { display: none; }
+.host-badge > span { white-space: nowrap; }
+.repo-btn .host-badge svg { flex: none; color: inherit; }
+#repoName { min-width: 0; }
+
 </style>
   </head>
   <body class="side-panel">
@@ -1930,6 +1967,7 @@ body.compact .pc-ref, body.compact .pc-stages, body.compact .pc-by, .side-panel 
       <div class="repo-line">
         <button class="repo-btn grow" id="repoBtn" title="Switch repository">
           <span id="repoIcon"></span><span class="ellipsis" id="repoName">No repository</span
+          ><span id="repoHost" class="host-badge" hidden></span
           ><span id="repoCaret" class="dim"></span>
         </button>
         <div class="toolbar" id="toolbar"></div>
@@ -2022,6 +2060,9 @@ const ICONS = {
   download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/>',
   current: '<circle cx="12" cy="12" r="10" fill="currentColor" stroke="none"/><path d="m8 12.5 2.6 2.6L16.5 9" stroke="var(--ref-head-ink, #14161b)" stroke-width="2.6"/>',
   link: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
+  server: '<rect width="20" height="8" x="2" y="2" rx="2" ry="2"/><rect width="20" height="8" x="2" y="14" rx="2" ry="2"/><line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/>',
+  eye: '<path d="M2.06 12.35a1 1 0 0 1 0-.7 10.75 10.75 0 0 1 19.88 0 1 1 0 0 1 0 .7 10.75 10.75 0 0 1-19.88 0"/><circle cx="12" cy="12" r="3"/>',
+  eyeOff: '<path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.53 13.53 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" x2="22" y1="2" y2="22"/>',
   cloud: '<path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>',
   sparkle: '<path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/><path d="M20 3v4"/><path d="M22 5h-4"/>',
   expand: '<path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/>',
@@ -2119,6 +2160,9 @@ const state = {
   repo: null,
   pinned: IN_TAB ? null : store.get('pinnedRepo', null), // null = follow the focused Orca workspace
   workspaces: [],
+  servers: [], // SSH hosts searched for projects (from Orca, or added here)
+  serverRepos: [], // the projects found on them, by locator
+  serversAt: 0,
   status: null,
   tab: IN_TAB ? 'history' : store.get('tab', 'changes'),
   busy: 0,
@@ -2194,8 +2238,10 @@ function dialog({ title, message, fields = [], ok = 'OK', danger = false, cancel
         if (f.type === 'select')
           el = h('select', null, f.options.map(([v, l]) => h('option', { value: v, selected: v === f.value }, l)))
         else if (f.type === 'textarea') el = h('textarea', { placeholder: f.placeholder || '' }, f.value || '')
-        else el = h('input', { type: 'text', value: f.value || '', placeholder: f.placeholder || '', spellcheck: 'false' })
-        form.append(h('div', { class: 'field' }, h('label', null, f.label), el, f.hint && h('div', { class: 'hint' }, f.hint)))
+        else el = h('input', { type: 'text', value: f.value || '', placeholder: f.placeholder || '', spellcheck: 'false', autocomplete: 'off' })
+        // suggestions: a list under the field, filtered as the person types
+        const box = f.suggestions?.length ? combo(el, f.suggestions) : el
+        form.append(h('div', { class: 'field' }, h('label', null, f.label), box, f.hint && h('div', { class: 'hint' }, f.hint)))
       }
       inputs[f.key] = el
     }
@@ -2215,6 +2261,78 @@ function dialog({ title, message, fields = [], ok = 'OK', danger = false, cancel
     first?.select?.()
   })
 }
+/**
+ * A text field with suggestions below it: { value, detail?, disabled?, badge? }. Typing filters them
+ * (by value or detail); ↑ ↓ move, Enter or a click picks one, Esc closes the list (not the dialog).
+ */
+function combo(input, items) {
+  const list = h('div', { class: 'combo-list', role: 'listbox' })
+  const caret = h('button', { type: 'button', class: 'combo-caret', tabindex: '-1', 'aria-label': 'Show suggestions', onMousedown: (e) => (e.preventDefault(), list.hidden ? (input.focus(), show(true)) : hide()) }, icon('down', 12))
+  const wrap = h('div', { class: 'combo' }, input, caret, list)
+  input.setAttribute('role', 'combobox')
+  input.setAttribute('aria-autocomplete', 'list')
+  list.hidden = true
+  let shown = []
+  let active = -1
+  const pick = (it) => {
+    input.value = it.value
+    hide()
+    input.dispatchEvent(new Event('input'))
+  }
+  const draw = () => {
+    clear(list)
+    if (!shown.length) return list.append(h('div', { class: 'combo-empty' }, 'No match: type the host or user@host'))
+    shown.forEach((it, i) =>
+      list.append(
+        h(
+          'div',
+          { class: `combo-item${i === active ? ' active' : ''}${it.disabled ? ' disabled' : ''}`, role: 'option', 'aria-selected': String(i === active), onMousedown: (e) => (e.preventDefault(), !it.disabled && pick(it)), onMousemove: () => active !== i && ((active = i), draw()) },
+          h('span', { class: 'combo-value' }, it.value),
+          it.detail && h('span', { class: 'combo-detail' }, it.detail),
+          it.badge && h('span', { class: 'pill' }, it.badge)
+        )
+      )
+    )
+    list.children[active]?.scrollIntoView({ block: 'nearest' })
+  }
+  const show = (all = false) => {
+    const q = all ? '' : input.value.trim().toLowerCase()
+    shown = items.filter((it) => !q || it.value.toLowerCase().includes(q) || (it.detail || '').toLowerCase().includes(q))
+    // what was typed exactly: nothing left to suggest
+    if (!all && shown.length === 1 && shown[0].value === input.value.trim()) shown = []
+    if (!shown.length && q && !all) return hide()
+    active = shown.findIndex((it) => !it.disabled)
+    list.hidden = false
+    wrap.classList.add('open')
+    draw()
+  }
+  const hide = () => {
+    list.hidden = true
+    wrap.classList.remove('open')
+  }
+  const move = (d) => {
+    if (!shown.length) return
+    let i = active
+    for (let n = 0; n < shown.length; n++) {
+      i = (i + d + shown.length) % shown.length
+      if (!shown[i].disabled) break
+    }
+    active = i
+    draw()
+  }
+  input.addEventListener('input', (e) => e.isTrusted && show())
+  input.addEventListener('focus', () => show(!input.value.trim()))
+  input.addEventListener('blur', hide)
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown') (e.preventDefault(), list.hidden ? show(true) : move(1))
+    else if (e.key === 'ArrowUp') (e.preventDefault(), !list.hidden && move(-1))
+    else if (e.key === 'Enter' && !list.hidden && shown[active] && !shown[active].disabled) (e.preventDefault(), pick(shown[active]))
+    else if (e.key === 'Escape' && !list.hidden) (e.preventDefault(), e.stopPropagation(), hide())
+    else if (e.key === 'Tab') hide()
+  })
+  return wrap
+}
+
 /** Asked from inside an open modal, the confirm stacks over it: Cancel returns to the modal intact. */
 const confirmBox = (title, message, ok = 'Confirm', danger = false) =>
   dialog({ title, message, ok, danger, stack: !!document.querySelector('.overlay') }).then((r) => r !== null)
@@ -2615,12 +2733,33 @@ const snap = {
   }
 }
 
-const sameRepoPath = (a, b) => a.replace(/\\/g, '/').toLowerCase() === b.replace(/\\/g, '/').toLowerCase()
-/** Workspaces grouped by repository name, repositories A–Z, the main folder first in each. */
+/** Paths on a server (ssh://…) are told apart by case, as Linux does; local ones are not (Windows, macOS). */
+const isRemotePath = (p) => /^ssh:\/\//.test(String(p || ''))
+const sameRepoPath = (a, b) => {
+  if (isRemotePath(a) || isRemotePath(b)) return String(a).replace(/\/+$/, '') === String(b).replace(/\/+$/, '')
+  return a.replace(/\\/g, '/').toLowerCase() === b.replace(/\\/g, '/').toLowerCase()
+}
+/** Where a repository lives when it is not on this computer: the SSH host's name, else null. */
+function hostOf(repo) {
+  const m = typeof repo === 'string' && repo.match(/^ssh:\/\/([^/]+)\//)
+  if (!m) return null
+  const w = [...state.workspaces, ...state.serverRepos].find((x) => {
+    if (!x.host) return false
+    const base = x.path.replace(/\/+$/, '')
+    return repo === base || repo.startsWith(base + '/')
+  })
+  let host = m[1]
+  try {
+    host = decodeURIComponent(m[1])
+  } catch {}
+  return w?.hostLabel || state.servers.find((x) => x.id === host)?.label || host
+}
+/** Workspaces grouped by repository name (and host), repositories A–Z, the main folder first in each. */
 function repoGroups(ws) {
   const groups = new Map()
   for (const w of ws) {
-    const name = w.repoName || basename(w.path)
+    // the same repository on this computer and on a server are two entries
+    const name = (w.repoName || basename(w.path)) + (w.host ? ` · ${w.hostLabel || w.host}` : '')
     if (!groups.has(name)) groups.set(name, [])
     groups.get(name).push(w)
   }
@@ -2629,9 +2768,23 @@ function repoGroups(ws) {
 }
 async function repoMenu(anchor) {
   if (!state.workspaces.length) state.workspaces = (await request('repo.resolve', {}).catch(() => null))?.workspaces || []
-  const ws = state.workspaces.filter((w) => w.kind === 'worktree' || w.kind === 'folder')
+  // projects found on servers: the menu opens at once; the first time they are asked for, it is drawn
+  // again (still open, same place) when they arrive. Later they are refreshed behind it.
+  if (!state.serversAt) {
+    if (!repoMenu.loading)
+      repoMenu.loading = loadServerRepos().finally(() => {
+        repoMenu.loading = null
+        if (repoMenu.open?.isConnected && state.serverRepos.length) repoMenu.open = repoMenu.draw(anchor)
+      })
+  } else if (Date.now() - state.serversAt > 60_000) loadServerRepos()
+  repoMenu.open = repoMenu.draw(anchor)
+}
+repoMenu.draw = (anchor) => {
+  const open = state.workspaces.filter((w) => w.kind === 'worktree' || w.kind === 'folder')
+  const ws = [...open, ...state.serverRepos.filter((r) => !open.some((w) => sameRepoPath(w.path, r.path)))]
+  const scanning = state.servers.some((x) => x.scanning && !x.hidden)
   const f = state.folder
-  menu(anchor, [
+  return menu(anchor, [
     ...(f
       ? [
           { header: `In ${basename(f.path)}` },
@@ -2659,11 +2812,13 @@ async function repoMenu(anchor) {
       ...list.map((w) => ({
         label: w.branch || w.name,
         hint: list.length > 1 && w.main ? 'main folder' : '',
-        icon: state.repo && sameRepoPath(state.repo, w.path) ? 'check' : w.kind === 'worktree' ? 'branch' : 'folder',
+        icon: state.repo && sameRepoPath(state.repo, w.path) ? 'check' : w.host ? 'server' : w.kind === 'worktree' ? 'branch' : 'folder',
         onClick: () => pinRepo(w.path)
       }))
     ]),
     ws.length ? '-' : null,
+    scanning ? { label: 'Looking for projects on servers…', icon: 'refresh', disabled: true } : null,
+    { label: 'Servers…', icon: 'server', hint: serversHint(), onClick: openServers },
     { label: 'Clone repository…', icon: 'download', onClick: cloneRepo },
     {
       label: 'Open path…',
@@ -3104,7 +3259,7 @@ async function viewRepos() {
     body.append(
       data.roots?.length
         ? h('div', { class: 'rov-foot dim', title: data.roots.join('\n') }, icon('folder', 12), `Also listing the repos inside ${data.roots.map(shortPath).join('; ')}`, ' · ', h('button', { class: 'linkish', onClick: () => scanFolders() }, 'Change'))
-        : h('div', { class: 'rov-foot dim' }, 'Lists the repositories opened in Orca. ', h('button', { class: 'linkish', onClick: () => scanFolders() }, 'Scan a folder'), ' to add the repos inside it too.')
+        : h('div', { class: 'rov-foot dim' }, data.servers ? 'Lists the repositories opened in Orca and the ones on your servers. ' : 'Lists the repositories opened in Orca. ', h('button', { class: 'linkish', onClick: () => scanFolders() }, 'Scan a folder'), ' to add the repos inside it too.')
     )
     drawList()
   }
@@ -3127,18 +3282,19 @@ async function viewRepos() {
       list.append(row)
     }
     // grouped like Orca's sidebar (its Project Groups, in their order); the rest under "Other"
-    if (data.grouped && rows.some((r) => r.group)) {
+    // and a server's repos under that server
+    if ((data.grouped || data.servers) && rows.some((r) => r.group)) {
       const groups = new Map()
       for (const r of rows) {
         const k = r.group?.id || ''
-        if (!groups.has(k)) groups.set(k, { name: r.group ? r.group.name || 'Project group' : 'Not in a project group', order: r.group ? r.group.order : 1e9, rows: [] })
+        if (!groups.has(k)) groups.set(k, { name: r.group ? r.group.name || 'Project group' : data.grouped ? 'Not in a project group' : 'On this computer', server: !!r.group?.server, order: r.group ? r.group.order : data.grouped ? 1e9 : -1, rows: [] })
         groups.get(k).rows.push(r)
       }
       for (const g of [...groups.values()].sort((a, b) => a.order - b.order)) {
         // inside a group: Orca's own order, as its sidebar lists them
         g.rows.sort((a, b) => (a.group?.repoOrder ?? 1e9) - (b.group?.repoOrder ?? 1e9) || a.name.localeCompare(b.name))
         const need = g.rows.filter((r) => rovScore(r) >= 2).length
-        list.append(h('div', { class: 'rov-grp' }, icon('folder', 12), h('span', { class: 'rov-grp-name' }, g.name), h('span', { class: 'rov-group-n' }, String(g.rows.length)), need ? h('span', { class: 'rov-grp-need' }, `${need} need you`) : null))
+        list.append(h('div', { class: 'rov-grp' }, icon(g.server ? 'server' : 'folder', 12), h('span', { class: 'rov-grp-name' }, g.name), h('span', { class: 'rov-group-n' }, String(g.rows.length)), need ? h('span', { class: 'rov-grp-need' }, `${need} need you`) : null))
         g.rows.forEach(put)
       }
     } else rows.forEach(put)
@@ -3174,7 +3330,7 @@ async function viewRepos() {
         ),
         failure
           ? h('div', { class: 'rov-fail', title: failure.message }, icon('alert', 11), h('span', { class: 'ellipsis' }, `${{ fetch: 'Fetch', pull: 'Pull', push: 'Push', checkout: 'Switch', branchCreate: 'New branch' }[failure.op] || 'Last command'} failed: ${failure.message}`))
-          : h('div', { class: 'rov-path dim mono ellipsis' }, shortPath(r.path))
+          : h('div', { class: 'rov-path dim mono ellipsis' }, shortPath(r.host ? r.path.replace(/^ssh:\/\/[^/]+/, '') : r.path))
       ),
       r.error
         ? h('span', { class: 'rov-err', title: r.error }, icon('alert', 12), h('span', { class: 'ellipsis' }, r.error))
@@ -3442,6 +3598,148 @@ async function viewRepos() {
   return root
 }
 
+/* ---------- servers: SSH hosts whose projects the repository menu lists ---------- */
+let serverPoll = null
+/** Ask the worker which projects the servers have; while a server is still being searched, ask again. */
+async function loadServerRepos({ refresh = false } = {}) {
+  clearTimeout(serverPoll)
+  try {
+    const r = await request('servers.repos', { refresh }, refresh ? 60_000 : 30_000)
+    state.servers = r.servers || []
+    state.serverRepos = r.repos || []
+    state.serversAt = Date.now()
+  } catch (e) {
+    state.serversAt = Date.now()
+    if (refresh) toast(e.message, 'error')
+  }
+  if (state.servers.some((x) => x.scanning)) serverPoll = setTimeout(() => loadServerRepos().then(() => document.querySelector('.servers-sheet') && renderServers()), 3000)
+  return state.servers
+}
+function serversHint() {
+  const shown = state.servers.filter((x) => !x.hidden)
+  const bad = shown.filter((x) => x.error).length
+  return bad ? `${bad} unreachable` : shown.length ? `${shown.length}` : ''
+}
+function openServers() {
+  openSheet('Servers', h('div', { class: 'servers-sheet' }), [
+    h('button', { class: 'btn sm', title: 'Look for projects on every server again', onClick: async () => (await loadServerRepos({ refresh: true }), renderServers()) }, icon('refresh', 13), h('span', null, 'Rescan')),
+    h('button', { class: 'btn sm primary', onClick: addServer }, icon('plus', 13), h('span', null, 'Add server'))
+  ])
+  renderServers()
+  loadServerRepos().then(renderServers)
+}
+function renderServers() {
+  const root = document.querySelector('.servers-sheet')
+  if (!root) return
+  const intro = h('p', { class: 'servers-intro' }, 'Projects on these servers show up in the repository menu.')
+  if (!state.servers.length)
+    return clear(root).append(intro, h('div', { class: 'empty' }, icon('server', 28), h('div', null, 'No servers yet'), h('div', { class: 'empty-actions' }, h('button', { class: 'btn primary', onClick: addServer }, icon('plus', 13), h('span', null, 'Add server')))))
+  const row = (x) => {
+    const status = x.scanning
+      ? h('span', { class: 'pill' }, 'Searching…')
+      : x.error
+        ? h('span', { class: 'pill server-bad' }, 'Can’t connect')
+        : x.hidden
+          ? h('span', { class: 'pill' }, 'Hidden')
+          : x.repoCount != null
+            ? h('span', { class: 'pill on' }, `${x.repoCount} project${x.repoCount === 1 ? '' : 's'}`)
+            : h('span', { class: 'pill' }, 'Not searched')
+    const rescan = async () => {
+      await request('servers.update', { id: x.id, roots: x.roots })
+      await loadServerRepos({ refresh: true })
+      renderServers()
+    }
+    const more = (anchor) =>
+      menu(anchor, [
+        { label: 'Search again', icon: 'refresh', onClick: rescan },
+        { label: 'Folders to search…', icon: 'folder', hint: x.roots.join('; '), onClick: () => editServerRoots(x) },
+        {
+          label: x.hidden ? 'Show in the menu' : 'Hide from the menu',
+          icon: x.hidden ? 'eye' : 'eyeOff',
+          onClick: async () => {
+            state.servers = await request('servers.update', { id: x.id, hidden: !x.hidden })
+            await loadServerRepos()
+            renderServers()
+          }
+        },
+        x.source === 'manual' ? '-' : null,
+        x.source === 'manual'
+          ? {
+              label: 'Remove',
+              icon: 'trash',
+              danger: true,
+              onClick: async () => {
+                if (!(await confirmBox(`Remove ${x.label}?`, 'Its projects leave the repository menu. Nothing on the server changes.', 'Remove', true))) return
+                state.servers = await request('servers.remove', { id: x.id })
+                await loadServerRepos()
+                renderServers()
+              }
+            }
+          : null
+      ])
+    const fix =
+      x.error &&
+      !x.scanning &&
+      h('div', { class: 'server-error' }, h('div', { class: 'server-error-text' }, x.error), h('div', { class: 'row server-error-actions' }, h('button', { class: 'btn sm', onClick: rescan }, icon('refresh', 13), h('span', null, 'Try again'))))
+    return h(
+      'div',
+      { class: `server-row${x.hidden ? ' hidden-server' : ''}`, title: x.orcaName ? `${x.label} (in Orca: ${x.orcaName})` : x.label },
+      h('div', { class: 'row' }, icon('server', 16), h('div', { class: 'grow server-name' }, x.label), status, iconBtn('more', `More for ${x.label}`, (e) => more(e.currentTarget), { class: 'icon-btn server-more' })),
+      fix
+    )
+  }
+  clear(root).append(intro, ...state.servers.map(row))
+}
+async function addServer() {
+  const aliases = await request('servers.sshAliases', {}).catch(() => [])
+  const r = await dialog({
+    title: 'Add a server',
+    message: 'Its Git projects will show up in the repository menu.',
+    stack: true,
+    fields: [{ key: 'dest', label: 'Server', placeholder: 'my-server', suggestions: aliases.map((a) => ({ value: a.name, detail: a.detail, disabled: a.added, badge: a.added ? 'Added' : '' })) }],
+    ok: 'Add'
+  })
+  if (!r?.dest?.trim()) return
+  toast(`Connecting to ${r.dest.trim()}…`)
+  try {
+    const res = await request('servers.add', { dest: r.dest.trim() }, 90_000)
+    toast(res.error ? `Added ${res.id}, but searching it failed: ${res.error}` : `${res.repoCount} project${res.repoCount === 1 ? '' : 's'} found on ${res.id}`, res.error ? 'error' : 'ok')
+  } catch (e) {
+    await dialog({ title: 'Could not add the server', message: e.message, cancel: null, stack: true })
+    return
+  }
+  await loadServerRepos()
+  renderServers()
+}
+async function editServerRoots(x) {
+  const r = await dialog({
+    title: `Folders to search on ${x.label}`,
+    stack: true,
+    fields: [{ key: 'roots', label: 'Folders', value: x.roots.join('; '), hint: 'Separate folders with ; (~ is your home folder there). Searched 4 levels deep.' }],
+    ok: 'Search'
+  })
+  if (!r) return
+  try {
+    state.servers = await request('servers.update', { id: x.id, roots: r.roots })
+  } catch (e) {
+    return toast(e.message, 'error')
+  }
+  renderServers()
+  await loadServerRepos({ refresh: true })
+  renderServers()
+}
+
+/** The server a repository is on, as a badge beside its name in the header: it never truncates (the name does). */
+function renderHostBadge() {
+  const el = $('#repoHost')
+  if (!el) return
+  const where = hostOf(state.repo)
+  el.hidden = !where
+  if (!where) return clear(el)
+  clear(el).append(icon('server', 12), h('span', null, where))
+  el.title = `On ${where}: git runs on that server`
+}
+
 function pinRepo(p) {
   // one of the open folder's repositories: stay in the folder (its tabs stay), just switch
   if (state.folder?.children.some((c) => sameRepoPath(c.path, p))) return pickFolderRepo(p)
@@ -3459,8 +3757,10 @@ function pinRepo(p) {
    ========================================================================= */
 function renderHeader() {
   const st = state.status
-  clear($('#repoIcon')).append(icon(state.pinned ? 'folder' : 'worktree', 14))
+  // on a server: its icon, so it is clear that actions run on another machine
+  clear($('#repoIcon')).append(icon(hostOf(state.repo) ? 'server' : state.pinned ? 'folder' : 'worktree', 14))
   $('#repoName').textContent = state.repo ? (state.folder ? `${basename(state.folder.path)} › ` : '') + basename(st?.toplevel || state.repo) : 'No repository'
+  renderHostBadge()
   $('#repoBtn').title = state.repo || 'Choose a repository'
   clear($('#repoCaret')).append(icon('down', 12))
   const side = $('#sideToggle')

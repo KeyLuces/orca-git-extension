@@ -8,7 +8,8 @@
     "perf": "node perf.mjs .. ../.orca/e2e",
     "build": "node ../tools/build.mjs",
     "mobile": "node mobile.mjs .. ../.orca/e2e",
-    "worker": "node worker-api.mjs github && node worker-api.mjs gitlab && node worker-ops.mjs"
+    "servers": "node servers-ui.mjs ..",
+    "worker": "node worker-api.mjs github && node worker-api.mjs gitlab && node worker-ops.mjs && node remote-ops.mjs"
   },
   "devDependencies": {
     "puppeteer-core": "25.16.0"
